@@ -86,7 +86,12 @@ Exact plugin versions: UNVERIFIED — all ship with UE 5.8.1 and carry no indepe
 - repository source: `https://github.com/EpicGamesExt/PixelStreamingInfrastructure` (VERIFIED)
 - exact UE-matching branch/tag/commit: branch **`UE5.8`**, commit **`48bff3b751f91f735b50c90b2a7fec5ceb2a440f`** (2026-08-04), `RELEASE_VERSION` **0.1.0**, `SignallingWebServer` package version 3.0.0 (VERIFIED — cloned and checked out detached at that commit)
 - local path: `Web/PixelStreamingInfrastructure` — **gitignored, not vendored**. Re-fetch by cloning the pinned commit.
-- Node version from the repository: **none pinned upstream** — no `.nvmrc` and no `engines` field in the root, `Signalling`, or `SignallingWebServer` `package.json` (VERIFIED). Local node is v24.18.0; compatibility is UNVERIFIED until the signalling server actually runs.
+- Node version from the repository: **v22.14.0**, from a root `NODE_VERSION` file (VERIFIED 2026-08-10).
+  **This corrects an earlier entry in this document**, which claimed no version was
+  pinned upstream. That claim was drawn from the absence of `.nvmrc` and of an
+  `engines` field — both genuinely absent — but the check missed the `NODE_VERSION`
+  file, which is what Epic's own tooling reads. Local node is **v24.18.0**, two major
+  versions ahead of the pin. See ASSUMPTION-001 for what was then actually tested.
 - frontend/signalling modifications: none
 - STUN/TURN implementation: UNVERIFIED
 
@@ -257,25 +262,253 @@ does not appear.
 The run nonetheless **failed at a later, unrelated stage** — see BLOCKER-006.
 Gate A therefore remains unclaimed.
 
-### Run packaged Pixel Streaming build
+### Install and build the Pixel Streaming Infrastructure
 
-```text
-UNVERIFIED
+**VERIFIED 2026-08-10 — `npm ci` exit 0, 1,373 packages, 4 min; `build:all:cjs` exit 0.**
+
+```powershell
+cd "C:\Users\jun yi\Documents\central-command\racing\Web\PixelStreamingInfrastructure"
+npm ci --no-audit --no-fund
+npm run build:all:cjs     # Common -> Signalling -> SignallingWebServer -> Frontend
 ```
+
+`npm ci` was chosen over `npm install` so the tree matches `package-lock.json` at the
+pinned commit exactly — the same lockfile the licence census in
+`Docs/13-AssetLicenseLedger.md` (ASSET-0005) was taken from.
+
+Two warnings that are not failures but are worth knowing: two deprecations
+(`whatwg-encoding`, `node-domexception`), and three packages whose install scripts npm
+did **not** run — `mediasoup@3.15.5` (postinstall), `pre-commit@1.2.2`,
+`spawn-sync@1.0.15`. `mediasoup` needs its postinstall to build the SFU worker binary,
+so **the SFU is not usable until those scripts are approved**. The signalling server and
+frontend do not need them, which is why the run below still works.
 
 ### Start signalling/frontend/TURN
 
-```text
-UNVERIFIED
+**VERIFIED 2026-08-10 — listeners up in under 5 s; player page HTTP 200.**
+
+```powershell
+cd "C:\Users\jun yi\Documents\central-command\racing\Web\PixelStreamingInfrastructure\SignallingWebServer"
+node ./dist/index.js --serve --console_messages verbose --player_port 8080 `
+    --http_root "C:\Users\jun yi\Documents\central-command\racing\Web\PixelStreamingInfrastructure\SignallingWebServer\www"
 ```
+
+Observed listeners: streamer `8888`, SFU `8889`, HTTP `8080`.
+
+**`--http_root` is mandatory on this checkout, and the reason is a defect upstream.**
+`SignallingWebServer/config.json` at commit `48bff3b7` ships
+
+```json
+"http_root": "D:\\PixelStreamingInfrastructure\\SignallingWebServer\\www",
+```
+
+— an absolute path leaked from Epic's build machine. It overrides the sane default at
+`src/index.ts:120` (`path.resolve(__dirname, '..', 'www')`), so without the flag every
+page 404s with `error: Unable to locate file player.html`. **Verified twice**: 404
+before the override, HTTP 200 (1,409 bytes) after.
+
+**The space hazard bit for a third time here.** `Start-Process -ArgumentList` joins its
+array with spaces and does *not* quote, so `--http_root C:\Users\jun yi\...` arrived as
+`C:\Users\jun` and still 404'd. The value must carry embedded quotes. The confirming
+evidence is the server's own config echo, which prints the path it actually resolved —
+check that line, not the exit code.
+
+TURN: **still UNVERIFIED.** No STUN/TURN server was configured or started; a local
+loopback stream does not need one. That belongs to `STREAM-004`, which is blocked on
+BLOCKER-001.
+
+### Run packaged Pixel Streaming build
+
+**VERIFIED 2026-08-10 — packaged build connected to the signalling server, joined the
+room, and published video and audio tracks.**
+
+```powershell
+& "C:\Users\jun yi\Documents\central-command\racing\Packaged\Windows\RacingSim.exe" `
+    -PixelStreamingConnectionURL=ws://127.0.0.1:8888 `
+    -RenderOffScreen -ForceRes -ResX=1280 -ResY=720 -Unattended -stdout -AudioMixer
+```
+
+Evidence from `Packaged/Windows/RacingSim/Saved/Logs/RacingSim.log`:
+
+```text
+LogPixelStreaming2EpicRtc: Conference::CreateSession. Id=[DefaultStreamer], Url=[ws://127.0.0.1:8888]
+LogEpicRtcWebsocket: Websocket connection made to: ws://127.0.0.1:8888
+LogPixelStreaming2EpicRtc: RoomSignallingContextObserver::OnJoined. ... state=[Joined]
+LogPixelStreaming2RTC: FEpicRtcStreamer::OnVideoTrackUpdate(Participant [DefaultStreamer], VideoTrack [0], IsRemote[false])
+LogPixelStreaming2RTC: FEpicRtcStreamer::OnAudioTrackUpdate(Participant [DefaultStreamer], AudioTrack [1], IsRemote [false])
+```
+
+Matching signalling-server side:
+
+```text
+info: New streamer connection: ::ffff:127.0.0.1
+info: < UnknownStreamer :: {"type":"config","peerConnectionOptions":{},"protocolVersion":"1.3.0"}
+info: > UnknownStreamer :: {"id":"DefaultStreamer","protocolVersion":"1.1.0","type":"endpointId"}
+info: < DefaultStreamer :: {"type":"endpointIdConfirm","committedId":"DefaultStreamer"}
+```
+
+Then 30-second `ping`/`pong` keepalives for the remainder of the run.
+
+**Reconnect works, and was observed rather than assumed.** The signalling server was
+killed and restarted while the game kept running; the streamer re-registered
+**0.5 s** after the new server came up, logging `Streamer reconnecting... Attempt 2`,
+`Attempt 3`, then `Websocket connection made`.
+
+#### What this does and does not prove
+
+It proves the packaged build accepts PS2 arguments, reaches signalling, negotiates an
+endpoint id, creates tracks, and survives a signalling restart. **It does not prove a
+browser ever received a frame** — no browser client connected, no WebRTC peer
+connection was established, no encoder was exercised. That is `STREAM-001`, and it
+stays open.
+
+#### Pixel Streaming 2 flag names, derived from source
+
+PS2 does not hard-code a flag list. Every `PixelStreaming2.*` CVar gets a command-line
+form by a mechanical transform at
+`PixelStreaming2PluginSettings.cpp:93-104`: **delete the dots, then rewrite the
+`PixelStreaming2` prefix as `PixelStreaming`.** So `PixelStreaming2.ConnectionURL`
+becomes `-PixelStreamingConnectionURL=…`, and `PixelStreaming2.Encoder.Codec` becomes
+`-PixelStreamingEncoderCodec=…`. This is why PS1 documentation is misleading here: the
+*shape* of the flags survived, the CVars behind them did not.
+
+| Flag | CVar | Notes |
+|---|---|---|
+| `-PixelStreamingConnectionURL=` | `PixelStreaming2.ConnectionURL` | Default empty. `(protocol)://(host):(port)`. **The one flag that matters.** |
+| `-PixelStreamingID=` | `PixelStreaming2.ID` | Streamer id; defaulted to `DefaultStreamer` in this run |
+| `-PixelStreamingEncoderCodec=` | `PixelStreaming2.Encoder.Codec` | H.264/HEVC on this GPU; no AV1 encode on GA107 |
+| `-PixelStreamingWebRTCFps=` | `PixelStreaming2.WebRTC.Fps` | |
+| `-PixelStreamingEncoderTargetBitrate=` | `PixelStreaming2.Encoder.TargetBitrate` | |
+| `-PixelStreamingInputController=` | `PixelStreaming2.InputController` | Which peer owns input |
+
+`PixelStreaming2.AutoStartStream` defaults to **true** outside the editor
+(`PixelStreaming2PluginSettings.cpp:360-364`), which is why the packaged build began
+streaming with no explicit start call.
+
+Deprecated, still parsed, do not use in new work: `PixelStreaming2.SignallingURL`,
+`.URL`, `.IP`, `.Port` all now alias `ConnectionURL`
+(`PixelStreaming2PluginSettings.cpp:241-244`); supplying `IP`/`Port` logs a conversion
+warning. Unrecognised `-PixelStreaming*` arguments are not silently ignored — 
+`ValidateCommandLineArgs()` logs `Unknown PixelStreaming command line arg: {0}`, which
+is the cheapest way to catch a typo'd flag.
+
+#### Protocol version mismatch — watch this
+
+The signalling server announces `protocolVersion 1.3.0`; the UE 5.8.1 streamer replies
+`1.1.0`. The handshake completed anyway, so it is not currently breaking anything, but
+it is a version skew between two things this project pins separately. Record it in
+`STREAM-002` and re-check after any engine or PSI bump.
+
+#### Security note for Gate G / SEC-001
+
+The signalling server binds **`::` (all interfaces)** on ports 8080, 8888 and 8889 —
+not loopback. That is upstream's default and is correct for a real deployment, but on a
+development machine it means the streamer and player endpoints are reachable from the
+LAN. This is the opposite posture to Unreal MCP (loopback-only) and must be handled
+explicitly in the worker image and firewall rules, not assumed. Related: NOTE-001
+(`UbaServer` on `0.0.0.0:1345`).
 
 ## Unreal MCP
 
-- endpoint confirmed loopback-only: UNVERIFIED
-- generated `.mcp.json` inspected: UNVERIFIED — not yet generated; `.gitignore` already excludes it as machine-local
-- read-only tool discovery test: UNVERIFIED
-- write test and rollback: UNVERIFIED
-- shipping exclusion verified: **partially** — `ModelContextProtocol` and `AllToolsets` carry `"TargetAllowList": ["Editor"]` in `RacingSim.uproject` (VERIFIED by inspection). Not yet proven by inspecting a packaged Game target's plugin manifest.
+**ENV-005 VERIFIED 2026-08-10.** Every line below was produced by starting the
+server and probing it, not by reading documentation.
+
+- endpoint confirmed loopback-only: **VERIFIED** — `Get-NetTCPConnection -LocalPort 8000`
+  returned exactly one row: `LocalAddress 127.0.0.1`, `State Listen`,
+  `OwningProcess 46376` (the editor). **No `0.0.0.0` and no `::` row exists.**
+- LAN reachability: **VERIFIED refused.** A TCP connect to port 8000 was attempted
+  against all seven of the machine's non-loopback IPv4 addresses. The three routable
+  ones — `192.168.88.7` (LAN), `172.19.176.1` (WSL/Hyper-V), `100.115.135.126` —
+  each returned `No connection could be made because the target machine actively
+  refused it`. The four `169.254.*` link-local addresses returned
+  `A socket operation was attempted to an unreachable network`. Nothing connected.
+  Caveat: these probes originated on the host itself. They prove the socket is not
+  bound to those interfaces; a genuinely off-host probe is still worth doing once a
+  second machine is available.
+- generated `.mcp.json` inspected: **VERIFIED** — written to the project root by
+  `ModelContextProtocol.GenerateClientConfig ClaudeCode`. Contents:
+
+  ```json
+  { "mcpServers": { "unreal-mcp": { "type": "http", "url": "http://127.0.0.1:8000/mcp" } } }
+  ```
+
+  Confirmed gitignored: `git check-ignore -v .mcp.json` → `.gitignore:52`.
+- read-only tool discovery test: **VERIFIED.** `initialize` returned HTTP 200,
+  `protocolVersion 2025-06-18`, and a session id. `tools/list` returned HTTP 200 with
+  exactly three tools — `list_toolsets`, `describe_toolset`, `call_tool` — which is
+  the `bEnableToolSearch = true` surface, not full native registration. A
+  `list_toolsets` call then enumerated the toolsets, including
+  `AutomationTestToolset`, `EditorAppToolset`, `PluginToolset`, `ConfigSettingsToolset`
+  and **`GameFeaturesToolset`** — independent corroboration of the BLOCKER-005
+  diagnosis that `AllToolsets` drags `GameFeatures` in.
+- write test and rollback: **NOT RUN, deliberately.** ENV-005 requires a read-only
+  call to succeed *before any write is permitted*. No write tool was invoked. A write
+  test belongs to the first ticket that actually needs editor automation, with a
+  rollback path defined in that ticket.
+- shipping exclusion verified: **VERIFIED** — see the packaged plugin manifest check
+  under *Cook/package*. Neither `ModelContextProtocol` nor `AllToolsets` appears
+  anywhere in the packaged tree.
+
+### How the server is started, and why it is off by default
+
+The server does **not** start on its own. `UModelContextProtocolSettings::bAutoStartServer`
+defaults to `false` (`ModelContextProtocolSettings.h:42`), and the setting lives in
+`EditorPerProjectUserSettings` — a machine-local file, not project config, so it cannot
+be switched on for everyone by a commit.
+
+```powershell
+# VERIFIED 2026-08-10 - listener came up 70 s after launch
+& 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' `
+    "C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" `
+    -ModelContextProtocolStartServer `
+    -ExecCmds="ModelContextProtocol.GenerateClientConfig ClaudeCode" `
+    -nullrhi -unattended -nopause -nosplash -stdout -utf8output -log=McpLoopback.log
+```
+
+The process stays resident; stop it explicitly (`Stop-Process`) when finished. The
+listener disappeared immediately on shutdown, which was confirmed.
+
+Flags read from engine source, not guessed:
+
+- `-ModelContextProtocolStartServer` — `ModelContextProtocolSettings.cpp:33`.
+  `-StartModelContextProtocolServer` still works but logs a deprecation warning.
+- `-ModelContextProtocolPort=<1-65535>` — `ModelContextProtocolSettings.cpp:18`,
+  overrides the setting; out-of-range values warn and fall back.
+- `ModelContextProtocol.GenerateClientConfig <ClaudeCode|Cursor|VSCode|Gemini|Codex|All>`
+  — `ModelContextProtocolEngineModule.cpp:41`, registered `ECVF_Cheat`. In a launcher
+  build the file lands in `FPaths::ProjectDir()`; in a source build it would land in
+  `FPaths::RootDir()` (`ModelContextProtocolClientConfig.cpp:160-163`).
+
+### Why the binding is loopback, and what would break it
+
+The bind address is **not** an MCP setting. MCP registers a route on the engine's
+shared `HTTPServer` module, whose listener config defaults to
+`BindAddress = "localhost"` (`HttpServerConfig.h:13`), which `HttpListener.cpp:68-70`
+resolves through `SetLoopbackAddress()`. Loopback is therefore a *default*, not a
+hard-coded guarantee.
+
+**It is overridable, and that is the risk to watch.** Setting
+`[HTTPServer.Listeners] DefaultBindAddress` in `Engine.ini` — or a per-port
+`ListenerOverrides` entry containing `BindAddress=` (`HttpServerConfig.cpp:60,97`) —
+moves the socket to any interface, with `any` meaning `0.0.0.0`. Neither
+`BaseEngine.ini` nor this project's `Config/` contains an `[HTTPServer.Listeners]`
+section (VERIFIED by grep), so nothing overrides it today. **Gate G / SEC-001 must
+assert that this section stays absent**, because the exposure would be silent: the
+MCP plugin logs nothing different when the socket moves.
+
+Second-layer defence, and not a substitute: `ModelContextProtocolServer.cpp:112`
+rejects requests whose `Origin` header is not `localhost`, `127.0.0.1` or `[::1]`.
+That only blocks browser-driven requests — a non-browser client sends no `Origin` and
+is allowed through — so it does not protect a wrongly-bound socket.
+
+### Licensing note
+
+`ModelContextProtocol.uplugin` declares **`"NoRedist": true`** and
+`"IsExperimentalVersion": true`. It must never be redistributed, which the packaged
+manifest check confirms it is not. Note that its two core modules
+(`ModelContextProtocol`, `ModelContextProtocolEngine`) are typed **`Runtime`**, not
+`Editor` — so keeping it out of a shipping build rests entirely on the
+`TargetAllowList` in `RacingSim.uproject`, not on module types.
 
 ## Known blockers and assumptions
 
@@ -302,10 +535,30 @@ UNVERIFIED
 - decision date: open
 - note: this worsens sharply once shader compilation and cooking start.
 
-### ASSUMPTION-001 — node v24.18.0 runs the pinned signalling server
+### ASSUMPTION-001 — node v24.18.0 runs the pinned signalling server — **RESOLVED, with a caveat**
 
-- Upstream pins no node version. Compatibility is assumed and **not yet proven**.
-- evidence needed: `npm install` plus a signalling server start against commit `48bff3b7`.
+- original wording said "upstream pins no node version". **That was wrong**: the
+  repository root carries `NODE_VERSION` = `v22.14.0`. The local runtime is
+  **v24.18.0**, two majors ahead.
+- **Tested anyway, and it works.** Under v24.18.0: `npm ci` exit 0 (1,373 packages),
+  `npm run build:all:cjs` exit 0, signalling server started and listened on 8888/8889/8080,
+  a packaged UE streamer connected and joined, and the player page served HTTP 200.
+- caveat, and the reason this is not simply closed: running two majors above a pin is
+  an accepted risk, not a proven equivalence. Nothing here exercised the SFU
+  (`mediasoup`'s postinstall was skipped, so its native worker was never built) and
+  nothing exercised a browser WebRTC peer.
+- **Recommendation:** pin the toolchain to v22.14.0 for anything deployed. Divergence
+  is fine on a development box and should not be fine on a worker image.
+- follow-up owner: `pixel-streaming-engineer`, at `STREAM-001`.
+
+### NOTE-002 — upstream `config.json` contains a foreign absolute path
+
+`SignallingWebServer/config.json` at pinned commit `48bff3b7` sets
+`"http_root": "D:\\PixelStreamingInfrastructure\\SignallingWebServer\\www"` — a path
+from Epic's build machine. It overrides the correct relative default and 404s every
+static page until `--http_root` is passed. Any deployment automation must either pass
+the flag or patch the config; patching means carrying a local modification of a
+gitignored dependency, which is itself a thing to track.
 
 ### BLOCKER-004 — project subagents do not dispatch
 

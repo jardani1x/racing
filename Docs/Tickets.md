@@ -21,18 +21,35 @@ reviews or tests its own change.**
 | ENV-001 | Record engine/toolchain/worker/browser matrix | director | — | A | **DONE** |
 | ENV-002 | Source control, LFS/locks, ignore rules, clean-clone test | director | — | A | **DONE** (locks inert — BLOCKER-002) |
 | ENV-003 | Enable/verify plugins and production exclusions | director | ENV-001 | A, G | **DONE** (packaged manifest check outstanding) |
-| ENV-004 | Discover build/test/cook/package commands | director | ENV-003 | A | **OPEN** — editor compile verified; automation/cook/package/stream outstanding |
-| ENV-005 | Verify local Unreal MCP, generate client config | director | ENV-003 | G | **OPEN** |
-| LEGAL-001 | Inventory/quarantine assets, initialize ledger | ip-compliance-auditor | — | H | **DONE** (4 open legal questions escalated) |
+| ENV-004 | Discover build/test/cook/package commands | director | ENV-003 | A | **DONE** — all five criteria met; packaging still relies on the `-nocleanstage` workaround (BLOCKER-006) |
+| ENV-005 | Verify local Unreal MCP, generate client config | director | ENV-003 | G | **DONE** — loopback-only confirmed by probe; write test deliberately deferred |
+| LEGAL-001 | Inventory/quarantine assets, initialize ledger | ip-compliance-auditor | — | H | **DONE** — re-inventoried 2026-08-10; ledger now holds 6 assets and **6** open legal questions |
 | ARCH-001 | Pixel Streaming 2 + scaling ADR | director | ENV-001 | — | **DONE** (ADR-0001..0004) |
 
-### ENV-004 — remaining acceptance criteria
+### ENV-004 — acceptance criteria, closed 2026-08-10
 
-- [ ] `RunUAT BuildCookRun` produces a staged, paked, archived Win64 Development build; archive path recorded.
-- [ ] Automation test command runs and reports pass/fail counts; log path recorded.
-- [ ] Packaged build launches with Pixel Streaming 2 arguments; exact flag names confirmed **from the PS2 module source**, since PS1 and PS2 differ.
-- [ ] Signalling server starts under node v24.18.0 at the pinned PSI commit (closes ASSUMPTION-001).
-- [ ] Every verified command pasted into `Docs/Environment.md`; every failure recorded as a blocker rather than replaced by a guess.
+- [x] `RunUAT BuildCookRun` produces a staged, paked, archived Win64 Development build; archive path recorded. **Caveat: requires `-nocleanstage` (BLOCKER-006).**
+- [x] Automation test command runs and reports pass/fail counts; log path recorded. 426/426 engine Smoke tests.
+- [x] Packaged build launches with Pixel Streaming 2 arguments; flag names derived from the PS2 CVar-to-arg transform in source. Streamer connected, joined, published video and audio tracks, and survived a signalling restart.
+- [x] Signalling server starts under node v24.18.0 at the pinned PSI commit. ASSUMPTION-001 resolved — **and corrected**: upstream *does* pin a version (`NODE_VERSION` = `v22.14.0`); v24.18.0 works but is two majors ahead.
+- [x] Every verified command pasted into `Docs/Environment.md`; failures recorded as blockers (BLOCKER-006) and notes (NOTE-002).
+
+Not covered by ENV-004 and still open: no browser client has connected, so no frame has
+reached a viewer — that is `STREAM-001`. TURN is untested (`STREAM-004`, blocked). The
+SFU cannot run until `mediasoup`'s skipped postinstall is approved.
+
+### ENV-005 — acceptance criteria, closed 2026-08-10
+
+- [x] `ModelContextProtocol` + `AllToolsets` enabled; editor started with `-ModelContextProtocolStartServer` (the server does **not** auto-start; `bAutoStartServer` defaults false).
+- [x] `ModelContextProtocol.GenerateClientConfig ClaudeCode` run; `.mcp.json` inspected; `git check-ignore` confirms `.gitignore:52`.
+- [x] Listener bound to `127.0.0.1:8000` — single row, no `0.0.0.0`, no `::`.
+- [x] Connection attempts to all seven non-loopback IPv4 addresses refused.
+- [x] Read-only discovery succeeded (`initialize`, `tools/list`, `list_toolsets`); **no write tool invoked**.
+- [x] Packaged Game target contains neither plugin (evidence under ENV-003).
+
+Carried forward: the loopback binding comes from the engine `HTTPServer` default
+(`BindAddress = "localhost"`), which an `[HTTPServer.Listeners]` ini entry can silently
+override. **SEC-001 must assert that section stays absent.**
 
 **Standing hazard:** every path on this machine contains a space (`Program Files`,
 `jun yi`). This has already produced two silent failures — `'C:\Program' is not
