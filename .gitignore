@@ -1,0 +1,63 @@
+# Unreal Engine generated directories
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+Platforms/*/Binaries/
+Platforms/*/Build/
+Platforms/*/Intermediate/
+
+# Plugin-local generated directories
+Plugins/**/Binaries/
+Plugins/**/Intermediate/
+
+# IDE / tooling
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.xcodeproj/
+*.xcworkspace/
+CMakeLists.txt
+Makefile
+compile_commands.json
+
+# Build artifacts
+*.obj
+*.pdb
+*.ipdb
+*.iobj
+*.exp
+*.lib
+*.ilk
+
+# Packaged / staged output
+Packaged/
+Archive/
+StagedBuilds/
+
+# Pixel Streaming Infrastructure is fetched and pinned, never vendored.
+# See Docs/Environment.md for the pinned branch and commit.
+Web/PixelStreamingInfrastructure/
+**/node_modules/
+npm-debug.log*
+
+# Unreal MCP generated client config: machine-local, loopback-only, never shared.
+.mcp.json
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
