@@ -188,10 +188,36 @@ UNVERIFIED
 - Upstream pins no node version. Compatibility is assumed and **not yet proven**.
 - evidence needed: `npm install` plus a signalling server start against commit `48bff3b7`.
 
-### ASSUMPTION-002 — project subagents dispatch
+### BLOCKER-004 — project subagents do not dispatch
 
-- The mandatory ticket protocol depends on the eight agents in `.claude/agents/`. They are well-formed but were not advertised in this session's agent roster.
-- evidence needed: one successful `code-reviewer` dispatch.
+- blocker: the mandatory ticket protocol in `CLAUDE.md` and `PROMPT_TO_START.md`
+  requires implementation, then `code-reviewer`, then `test-engineer`, with the
+  rule that no agent approves its own change. **None of the eight agents in
+  `.claude/agents/` resolve.** Tested 2026-08-10:
+
+  ```text
+  Agent type 'code-reviewer' not found.
+  ```
+
+  The registered roster contains only `ecc:*`, `caveman:*` and built-ins.
+  `ecc:code-reviewer` is a different agent with different instructions and is not
+  a substitute for the project's tailored reviewer.
+
+- Affected: `code-reviewer`, `test-engineer`, `vehicle-physics-engineer`,
+  `race-systems-engineer`, `pixel-streaming-engineer`, `rendering-tech-artist`,
+  `performance-engineer`, `ip-compliance-auditor`.
+- The agent definitions themselves are well-formed: correct `name`/`description`/
+  `tools`/`model` frontmatter, read-only tool sets on the two reviewer agents,
+  `isolation: worktree` on the code-only implementers. The defect is registration,
+  not authoring.
+- owner: human project owner
+- evidence needed: one successful `code-reviewer` dispatch returning a report.
+- likely fix: restart Claude Code with `racing/` as the working directory so the
+  project agent directory is enumerated at startup. If that fails, the protocol
+  must be formally re-specified against available agents — which is a governance
+  change requiring approval, not a silent substitution.
+- **Consequence: no implementation ticket may start.** Every ticket from CORE-001
+  onward requires independent review and test agents.
 
 ### NOTE-001 — UnrealBuildTool opens a non-loopback listener
 
