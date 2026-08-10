@@ -128,9 +128,40 @@ or the build aborts with `Unable to build while Live Coding is active` and exit 
 
 ### Run automation tests
 
-```text
-UNVERIFIED
+**VERIFIED 2026-08-10 — 426 tests, 426 passed, 0 failed, 0 not run, 8.70 s.**
+
+```powershell
+& 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe' `
+    "C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" `
+    -ExecCmds="Automation RunFilter Smoke; Quit" `
+    -ReportExportPath="C:\Users\jun yi\Documents\central-command\racing\Saved\Automation\Report" `
+    -unattended -nopause -nosplash -nullrhi -stdout -utf8output -log=AutomationSmoke.log
 ```
+
+Report: `Saved/Automation/Report/{index.json,index.html}`. Counts must be read from
+`index.json` (`succeeded` / `failed` / `notRun`), **not** from the process exit code.
+
+Command syntax was read from engine source, not guessed:
+
+- Subcommands, `AutomationCommandline.cpp:570-740`: `List`, `RunTests`/`RunTest`,
+  `RunFilter`, `SetFilter`, `RunAll`, `Now`, `SetPriority`, `SetMinimumPriority`,
+  `Quit`, `SoftQuit`.
+- Filter names, `AutomationCommandline.cpp:95-102`: `Engine`, `Smoke`, `Stress`,
+  `Perf`, `Product`, `Standard`, `Negative`, `All`.
+- Report flag, `AutomationControllerManager.cpp:213-219`: `-ReportExportPath=`.
+  `-ReportOutputPath=` still parses but logs a deprecation warning.
+- Text inside `-ExecCmds` is split on `;`, so `"Automation RunFilter Smoke; Quit"`
+  is parsed as two Automation subcommands.
+
+`Smoke` was chosen deliberately over `All`: it is the fast subset, and this machine
+is memory-constrained (BLOCKER-003). Widening the filter is a later decision, not a
+default.
+
+**These are engine tests, not project tests.** The project has no tests yet —
+`TEST-001` is unstarted. This run proves the harness, the command form and report
+export work on this machine; it says nothing about RacingSim's correctness.
+
+`-nullrhi` skips GPU work. Any future rendering or screenshot test must drop it.
 
 ### Cook/package
 
