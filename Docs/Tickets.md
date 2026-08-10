@@ -70,6 +70,25 @@ conversions) and the build-ID scheme that `Docs/15-ProjectStructure.md` requires
 every competitive result. This closes the `Build ID/versioning method: UNVERIFIED`
 field in `Docs/Environment.md`.
 
+**Deferred review findings CORE-001 must also close** (raised by `code-reviewer`
+against the Phase 0 shell, 2026-08-10; accepted as deferrable because they are
+over-exclusions and hygiene on a stub CORE-001 replaces, not live defects):
+
+- `.gitignore:3` — bare `Build/` ignores the whole Unreal `Build/` tree at any
+  depth, which will silently drop files that must be tracked later:
+  `Build/Windows/Resources/*.ico`, `Application.manifest`, `Build/*/PakBlacklist*.txt`.
+  Switch to Epic's pattern: `Build/*` plus `!Build/*/` and explicit un-ignores.
+- `.gitignore:37` — `*.lib` and `*.pdb` are ignored at any depth while
+  `.gitattributes` LFS-tracks `*.dll`/`*.so`. A future
+  `Source/ThirdParty/**/x64/*.lib` would be dropped while its sibling DLL commits.
+  Anchor the artifact ignores to generated locations.
+- `.gitignore:27-29` — `CMakeLists.txt`, `Makefile`, `compile_commands.json`
+  ignored at any depth; would drop a legitimate vendored third-party
+  `CMakeLists.txt`. Anchor to repo root.
+- `Config/DefaultGame.ini` — the `bShould*` / `bOnlyCookProductionAssets` values
+  restate engine defaults (`AssetManagerSettings.h:73-76`), adding drift risk with
+  no behavioural change. Already removed in Phase 0; do not reintroduce.
+
 ---
 
 ## Epic 2 — vehicle graybox

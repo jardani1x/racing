@@ -202,17 +202,31 @@ restriction — that field governs *packaged targets*, not the cook commandlet.
 The project has **no `Config/` directory at all**, so AssetManager has no
 `PrimaryAssetTypesToScan` rule for `GameFeatureData`.
 
-Two candidate fixes, **neither yet verified**:
+**RESOLVED 2026-08-10 — Option 1 implemented. The AssetManager error is gone.**
 
-1. Add `Config/DefaultGame.ini` with an AssetManager `PrimaryAssetTypesToScan`
-   entry for `GameFeatureData`. Note the UE 5.8 blank template ships an *empty*
-   `DefaultGame.ini`, so there is no template text to copy — the entry must be
-   written and then proven by a clean cook.
-2. Drop `AllToolsets` from the project and enable only the specific toolsets Unreal
-   MCP needs, removing the `GameFeatures` dependency entirely.
+Two options were considered:
 
-Option 2 is likely better: it narrows the editor-only surface, which Gate G wants
-anyway. Resolve under `ENV-004` before claiming Gate A.
+1. **Chosen.** Add `Config/DefaultGame.ini` with an AssetManager
+   `PrimaryAssetTypesToScan` entry for `GameFeatureData`.
+2. Rejected. Drop `AllToolsets` and enable only the toolsets Unreal MCP needs.
+
+**Why Option 1 over Option 2**, reversing the earlier note that favoured Option 2:
+`Docs/09-UnrealMCP.md` step 2 explicitly instructs enabling **Unreal MCP and All
+Toolsets**. Dropping `AllToolsets` would contradict the project's own documented
+MCP setup and require first determining, then pinning, the exact toolset subset MCP
+depends on — an experimental, engine-patch-sensitive surface. Option 1 is a
+four-line config entry with a documented engine-source justification and no
+behavioural cost, since this project has no game feature plugins. Option 2's
+supposed advantage — narrowing the editor-only surface for Gate G — is better
+served by the ENV-005 packaged-manifest inspection, which proves exclusion directly
+rather than by omission.
+
+Result of the re-run: the Game target compiled, **all 586 packages cooked**, and
+`UnrealPak executed in 3.917860 seconds ... ExitCode=0`. The GameFeatures error
+does not appear.
+
+The run nonetheless **failed at a later, unrelated stage** — see BLOCKER-006.
+Gate A therefore remains unclaimed.
 
 ### Run packaged Pixel Streaming build
 
@@ -294,6 +308,43 @@ UNVERIFIED
   change requiring approval, not a silent substitution.
 - **Consequence: no implementation ticket may start.** Every ticket from CORE-001
   onward requires independent review and test agents.
+
+### BLOCKER-005 — cook failed on a missing AssetManager rule — **RESOLVED**
+
+- blocker: `BuildCookRun` cooked all 586 packages then failed with
+  `LogGameFeatures: Error: Asset manager settings do not include a rule for assets
+  of type GameFeatureData`, UAT exit 25.
+- cause: `AllToolsets` (required by `Docs/09-UnrealMCP.md`) pulls
+  `GameFeaturesToolset` → `GameFeatures`. The cooker runs `UnrealEditor-Cmd`, so
+  editor plugins load during cook; `TargetAllowList` governs packaged targets only.
+  The project had no `Config/` directory at all.
+- resolution: `Config/DefaultGame.ini` AssetManager `PrimaryAssetTypesToScan` entry
+  for `GameFeatureData`, `bIsEditorOnly=True`. Verified: cook completes, UnrealPak
+  exits 0, error absent.
+- follow-up caught in review: the entry was first written with
+  `bIsEditorOnly=False`, which would have made packaged Game/Client targets try to
+  resolve a class absent from those targets and trip
+  `ensureMsgf(AssetBaseClassLoaded, ...)` at `AssetManagerTypes.cpp:82` on startup.
+  Corrected before any packaged build existed.
+
+### BLOCKER-006 — staging fails, cook and pak succeed
+
+- blocker: `BuildCookRun` now fails after a successful cook and pak:
+
+  ```text
+  Stage Failed. Failed to delete staging directory
+    C:\Users\jun yi\Documents\central-command\racing\Saved\StagedBuilds\Windows
+  AutomationTool exiting with ExitCode=102 (Error_FailedToDeleteStagingDirectory)
+  ```
+
+- This is a filesystem/handle problem, not a project defect — Windows Defender
+  (`MsMpEng`) was resident during the run, and a prior aborted cook left a partial
+  staging tree.
+- owner: technical director
+- evidence needed: delete `Saved/StagedBuilds/` and re-run; if it recurs, test with
+  real-time protection paused or the project directory excluded, and record which.
+- **Gate A cannot be claimed until a packaged build is produced and its archive
+  path recorded.**
 
 ### NOTE-001 — UnrealBuildTool opens a non-loopback listener
 
