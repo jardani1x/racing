@@ -134,9 +134,54 @@ UNVERIFIED
 
 ### Cook/package
 
-```text
-UNVERIFIED
+Command form **VERIFIED correct**; the run **FAILED** on a project-config defect.
+
+```powershell
+# Reaches the cooker successfully. Exit 25 (Error_UnknownCookFailure) as of 2026-08-10.
+& 'C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat' `
+    BuildCookRun `
+    -project="C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" `
+    -platform=Win64 -clientconfig=Development `
+    -build -cook -stage -pak -archive `
+    -archivedirectory="C:\Users\jun yi\Documents\central-command\racing\Packaged" `
+    -nop4 -utf8output -unattended
 ```
+
+**Every path argument must be quoted.** An unquoted `-project=` splits at the
+space in `jun yi`; UAT then tries to parse `C:\Users\jun` and reports it as a
+bogus JSON syntax error in the `.uproject`.
+
+What worked: the Game target compiled with the verified toolchain, and the cooker
+processed **all 586 packages** (`LogCook: Display: Done!`) in 145.92 s,
+PeakPhysMemoryMB 1397.
+
+What failed — 2 errors, cook exit 1, UAT exit 25:
+
+```text
+LogGameFeatures: Error: Asset manager settings do not include a rule for assets of
+  type GameFeatureData, which is required for game feature plugins to function
+LoadErrors: Error: Asset Manager settings do not include an entry for assets of type
+  GameFeatureData ... Add entry to PrimaryAssetTypesToScan?
+```
+
+Diagnosis: `AllToolsets` (enabled for Unreal MCP) pulls in `GameFeaturesToolset`,
+which loads the `GameFeatures` plugin. The cooker runs `UnrealEditor-Cmd`, so
+editor plugins load during cook despite the `TargetAllowList: ["Editor"]`
+restriction — that field governs *packaged targets*, not the cook commandlet.
+The project has **no `Config/` directory at all**, so AssetManager has no
+`PrimaryAssetTypesToScan` rule for `GameFeatureData`.
+
+Two candidate fixes, **neither yet verified**:
+
+1. Add `Config/DefaultGame.ini` with an AssetManager `PrimaryAssetTypesToScan`
+   entry for `GameFeatureData`. Note the UE 5.8 blank template ships an *empty*
+   `DefaultGame.ini`, so there is no template text to copy — the entry must be
+   written and then proven by a clean cook.
+2. Drop `AllToolsets` from the project and enable only the specific toolsets Unreal
+   MCP needs, removing the `GameFeatures` dependency entirely.
+
+Option 2 is likely better: it narrows the editor-only surface, which Gate G wants
+anyway. Resolve under `ENV-004` before claiming Gate A.
 
 ### Run packaged Pixel Streaming build
 

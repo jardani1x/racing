@@ -84,7 +84,7 @@ standing hazard note in `Docs/Tickets.md` and `Docs/Environment.md`.
 | `git clone` → scratch, clean-clone test | **Passed** — 39 files, HEAD matched, 8 `lockable` patterns restored |
 | `git lfs lock Test.uasset` | **Failed as expected** — `missing protocol`; see BLOCKER-002 |
 | `git clone -b UE5.8 …PixelStreamingInfrastructure` | **Succeeded** — pinned `48bff3b7`, RELEASE_VERSION 0.1.0 |
-| `RunUAT BuildCookRun … -cook -stage -pak -archive` | **In progress at time of writing** — passed the Game-target build with the verified toolchain and entered asset cooking. Log: `scratchpad/cook2.log` |
+| `RunUAT BuildCookRun … -cook -stage -pak -archive` | **FAILED** — UAT exit 25. Game target compiled; cooker processed all 586 packages then errored on a missing AssetManager rule for `GameFeatureData`. See BLOCKER-005. Log: `scratchpad/cook2.log` |
 | Agent dispatch `code-reviewer` | **Failed** — `Agent type 'code-reviewer' not found`. BLOCKER-004 |
 
 Not yet run: automation tests, packaged Pixel Streaming launch, signalling server
@@ -110,6 +110,14 @@ compile actions and was granted **1**, reporting ~321 MB free physical memory on
 - **BLOCKER-001 — no reference GPU worker.** Gates D/E/F unmeasurable; Epics 6–7 blocked.
 - **BLOCKER-002 — LFS locks inert.** Constraint #7 rests on process discipline.
 - **BLOCKER-003 — memory pressure.** Builds run single-threaded.
+- **BLOCKER-005 — cook fails on missing AssetManager rule.** `AllToolsets`
+  (enabled for Unreal MCP) pulls `GameFeatures`, which demands a
+  `PrimaryAssetTypesToScan` entry for `GameFeatureData`. The project has no
+  `Config/` directory. Two candidate fixes are recorded in `Docs/Environment.md`;
+  **neither has been verified.** Gate A cannot be claimed until a cook succeeds.
+  Notably this also shows `TargetAllowList: ["Editor"]` does **not** keep a plugin
+  out of the cook commandlet — it governs packaged targets only, which is a
+  correction to an assumption made earlier in Phase 0.
 
 Plus ASSUMPTION-001 (node v24.18 vs the pinned signalling server, unproven) and
 NOTE-001 (`UbaServer` binds `0.0.0.0:1345` during builds).
