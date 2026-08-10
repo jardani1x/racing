@@ -165,18 +165,46 @@ export work on this machine; it says nothing about RacingSim's correctness.
 
 ### Cook/package
 
-Command form **VERIFIED correct**; the run **FAILED** on a project-config defect.
+**VERIFIED 2026-08-10 — `BUILD SUCCESSFUL`, `AutomationTool exiting with
+ExitCode=0 (Success)`, 194.83 s.** Requires `-nocleanstage`; see the caveat below.
 
 ```powershell
-# Reaches the cooker successfully. Exit 25 (Error_UnknownCookFailure) as of 2026-08-10.
 & 'C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat' `
     BuildCookRun `
     -project="C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" `
     -platform=Win64 -clientconfig=Development `
-    -build -cook -stage -pak -archive `
+    -build -cook -stage -nocleanstage -pak -archive `
     -archivedirectory="C:\Users\jun yi\Documents\central-command\racing\Packaged" `
     -nop4 -utf8output -unattended
 ```
+
+Artifacts produced and inspected:
+
+- `Packaged/Windows/RacingSim.exe`
+- `Packaged/Windows/RacingSim/Content/Paks/RacingSim-Windows.pak` (11.2 MB)
+- 1.1 GB staged total
+
+**`-nocleanstage` is a workaround, not a fix.** It skips the stage-directory
+cleanup that fails in BLOCKER-006. Without it this command fails at exit 102 —
+reproduced twice, including after manually deleting the directory first. The root
+cause is still unidentified. Do not present this as a clean Gate A pass.
+
+#### Packaged plugin manifest — Gate G evidence (`ENV-003`)
+
+Searched the packaged tree for editor-only plugin artifacts. **None present:**
+`ModelContextProtocol`, `AllToolsets`, `ToolsetRegistry`, `PythonScriptPlugin`,
+`EditorScriptingUtilities`, `AndroidFileServer` — zero matches.
+`Packaged/Windows/Engine/Plugins` contains only `NNE`.
+
+This proves hard constraint #6 by inspection of the artifact rather than by reading
+`.uproject` intent. `TargetAllowList: ["Editor"]` is confirmed effective for build
+and stage — independently corroborated in engine source at `PluginManager.cpp:2425`,
+`UEBuildTarget.cs:5835`, `CopyBuildToStagingDirectory.Automation.cs:884`.
+
+`PixelStreaming2` **is** staged (`Packaged/Windows/RacingSim/Samples/PixelStreaming2`),
+as required. Chaos Vehicles and Enhanced Input produced no separate plugin
+directories — expected, since they link into the target binaries — so their presence
+is **not** independently confirmed by this check.
 
 **Every path argument must be quoted.** An unquoted `-project=` splits at the
 space in `jun yi`; UAT then tries to parse `C:\Users\jun` and reports it as a
@@ -199,8 +227,9 @@ Diagnosis: `AllToolsets` (enabled for Unreal MCP) pulls in `GameFeaturesToolset`
 which loads the `GameFeatures` plugin. The cooker runs `UnrealEditor-Cmd`, so
 editor plugins load during cook despite the `TargetAllowList: ["Editor"]`
 restriction — that field governs *packaged targets*, not the cook commandlet.
-The project has **no `Config/` directory at all**, so AssetManager has no
-`PrimaryAssetTypesToScan` rule for `GameFeatureData`.
+The project **had no `Config/` directory at all**, so AssetManager had no
+`PrimaryAssetTypesToScan` rule for `GameFeatureData`. (Historical diagnosis —
+`Config/` now exists; see the RESOLVED block below.)
 
 **RESOLVED 2026-08-10 — Option 1 implemented. The AssetManager error is gone.**
 
@@ -337,14 +366,28 @@ UNVERIFIED
   AutomationTool exiting with ExitCode=102 (Error_FailedToDeleteStagingDirectory)
   ```
 
-- This is a filesystem/handle problem, not a project defect — Windows Defender
-  (`MsMpEng`) was resident during the run, and a prior aborted cook left a partial
-  staging tree.
+- **Reproduced twice. Not transient.** The first hypothesis — that the cook's own
+  process held the handle and a stale partial tree was to blame — was **wrong**.
+  `Saved/StagedBuilds` was verified empty (0 files), deleted cleanly and instantly
+  with no lock, and the very next run failed identically at the same step. Whatever
+  holds the directory does so reliably during the run.
+- workaround: `-nocleanstage` skips the failing cleanup. With it the package
+  succeeds (exit 0) and produces a valid archive. Flag confirmed at
+  `ProjectParams.cs:2196` ("skip cleaning the stage directory").
+- **Root cause remains unidentified.** Untested hypotheses, in order of likelihood:
+  Windows Defender real-time scanning holding freshly written files; UE's
+  `DirectoryWatcher` (the cook log shows `ReadDirectoryChangesW failed ... GetLastError
+  code [6]` on a project path); or a file-sync/indexer agent on `Documents\`.
 - owner: technical director
-- evidence needed: delete `Saved/StagedBuilds/` and re-run; if it recurs, test with
-  real-time protection paused or the project directory excluded, and record which.
-- **Gate A cannot be claimed until a packaged build is produced and its archive
-  path recorded.**
+- evidence needed: re-run **without** `-nocleanstage` after (a) excluding the project
+  directory from Defender real-time protection, then (b) if that fails, using
+  `-stagingdirectory=` to a path outside `Documents\`. Record which one changes the
+  outcome. `handle.exe`/Process Explorer would identify the holder directly.
+- risk if left: `-nocleanstage` reuses stale staged files, so a deleted or renamed
+  asset can persist into a package and mask a packaging regression. Acceptable for a
+  project with no content; **not** acceptable once real assets exist.
+- **Gate A is NOT claimed.** A packaged build now exists, but only via a workaround
+  whose side effect is stale-file retention.
 
 ### NOTE-001 — UnrealBuildTool opens a non-loopback listener
 
