@@ -1,0 +1,79 @@
+#!/bin/sh
+# Copyright RacingSim. All Rights Reserved.
+#
+# Enforces hard constraint #7 -- no parallel edits to binary Unreal assets --
+# without needing an LFS server.
+#
+# BLOCKER-002: `lockable` attributes in .gitattributes are inert because there is no
+# LFS-capable remote, so `git lfs lock` fails with "missing protocol". Until that is
+# resolved (D-2), serialization rested on process discipline alone: nothing stopped two
+# agents editing the same .uasset and producing an unmergeable binary conflict.
+#
+# This hook does not replace locking. It cannot coordinate across machines. What it does
+# is make an unclaimed or mis-claimed binary edit fail loudly at commit time on THIS
+# clone, which is where the project actually works today (single machine, no remote).
+#
+# Claims live in Docs/AssetOwnership.tsv. Format, tab-separated:
+#     <path-glob>\t<owner>\t<ticket>
+# Lines beginning with # are comments.
+#
+# Bypass is deliberate and visible: `git commit --no-verify`. If you need it, say so in
+# the commit message.
+#
+# Activate with:  git config core.hooksPath .githooks
+
+set -u
+
+CLAIMS="Docs/AssetOwnership.tsv"
+
+# Staged binary Unreal assets, added/copied/modified/renamed only.
+BINARIES=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(uasset|umap)$' || true)
+
+[ -z "$BINARIES" ] && exit 0
+
+OWNER=$(git config user.name)
+if [ -z "$OWNER" ]; then
+    echo "pre-commit: git config user.name is unset; cannot verify asset ownership." >&2
+    exit 1
+fi
+
+if [ ! -f "$CLAIMS" ]; then
+    echo "pre-commit: binary assets are staged but $CLAIMS does not exist." >&2
+    echo "Every .uasset/.umap edit needs an ownership claim while BLOCKER-002 is open." >&2
+    exit 1
+fi
+
+FAILED=0
+for FILE in $BINARIES; do
+    MATCHED=""
+    MATCHED_TICKET=""
+    # Read claims; first matching glob wins.
+    while IFS="$(printf '\t')" read -r GLOB CLAIMANT TICKET || [ -n "$GLOB" ]; do
+        case "$GLOB" in \#*|"") continue ;; esac
+        # shellcheck disable=SC2254
+        case "$FILE" in
+            $GLOB)
+                MATCHED="$CLAIMANT"
+                MATCHED_TICKET="$TICKET"
+                break
+                ;;
+        esac
+    done < "$CLAIMS"
+
+    if [ -z "$MATCHED" ]; then
+        echo "pre-commit: BLOCKED -- $FILE has no ownership claim in $CLAIMS" >&2
+        FAILED=1
+    elif [ "$MATCHED" != "$OWNER" ]; then
+        echo "pre-commit: BLOCKED -- $FILE is claimed by '$MATCHED' (${MATCHED_TICKET:-no ticket}), you are '$OWNER'" >&2
+        FAILED=1
+    fi
+done
+
+if [ "$FAILED" -ne 0 ]; then
+    echo "" >&2
+    echo "Binary Unreal assets cannot be merged. Claim the asset in $CLAIMS before editing," >&2
+    echo "or coordinate with the current owner. See BLOCKER-002 and hard constraint #7." >&2
+    exit 1
+fi
+
+exit 0

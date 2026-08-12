@@ -1,0 +1,32 @@
+# RacingSim binary asset ownership claims
+#
+# Enforced by .githooks/pre-commit. Activate the hook with:
+#     git config core.hooksPath .githooks
+#
+# Why this file exists: hard constraint #7 forbids parallel edits to .uasset/.umap,
+# and BLOCKER-002 means git-lfs locking cannot enforce it (no LFS-capable remote, so
+# `git lfs lock` fails with "missing protocol"). This is the interim enforcement:
+# claim before you edit, and the hook blocks any staged binary asset that is unclaimed
+# or claimed by someone else.
+#
+# It is NOT a substitute for locking. It cannot coordinate across machines or clones.
+# It is a real gate on this clone, which is where the project works today. When D-2 is
+# decided -- LFS remote, Perforce, or formal acceptance of process-only serialization --
+# revisit whether this file stays.
+#
+# Format, TAB-separated. First matching glob wins.
+#     <path-glob>	<owner>	<ticket>
+#
+# <path-glob> is matched with shell case-globbing against the repo-relative path, so
+# Content/Cars/* matches one level and Content/Cars/*/* matches deeper. Use the
+# broadest glob that covers the ticket's scope, not one line per file.
+#
+# <owner> must equal the committer's `git config user.name` exactly.
+#
+# Example, once content exists:
+#     Content/Cars/Prototype/*	junyi	VEH-002
+#     Content/Tracks/Prototype/*	junyi	TRACK-001
+#
+# There are currently no binary assets in the repository, so there are no claims.
+# The hook is inert until the first .uasset or .umap is staged -- which is exactly when
+# it starts mattering.

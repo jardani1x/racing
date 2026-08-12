@@ -49,10 +49,25 @@ worker; none exists. The local RTX 3050 6 GB / 15.7 GB RAM is designated
 development-only by ADR-0003 and cannot meet Gate E. Blocks Epic 6, Epic 7, and
 `STREAM-004`/`005`/`006`.
 
+**Narrowed 2026-08-12.** This was an open research task; it is now a yes/no question. A
+full requirement specification is in `Docs/Environment.md` under BLOCKER-001 — sustained
+60 fps at 1080p, frame p95 ≤ 16.67 ms, hardware NVENC/AMF encode, **two concurrent
+encode sessions minimum**, VRAM above the known-fail 6 GB, ≥ 32 GB system RAM, and a
+region inside the Gate F latency envelope.
+
+**Answer these three first — they constrain the purchase more than the GPU does:**
+1. Is there a target user region? Gate F's thresholds are regional and meaningless
+   without one.
+2. Cloud instance or physical box? A physical box removes per-hour cost and fixes region.
+3. How many concurrent sessions must one worker carry? A product question, not an
+   engineering one.
+
+**Verify before buying:** the concurrent NVENC session cap on the specific GPU and
+driver, and whether a virtualised provider GPU exposes hardware encode at all — some do
+not. This is the most likely thing to invalidate an otherwise correct choice.
+
 **Options.**
-1. Fund a worker now — provider, region, instance type, GPU/VRAM/driver, encoder
-   codec support, sessions-per-GPU, and a measured benchmark lap all become
-   recordable.
+1. Fund a worker against the specification above.
 2. Defer, and accept the project stops after M1 (graybox) rather than drifting
    into Epic 6 with no way to validate the output.
 3. Defer with no stop condition.
@@ -76,12 +91,21 @@ test restored 8 `lockable` patterns, but without an LFS server the locks are
 inert. Hard constraint 7 (no parallel `.uasset`/`.umap` edits) currently rests on
 process discipline alone.
 
-**Impact if deferred.** Tolerable now — the project has zero binary assets. Becomes
-acute the moment Epic 2 or Epic 3 creates its first content asset, because two
-agents editing the same `.uasset` produces an unmergeable binary conflict.
+**Mitigated 2026-08-12 — the risk is now controlled, the decision is not made.**
+`.githooks/pre-commit` blocks any staged `.uasset`/`.umap` that is unclaimed or claimed
+by another owner, against `Docs/AssetOwnership.tsv`. Verified against all three cases:
+unclaimed blocks, wrong-owner blocks, correct-owner passes. Activate with
+`git config core.hooksPath .githooks`.
 
-**Recommendation.** Decide before `TRACK-001` or `VEH-002`, not before `CORE-001`.
-Deferring past M0 is defensible; deferring past M1 is not.
+It is **not** locking: it cannot coordinate across machines or clones, and
+`--no-verify` bypasses it. But it converts "process discipline" into something that
+fails loudly at the moment of the mistake, on the clone where the work happens.
+
+**Impact if deferred.** Now tolerable rather than acute. Still becomes real the moment
+the project has two machines or a remote, because the hook cannot see another clone.
+
+**Recommendation.** The mitigation buys time through M1. Decide before the project gains
+a second machine or a remote — not before `CORE-002`.
 
 **Decision:** ☐ LFS remote ☐ Perforce ☐ accept process-only ☐ defer to M1
 **Signed / date:** ______________________
@@ -92,13 +116,21 @@ Deferring past M0 is defensible; deferring past M1 is not.
 
 **Question.** Is 15.7 GB acceptable for the graybox milestone?
 
-**Evidence.** BLOCKER-003. UnrealBuildTool requested 14 parallel compile actions
-and was granted **1**, with ~321 MB physical RAM free at build time. Builds run
-effectively single-threaded. This worsens sharply once shader compilation and
-cooking begin in earnest.
+**Evidence, corrected 2026-08-12 — the original premise was stale.** BLOCKER-003 recorded
+that UnrealBuildTool requested 14 parallel actions and was granted **1**, with ~321 MB
+free. **That is not what happens now.** Across this session's builds, Unreal Build
+Accelerator was granted **6, 7, 10 and 11** parallel actions on the same machine, with
+free RAM as low as 0.58 GB. The single-action result was a point-in-time measurement,
+not a property of the hardware.
 
-**Recommendation.** Acceptable for Epics 1–4 (logic, little content) at a real
-throughput cost. Not acceptable for Epic 6.
+Measured today: editor incremental builds 34–48 s; full `BuildCookRun` including cook,
+pak and stage 147–210 s. UBA reports 40 GB of disk-backed storage capacity, so it
+degrades throughput under memory pressure rather than serialising.
+
+**Recommendation.** This is no longer a blocker to graybox work — price it as "slower
+builds", not "blocked". The machine is still genuinely memory-tight and that will bite
+during real shader compilation and content work, so it remains a live risk for Epic 6.
+Worth an explicit answer, but not one that gates Epics 1–5.
 
 **Decision:** ☐ accept for graybox ☐ upgrade before Epic 1 ☐ upgrade before Epic 6
 **Signed / date:** ______________________

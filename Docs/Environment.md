@@ -626,24 +626,87 @@ manifest check confirms it is not. Note that its two core modules
 
 - blocker: Gates D, E and F specify thresholds on a named reference worker. None exists.
 - owner: human project owner
-- evidence needed: provider, region, instance type, GPU/VRAM/driver, encoder codec support, sessions-per-GPU, and a measured benchmark lap.
 - decision date: open
 - note: the local RTX 3050 6 GB / 15.7 GB RAM cannot meet Gate E and is designated development-only (ADR-0003).
 
-### BLOCKER-002 — LFS locking is inert
+**Requirement specification, derived 2026-08-12.** This blocker was previously "evidence
+needed: provider, region, instance type…", which is an open research task rather than a
+decision. The requirements below are derived from the gates themselves, so the owner's
+question narrows to *"can we buy something that meets this, yes or no"*.
 
-- blocker: `lockable` attributes cannot be enforced without an LFS server, so hard constraint #7 rests on process discipline alone.
-- owner: human project owner
-- evidence needed: a decision to either add an LFS-capable remote, adopt Perforce, or formally accept process-only serialization.
+These are **requirements, not measurements.** Nothing here has been benchmarked. Each
+becomes a measured field only after a worker exists.
+
+| Requirement | Derived from | Why this number |
+|---|---|---|
+| Sustained 60 fps at 1920×1080, packaged build | Gate E | Stated target |
+| Unreal frame p95 ≤ 16.67 ms, p99 ≤ 22 ms on the benchmark lap | Gate E | 16.67 ms is the 60 fps budget |
+| Hardware H.264 encode, NVENC or AMF | ADR-0001, PS2 | PixelStreaming2 pulls `NVCodecs`/`AMFCodecs`; software encode will not hold p95 |
+| **Two independent encode sessions minimum** | ADR-0003 | One GPU process per session. Consumer GeForce drivers historically cap concurrent NVENC sessions — verify the cap on the exact SKU before buying, it is the single most likely thing to invalidate a choice |
+| VRAM sized for Lumen + VSM + Nanite at 1080p | Gate D, `Docs/04-VisualPipeline.md` | The local 6 GB is already the reason this machine is dev-only. Treat 6 GB as a known-fail data point |
+| ≥ 32 GB system RAM | BLOCKER-003 | 15.7 GB is measurably tight for cook and shader compilation |
+| Region within the target latency envelope | Gate F | Input-to-photon p50 ≤ 80 ms, p95 ≤ 120 ms is **regional**; a worker in the wrong region fails Gate F regardless of GPU |
+
+**What the owner must decide, in order:**
+
+1. Is there a target user region? Gate F's thresholds are meaningless without one, and
+   region constrains provider before GPU does.
+2. Cloud instance or a physical box? A physical box removes per-hour cost and the
+   NVENC session cap question if a professional card is used; it fixes the region.
+3. How many concurrent sessions must one worker carry? This drives VRAM and the encoder
+   cap, and it is a product question, not an engineering one.
+
+**Verify before purchase, because it invalidates otherwise-correct choices:** the
+concurrent NVENC session limit for the specific GPU and driver, and whether the
+provider's virtualised GPU exposes hardware encode at all — some do not.
+
+**What stays blocked until then:** Gates D, E, F; Epics 6 and 7; `STREAM-004`,
+`STREAM-005`, `STREAM-006`. Epics 1–5 are unaffected — they are logic, validated by
+Gates A/B/C, none of which reference the worker.
+
+### BLOCKER-002 — LFS locking is inert — **MITIGATED 2026-08-12, decision still open**
+
+- blocker: `lockable` attributes cannot be enforced without an LFS server, so hard constraint #7 rested on process discipline alone.
+- **Mitigation implemented, because "process discipline" is not a control.**
+  `.githooks/pre-commit` blocks any staged `.uasset`/`.umap` that is unclaimed, or
+  claimed by someone other than the committer, against `Docs/AssetOwnership.tsv`.
+  Activate with `git config core.hooksPath .githooks`.
+- **Verified against all three cases, not just the happy path:**
+  - unclaimed asset → `BLOCKED -- Content/Test/Probe.uasset has no ownership claim`
+  - claimed by another → `BLOCKED -- ... is claimed by 'someone-else' (VEH-002), you are 'junyi'`
+  - claimed by committer → commit succeeds
+  The probe asset and its commit were removed afterwards; `git ls-files` still reports
+  **0** tracked `.uasset`/`.umap`.
+- **What this does not do.** It is not locking. It cannot coordinate across machines or
+  clones, and `git commit --no-verify` bypasses it. It is a real gate on this clone,
+  which is where the project works today (single machine, no remote). It converts an
+  honour system into something that fails loudly at the moment of the mistake.
+- owner: human project owner — **the decision is still yours.**
+- evidence needed: a decision to add an LFS-capable remote, adopt Perforce, or formally
+  accept process-only serialization now that it is at least enforced locally. See D-2.
 - decision date: open
 
-### BLOCKER-003 — memory pressure limits build throughput
+### BLOCKER-003 — memory pressure limits build throughput — **DOWNGRADED 2026-08-12, premise was stale**
 
-- blocker: UBT requested 14 parallel actions and was limited to **1** — only ~321 MB physical RAM was free at build time on a 15.7 GB machine.
+- original blocker: UBT requested 14 parallel actions and was limited to **1** — only ~321 MB physical RAM was free at build time on a 15.7 GB machine.
+- **That is no longer what happens.** Across this session's builds, Unreal Build
+  Accelerator was granted **6, 7, 10 and 11** parallel actions on the same machine, with
+  the same 15.7 GB physical and free RAM as low as 0.58 GB. The `1 action` observation
+  was a point-in-time measurement taken when something else held memory, not a standing
+  property of the hardware.
+- **Why it works anyway:** UBA reports `UBA Storage capacity 40 GB` and backs its
+  scheduling with disk, so it degrades throughput under pressure rather than serialising.
+- **Real measured cost today:** editor incremental builds complete in 34–48 s; a full
+  `BuildCookRun` including cook, pak and stage completes in 147–210 s. Neither is a
+  blocker to graybox work.
+- **What remains true:** the machine is genuinely memory-tight, and this will get worse
+  with real shader compilation and content. It is a throughput risk for Epic 6, not an
+  obstacle to Epics 1–5.
 - owner: human project owner
-- evidence needed: whether 16 GB is accepted for the graybox milestone, or the workstation is upgraded before content work begins.
+- evidence needed: still worth an explicit answer on whether 16 GB is accepted through
+  the graybox milestone — but this should be priced as "slower builds", not "blocked".
+  See D-3.
 - decision date: open
-- note: this worsens sharply once shader compilation and cooking start.
 
 ### ASSUMPTION-001 — node v24.18.0 runs the pinned signalling server — **RESOLVED, with a caveat**
 
