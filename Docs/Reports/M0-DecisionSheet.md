@@ -7,6 +7,22 @@
 
 ---
 
+## Owner direction of 2026-08-12 — recorded, not a signature
+
+On 2026-08-12 the project owner directed: *"fix anything that is left until it is fixed
+and move into next phase."*
+
+That is recorded here as an instruction to proceed to Epic 1, and `CORE-001` is
+unblocked on its strength. It is **not** a disposition of D-1 through D-9, and this
+document does not treat it as one. Several of those items commit real money (D-1),
+change source-control tooling (D-2), buy hardware (D-3), or take a legal position
+(D-4, D-5, D-9). No agent may answer them, and inferring an answer from a general
+instruction to proceed would be exactly the self-certification
+`PROMPT_TO_START.md` constraint 8 forbids.
+
+Each item below therefore keeps its blank decision line. Items the technical director
+could close by investigation rather than decision **have been closed**, and say so.
+
 ## Why this sheet exists
 
 `PROMPT_TO_START.md` constraint 8 forbids self-certification. `Docs/Tickets.md`
@@ -189,7 +205,31 @@ a worker image. Pin deployed workers to v22.14.0. Follow-up owner:
 
 ---
 
-## D-7 — `-nocleanstage` waiver
+## D-7 — `-nocleanstage` waiver — **CLOSED 2026-08-12, no decision needed**
+
+**This item is withdrawn. The blocker it existed to waive has been fixed.**
+
+BLOCKER-006 is resolved by staging outside `Documents\`:
+`-stagingdirectory="$env:LOCALAPPDATA\RacingSimStage"`. `BuildCookRun` now succeeds
+with the stage-directory cleanup **enabled**, so `-nocleanstage` has been removed from
+the canonical command entirely.
+
+Proven twice — once into an empty staging directory, then again into that same
+directory holding 52 files. The second run is the one that counts, because a populated
+staging directory is precisely the state that failed three times under `Documents\`.
+Both returned `BUILD SUCCESSFUL`, `ExitCode=0`.
+
+The stale-archive risk this item was created to price is also gone: all five pak and
+container files now carry the timestamp of the run that produced them, verified within
+35 seconds of the build completing.
+
+No system-level security setting was changed. The Defender exclusion suggested earlier
+was never tested and proved unnecessary.
+
+**No signature required. Gate A's packaging leg no longer rests on a workaround.**
+
+<details>
+<summary>Original decision item, retained for history</summary>
 
 **Question.** Accept packaging via the `-nocleanstage` workaround, and under what
 expiry condition?
@@ -242,9 +282,9 @@ real-time protection, then if that fails use `-stagingdirectory=` to a path outs
 **Gate A is NOT claimed** under this waiver. `test-engineer` returned an explicit
 **FAIL** verdict for Gate A.
 
-**Decision:** ☐ fix root cause before Epic 1 ☐ waive, but no `-nocleanstage` archive
-counts as gate evidence ☐ waive until first content asset ☐ waive with no expiry
-**Signed / date:** ______________________
+**Decision:** superseded — root cause fixed, no waiver taken.
+
+</details>
 
 ---
 

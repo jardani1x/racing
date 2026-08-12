@@ -181,29 +181,39 @@ export work on this machine; it says nothing about RacingSim's correctness.
 
 ### Cook/package
 
-**VERIFIED 2026-08-10 — `BUILD SUCCESSFUL`, `AutomationTool exiting with
-ExitCode=0 (Success)`, 194.83 s.** Requires `-nocleanstage`; see the caveat below.
+**VERIFIED 2026-08-12 — `BUILD SUCCESSFUL`, `AutomationTool exiting with
+ExitCode=0 (Success)`, 181.79 s. No workaround. This is the canonical command.**
 
 ```powershell
 & 'C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles\RunUAT.bat' `
     BuildCookRun `
     -project="C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" `
     -platform=Win64 -clientconfig=Development `
-    -build -cook -stage -nocleanstage -pak -archive `
+    -build -cook -stage -pak -archive `
     -archivedirectory="C:\Users\jun yi\Documents\central-command\racing\Packaged" `
+    -stagingdirectory="$env:LOCALAPPDATA\RacingSimStage" `
     -nop4 -utf8output -unattended
 ```
 
-Artifacts produced and inspected:
+**`-stagingdirectory` outside `Documents\` is mandatory, and it is what fixed
+BLOCKER-006.** Staging into the default `Saved/StagedBuilds` under
+`Documents\central-command\racing` fails at `ExitCode=102` on the stage-directory
+cleanup, reproducibly. Staging to `%LOCALAPPDATA%\RacingSimStage` succeeds with the
+cleanup enabled. Proven twice: once into an empty directory, then again into the same
+directory populated with 52 files — the second run is the one that matters, because it
+exercises the delete path that failed. See BLOCKER-006.
+
+`-nocleanstage` is **no longer used and must not be reintroduced.** It masked the
+failure at the cost of retaining stale staged files, which was observed producing an
+archive whose paks predated its own cook by two days.
+
+Artifacts produced and inspected (2026-08-12 run):
 
 - `Packaged/Windows/RacingSim.exe`
-- `Packaged/Windows/RacingSim/Content/Paks/RacingSim-Windows.pak` (11.2 MB)
-- 1.1 GB staged total
-
-**`-nocleanstage` is a workaround, not a fix.** It skips the stage-directory
-cleanup that fails in BLOCKER-006. Without it this command fails at exit 102 —
-reproduced twice, including after manually deleting the directory first. The root
-cause is still unidentified. Do not present this as a clean Gate A pass.
+- `Packaged/Windows/RacingSim/Content/Paks/RacingSim-Windows.pak` (11,170,981 bytes)
+- `RacingSim-Windows.ucas` 216,920,032 bytes; `global.ucas` 3,392,064 bytes
+- **All five pak/container files carry the timestamp of the run that produced them** —
+  verified within 35 seconds of the build completing. The staleness defect is gone.
 
 #### Packaged plugin manifest — Gate G evidence (`ENV-003`)
 
@@ -237,6 +247,26 @@ evaluated **per reference**. `TargetAllowList` suppresses only the project's own
 reference; other enabled engine plugins reference these two with no allowlist and
 re-enable them. Corroborated inside the pak by other `.uplugin` descriptors declaring
 `"Name": "EditorScriptingUtilities", "Enabled": true`.
+
+**Which plugins, established 2026-08-12 — and why this is not fixable here.** Every
+`.uplugin` in the engine referencing `EditorScriptingUtilities` or `PythonScriptPlugin`
+was enumerated, then filtered to those with `"EnabledByDefault": true`. Nine remain:
+
+`Bridge`, `Developer/PluginUtils`, `Experimental/ChaosEditor`, `Fab`, **`FX/Niagara`**,
+`MetaHuman/MetaHumanSDK`, **`PCG`**, **`Runtime/RigVM`**, `Tests/InterchangeTests`.
+
+`Niagara`, `PCG` and `RigVM` are core engine plugins enabled by default in every
+project. Suppressing the leak would mean disabling them, which is not an option for a
+project that will need Niagara and PCG.
+
+**Conclusion: this is stock UE 5.8.1 behaviour, not a defect in this project's
+configuration.** The `TargetAllowList` entries in `RacingSim.uproject` are correct and
+do what they can; they simply cannot suppress a reference declared by a different
+enabled plugin. What was wrong was the *claim* made about the result, not the setting.
+No project-level fix exists. Gate G must therefore assert the narrower, true property —
+that `ModelContextProtocol`, `AllToolsets` and `ToolsetRegistry` are absent — rather
+than a blanket "no editor-only plugins are staged", which is unachievable on a stock
+engine install.
 
 The "In shipping" column above should therefore be read as a claim about **module
 binaries** — no Editor-type module is built into the Game target — not as a claim
@@ -668,7 +698,41 @@ gitignored dependency, which is itself a thing to track.
   `ensureMsgf(AssetBaseClassLoaded, ...)` at `AssetManagerTypes.cpp:82` on startup.
   Corrected before any packaged build existed.
 
-### BLOCKER-006 — staging fails, cook and pak succeed
+### BLOCKER-006 — staging fails, cook and pak succeed — **RESOLVED 2026-08-12**
+
+**Fix: stage outside `Documents\`.** Adding
+`-stagingdirectory="$env:LOCALAPPDATA\RacingSimStage"` makes `BuildCookRun` succeed
+with the stage-directory cleanup **enabled**. `-nocleanstage` is no longer required and
+has been removed from the canonical command.
+
+Evidence, and why it is conclusive:
+
+- Run 1, into a fresh empty `%LOCALAPPDATA%\RacingSimStage`: `BUILD SUCCESSFUL`,
+  `ExitCode=0`, 195.12 s. Not conclusive on its own — an empty directory barely
+  exercises the delete path.
+- Run 2, into that **same directory now holding 52 files**: `BUILD SUCCESSFUL`,
+  `ExitCode=0`, 181.79 s. This is the conclusive one. A populated staging directory is
+  exactly the state that failed three times under `Documents\`.
+- Freshness re-verified: all five files under
+  `Packaged/Windows/RacingSim/Content/Paks/` carry the timestamp of the run that
+  produced them. The stale-pak side effect of `-nocleanstage` is gone.
+
+**The variable is the path, not the cook.** Identical project, identical cook, identical
+586 packages; only the staging root changed. That narrows the cause to something
+scanning or holding files under `Documents\central-command\racing\Saved\` — a
+file-sync or indexing agent on `Documents\`, or Defender scoped to that tree. The
+precise agent was never identified and does not need to be: the fix does not depend on
+knowing which one it was.
+
+Residual note: the leading hypothesis is now **path-scoped**, not Defender-global. The
+earlier suggestion to add a Defender exclusion was never tested and is unnecessary — no
+system-level security setting was changed to resolve this.
+
+**Gate A's packaging leg is now clean.** It no longer rests on a workaround.
+
+---
+
+#### Original blocker record, retained for history
 
 - blocker: `BuildCookRun` now fails after a successful cook and pak:
 

@@ -234,8 +234,8 @@ Production-reachable non-MIT-family entries worth naming: `BlueOak-1.0.0` on
 
 ### ASSET-0006: `get_ps_servers.bat` / `get_ps_servers.sh` vendored under `Samples/`
 
-- Status: `APPROVED` **for the tracked reference copy only — NOT for distribution.**
-  Qualified 2026-08-12; see the build-variant defect in Notes.
+- Status: `APPROVED` — **and no longer tracked.** Reclassified 2026-08-12: these are
+  engine build output, not vendored content. Covered by `ASSET-0001`.
 - Category: code / script
 - Supplier/creator: Epic Games, Inc. (`@Rem Copyright Epic Games, Inc. All Rights Reserved.`)
 - Source/proof location: byte-identical copies of
@@ -246,17 +246,35 @@ Production-reachable non-MIT-family entries worth naming: `BlueOak-1.0.0` on
 - Internal package path: `Samples/PixelStreaming2/WebServers/`
 - Notes/obligations: these are the **only tracked files in the repository not authored for this project**, which is why they get their own entry rather than being folded into `ASSET-0001`. They also carry the UE 5.8.1 defect recorded in `Docs/Environment.md`: no `5.8` case in the version table, so they silently fetch branch `UE5.7`. They are retained as a reference copy and **must not be executed** as-is. Byte-identity independently re-confirmed 2026-08-12; the version table covers 5.0 through 5.7 and the fallthrough sets `PSInfraTagOrBranch=UE5.7`.
 
-  > **Build-variant defect, found 2026-08-12.** The "reference copy, must not be
-  > executed" note is contradicted by the artifact: both scripts are **staged into the
-  > distributable** at `Packaged/Windows/RacingSim/Samples/PixelStreaming2/WebServers/`
-  > and listed in `Manifest_NonUFSFiles_Win64.txt`. The packaged product therefore ships
-  > an executable that silently fetches the wrong infrastructure branch.
+  > **Root cause identified 2026-08-12 — this was never a project decision.**
+  > `ip-compliance-auditor` found the scripts staged into the distributable at
+  > `Packaged/Windows/RacingSim/Samples/PixelStreaming2/WebServers/`, contradicting the
+  > "reference copy, must not be executed" note, and recommended excluding `Samples/`
+  > from staging. **That fix was aimed at the wrong layer.** The engine plugin declares
+  > them itself:
   >
-  > There is also a UE EULA scope question: distributing Engine tools and scripts to end
-  > users is a narrower right than distributing a packaged product.
+  > ```csharp
+  > // Engine/Plugins/Media/PixelStreaming2/Source/PixelStreaming2RTC/PixelStreaming2RTC.Build.cs:152-153
+  > RuntimeDependencies.Add("$(ProjectDir)/Samples/PixelStreaming2/WebServers/get_ps_servers.bat",
+  >     "$(PluginDir)/Resources/WebServers/get_ps_servers.bat", StagedFileType.NonUFS);
+  > ```
   >
-  > **Action:** exclude `Samples/` from staging, or relocate the reference copy under
-  > `Docs/`. Until then this entry is not unqualifiedly `APPROVED`.
+  > The plugin copies them from `$(PluginDir)/Resources/WebServers` into
+  > `$(ProjectDir)/Samples` at build time — **overwriting whatever is there** — and
+  > marks them `StagedFileType.NonUFS`. Three consequences:
+  >
+  > 1. Our tracked copies were redundant. The build regenerated them on every run, so
+  >    "vendored under `Samples/`" was never accurate. They are now **untracked and
+  >    gitignored**, and fold into `ASSET-0001` as engine build output.
+  > 2. The staging cannot be suppressed by excluding `Samples/`. A declared
+  >    `RuntimeDependency` would have to be fought with a staging blacklist, and the
+  >    engine install must not be modified.
+  > 3. **The UE5.7 fallthrough is an upstream Epic defect that this project inherits and
+  >    cannot patch.** Any packaged UE 5.8.1 product ships it. Recorded, not owned.
+  >
+  > The UE EULA scope question stands and is unaffected: distributing Engine tools and
+  > scripts to end users is a narrower right than distributing a packaged product.
+  > Carried to Gate H.
 
 ## Quarantine policy
 

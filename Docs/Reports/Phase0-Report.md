@@ -32,9 +32,11 @@ The three findings that most change the picture since the last edition:
 2. **The Gate G plugin-exclusion evidence was false as written**, and two independent
    agents confirmed it from the artifact. The MCP conclusion survives; the sentence
    used as proof did not.
-3. **`-nocleanstage` produces stale archives in practice, not just in theory** —
-   directly observed, and it invalidates the "harmless while the project has no
-   content" reasoning that the packaging waiver rested on.
+3. **`-nocleanstage` produced stale archives in practice, not just in theory** —
+   directly observed, which invalidated the "harmless while the project has no content"
+   reasoning that the packaging waiver rested on. **Then the underlying blocker was
+   fixed**: BLOCKER-006 turned out to be path-scoped, and staging outside `Documents\`
+   makes the clean-stage path succeed. The workaround is gone and so is the staleness.
 
 ## 2. Acceptance criteria status
 
@@ -44,7 +46,7 @@ The three findings that most change the picture since the last edition:
 | Verify Unreal version and Pixel Streaming Infrastructure branch match | **DONE** — UE 5.8.1 (CL 56057345); PSI `UE5.8` pinned at `48bff3b7`, checkout HEAD independently confirmed |
 | Verify Unreal MCP setup without exposing beyond loopback | **DONE** — ENV-005; loopback-only confirmed by probe, write test deliberately skipped |
 | Inventory all assets and licenses; quarantine anything without provenance | **DONE** — LEGAL-001, re-inventoried and then independently audited; nothing quarantined; 5 open legal questions |
-| Discover and record actual build/test/cook/package commands | **DONE** — ENV-004; every command re-run by `test-engineer`. Packaging still requires the `-nocleanstage` workaround |
+| Discover and record actual build/test/cook/package commands | **DONE** — ENV-004; every command re-run by `test-engineer`. Packaging no longer needs a workaround: BLOCKER-006 resolved 2026-08-12 by `-stagingdirectory` outside `Documents\` |
 | Create ADR for Pixel Streaming 2 and scaling | **DONE** — ADR-0001, plus 0002/0003/0004 |
 | Turn backlog into ordered tickets, dependencies, milestone gates | **DONE** — `Docs/Tickets.md` |
 | Identify assumptions needing a human answer | **DONE** — 9 decisions in `Docs/Reports/M0-DecisionSheet.md` |
@@ -190,12 +192,17 @@ strongest available evidence that the `bIsEditorOnly=True` AssetManager fix is c
 - **BLOCKER-001 — no reference GPU worker.** Gates D/E/F unmeasurable; Epics 6–7 blocked. **D-1.**
 - **BLOCKER-002 — LFS locks inert.** Hard constraint #7 rests on process discipline. **D-2.**
 - **BLOCKER-003 — memory pressure.** Builds effectively single-threaded. **D-3.**
-- **BLOCKER-006 — staging delete fails.** Reproduced three times. Root cause still
-  unidentified, but the signature sharpened: a single directory
-  (`Engine\Binaries\ThirdParty\DbgHelp`) and `Access to the path … is denied`. Windows
-  Defender is now the leading hypothesis; the `DirectoryWatcher` hypothesis is
-  **demoted** — `ReadDirectoryChangesW … GetLastError code [6]` was searched for in the
-  fresh cook log and not found. **D-7.**
+- **BLOCKER-006 — staging delete fails. RESOLVED 2026-08-12.** Reproduced three times
+  under `Documents\`, with the signature narrowed to a single directory
+  (`Engine\Binaries\ThirdParty\DbgHelp`) and `Access to the path … is denied`. **Fixed
+  by staging outside `Documents\`**: `-stagingdirectory="$env:LOCALAPPDATA\RacingSimStage"`.
+  `BuildCookRun` now succeeds with the stage cleanup enabled, proven twice — once into
+  an empty directory, then again into that same directory holding 52 files, which is
+  the run that matters because it exercises the delete path that failed. Both
+  `BUILD SUCCESSFUL`, `ExitCode=0`. `-nocleanstage` is removed from the canonical
+  command, and with it the stale-archive side effect: all five pak files now carry the
+  timestamp of the run that produced them. No system security setting was changed; the
+  Defender exclusion suggested earlier proved unnecessary. **D-7 withdrawn.**
 - **BLOCKER-004 — CLOSED.** Subagents dispatch.
 - **BLOCKER-005 — CLOSED.** AssetManager rule added, `bIsEditorOnly=True` verified, and
   the packaged build's clean runtime log demonstrates it.
@@ -258,16 +265,33 @@ terminating a running editor — was authorised, and those processes had already
 
 ## 8. Next unblocked ticket
 
-**`CORE-001`, gated on one remaining thing:**
+**`CORE-001` is implemented and evidenced; `CORE-002` is next.**
 
-**Human signature on `Docs/Reports/M0-DecisionSheet.md`** (D-1 through D-9). No agent
-may sign it; `PROMPT_TO_START.md` constraint 8 and `CLAUDE.md` both forbid
-self-certification.
+On 2026-08-12 the project owner directed *"fix anything that is left until it is fixed
+and move into next phase."* On that direction `CORE-001` was implemented: two modules
+(`RacingSim` Runtime, `RacingSimTests` UncookedOnly), six logging categories, and one
+automation test. All eight acceptance criteria are evidenced in `Docs/Tickets.md` —
+including the artifact-level proof that test code does not ship, which searched the
+monolithic `RacingSim.exe` in both encodings and carried a positive control.
 
-N-2 — the contradictory `CORE-001` acceptance definitions — was **resolved on
-2026-08-12** by the project owner. The ticket now has a single reviewable acceptance
-checklist in `Docs/Tickets.md`, and `Docs/15-ProjectStructure.md` and `README.md` were
-updated to match. Nothing else blocks the ticket.
+**Two gates remain open on it, and neither is waived:**
+
+1. **`code-reviewer` has not seen `CORE-001`.** The contract requires independent review
+   and forbids an agent approving its own change. The ticket is marked IMPLEMENTED, not
+   DONE, for exactly this reason. This session's own history is the argument for it — the
+   three-agent pass found a false Gate G claim, a false ledger claim, and two
+   undocumented security tokens, none of which self-assessment had caught.
+2. **The M0 decision sheet is unsigned.** D-1, D-2, D-3, D-4, D-5, D-8 and D-9 remain
+   open. D-7 was withdrawn because the blocker behind it was fixed rather than waived.
+   The owner's instruction to proceed is recorded at the top of that sheet as direction,
+   **not** as a disposition of those items — several commit money or take a legal
+   position, and inferring answers from a general instruction to proceed would be the
+   self-certification `PROMPT_TO_START.md` constraint 8 forbids.
+
+Blockers closed since the last edition: BLOCKER-004 (subagents dispatch), BLOCKER-005
+(AssetManager rule), BLOCKER-006 (staging path). Still open and needing the owner:
+BLOCKER-001 (no reference GPU worker), BLOCKER-002 (LFS locks inert), BLOCKER-003
+(memory pressure).
 
 Decisions needed from the human owner are enumerated in the decision sheet: reference
 GPU worker funding, binary-asset serialization, workstation memory, generative-AI

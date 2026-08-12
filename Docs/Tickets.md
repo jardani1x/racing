@@ -21,14 +21,14 @@ reviews or tests its own change.**
 | ENV-001 | Record engine/toolchain/worker/browser matrix | director | — | A | **DONE** |
 | ENV-002 | Source control, LFS/locks, ignore rules, clean-clone test | director | — | A | **DONE** (locks inert — BLOCKER-002) |
 | ENV-003 | Enable/verify plugins and production exclusions | director | ENV-001 | A, G | **DONE** — manifest checked 2026-08-10; conclusion **corrected 2026-08-12**, see B-1 below |
-| ENV-004 | Discover build/test/cook/package commands | director | ENV-003 | A | **DONE** — all five criteria met; packaging still relies on the `-nocleanstage` workaround (BLOCKER-006) |
+| ENV-004 | Discover build/test/cook/package commands | director | ENV-003 | A | **DONE** — all five criteria met; BLOCKER-006 **resolved** 2026-08-12, packaging no longer uses a workaround |
 | ENV-005 | Verify local Unreal MCP, generate client config | director | ENV-003 | G | **DONE** — loopback-only confirmed by probe; write test deliberately deferred |
 | LEGAL-001 | Inventory/quarantine assets, initialize ledger | ip-compliance-auditor | — | H | **DONE** — re-inventoried 2026-08-10; audited 2026-08-12; ledger holds 6 assets and **5** open legal questions (#3 closed) |
 | ARCH-001 | Pixel Streaming 2 + scaling ADR | director | ENV-001 | — | **DONE** (ADR-0001..0004) |
 
 ### ENV-004 — acceptance criteria, closed 2026-08-10
 
-- [x] `RunUAT BuildCookRun` produces a staged, paked, archived Win64 Development build; archive path recorded. **Caveat: requires `-nocleanstage` (BLOCKER-006).**
+- [x] `RunUAT BuildCookRun` produces a staged, paked, archived Win64 Development build; archive path recorded. **Caveat lifted 2026-08-12:** BLOCKER-006 is resolved by `-stagingdirectory` outside `Documents\`; the clean-stage path now succeeds and `-nocleanstage` has been removed from the canonical command.
 - [x] Automation test command runs and reports pass/fail counts; log path recorded. 426/426 engine Smoke tests.
 - [x] Packaged build launches with Pixel Streaming 2 arguments; flag names derived from the PS2 CVar-to-arg transform in source. Streamer connected, joined, published video and audio tracks, and survived a signalling restart.
 - [x] Signalling server starts under node v24.18.0 at the pinned PSI commit. ASSUMPTION-001 resolved — **and corrected**: upstream *does* pin a version (`NODE_VERSION` = `v22.14.0`); v24.18.0 works but is two majors ahead.
@@ -82,6 +82,17 @@ genuinely absent as descriptors, binaries and mounts. The MCP exclusion is real.
 the blanket "zero matches" sentence, and the "In shipping: No" column for those two
 engine plugins, were wrong.
 
+**Root cause established 2026-08-12, and there is no project-level fix.** The engine
+plugins that re-enable the two, filtered to `"EnabledByDefault": true`, are `Bridge`,
+`PluginUtils`, `ChaosEditor`, `Fab`, **`Niagara`**, `MetaHumanSDK`, **`PCG`**,
+**`RigVM`** and `InterchangeTests`. Niagara, PCG and RigVM are core plugins this project
+will need. Suppressing the leak means disabling them, which is not an option. This is
+stock UE 5.8.1 behaviour; `RacingSim.uproject`'s `TargetAllowList` entries are correct
+and cannot suppress a reference declared by another enabled plugin. **`SEC-001` and Gate
+G must assert the narrow, true property** — that `ModelContextProtocol`, `AllToolsets`
+and `ToolsetRegistry` are absent — not a blanket "no editor-only plugins are staged",
+which is unachievable on a stock engine install.
+
 **Consequence nobody had recorded:** because editor plugins load in the cook
 commandlet, *which editor plugins are enabled changes the shipped bytes*. Disabling
 `AllToolsets` later will alter `global.ucas`. This belongs in the rollback notes for
@@ -98,7 +109,7 @@ that word remains untested. Gating is on `EBuildTargetType` and orthogonal to
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
-| CORE-001 | Module/folder structure and logging categories | race-systems-engineer | ENV-004 | A | OPEN |
+| CORE-001 | Module/folder structure and logging categories | director | ENV-004 | A | **IMPLEMENTED 2026-08-12, all 8 criteria evidenced — awaiting `code-reviewer` gate before `DONE`** |
 | CORE-002 | Settings, build ID, units, telemetry contracts | race-systems-engineer | CORE-001 | A, B | OPEN |
 | TEST-001 | Test module and first smoke test | test-engineer + implementer | CORE-001 | A | OPEN |
 | CORE-003 | DataAsset validation framework | race-systems-engineer | CORE-002 | A | OPEN |
@@ -112,22 +123,62 @@ Module granularity was contradictory between `Docs/15-ProjectStructure.md` and t
 file (finding N-2, `code-reviewer` 2026-08-12). **Resolved 2026-08-12 by the project
 owner: two modules.**
 
-- [ ] `Source/RacingSim/` remains a single `Runtime` module and gains the folders
+- [x] `Source/RacingSim/` remains a single `Runtime` module and gains the folders
       `Core/`, `Vehicle/`, `Race/`, `UI/`, `Streaming/`. Folders only — these five are
       **not** separate modules.
-- [ ] A new `Source/RacingSimTests/` module is added, typed **`UncookedOnly`**, with
+- [x] A new `Source/RacingSimTests/` module is added, typed **`UncookedOnly`**, with
       its own `RacingSimTests.Build.cs`. It must not appear in a packaged Game target.
-- [ ] `RacingSim.uproject` `Modules` array lists both modules with correct types.
-- [ ] `Source/RacingSim.Target.cs` and `Source/RacingSimEditor.Target.cs` add the
+- [x] `RacingSim.uproject` `Modules` array lists both modules with correct types.
+- [x] `Source/RacingSim.Target.cs` and `Source/RacingSimEditor.Target.cs` add the
       modules each target needs. The Game target must **not** pull `RacingSimTests`.
-- [ ] `IMPLEMENT_PRIMARY_GAME_MODULE` stays in exactly one module
+- [x] `IMPLEMENT_PRIMARY_GAME_MODULE` stays in exactly one module
       (`Source/RacingSim/RacingSim.cpp:6`); `RacingSimTests` uses `IMPLEMENT_MODULE`.
-- [ ] One declared logging category per layer, and one for the test module.
-- [ ] Editor and Game targets both build with **zero new warnings**.
-- [ ] **Verification that the test module does not ship:** package a Game target and
-      confirm `RacingSimTests` appears in no staging manifest and in no `Mounting` line
-      of the packaged runtime log. This is the same check that caught B-1, and it must
-      be run the same way — against the artifact, not the `.uproject`.
+- [x] One declared logging category per layer, and one for the test module.
+      `LogRacingCore`/`Vehicle`/`Race`/`UI`/`Streaming` in
+      `Source/RacingSim/Core/RacingSimLog.h`, plus `LogRacingTests` in
+      `Source/RacingSimTests/RacingSimTestsLog.h`. Asserted by
+      `RacingSim.Core.LogCategories`, including distinctness and non-collision.
+- [x] Editor and Game targets both build with **zero new warnings.** Editor:
+      `Result: Succeeded`, 34.53 s, output filtered on `warning|error` matched nothing.
+      Game: built as part of `BuildCookRun`, `ExitCode=0`.
+- [x] **Verification that the test module does not ship** — see the evidence block below.
+
+### CORE-001 — verification evidence, 2026-08-12
+
+**Two real defects were found by building, neither visible by inspection:**
+
+1. `fatal error C1083: Cannot open include file: 'Core/RacingSimLog.h'`.
+   `DefaultBuildSettings = V7` sets `bLegacyPublicIncludePaths = false`, so UBT does not
+   put the module root on the include path — only a `Public/` folder, which this module
+   deliberately does not have. `RacingSim.h` had resolved only because it sits at the
+   module root. Fixed with `PublicIncludePaths.Add(ModuleDirectory)` rather than
+   restructuring into `Public/`+`Private/`, which preserves the agreed flat layer layout.
+2. `LNK2001: unresolved external symbol "LogRacingCore"` ×5, in `RacingSimTests`.
+   `DECLARE_LOG_CATEGORY_EXTERN` emits a plain `extern`, which does not cross a DLL
+   boundary. Fixed with `RACINGSIM_API`, matching
+   `CORE_API DECLARE_LOG_CATEGORY_EXTERN(LogHAL, Log, All)` in `CoreGlobals.h`.
+   **This link error is the module split proving itself** — it is compile-time evidence
+   that `RacingSimTests` is a genuinely separate binary.
+
+**Test:** `RacingSim.Core.LogCategories` — 1 succeeded, 0 failed, 0 notRun.
+Report `Saved/Automation/CoreReport/index.json`.
+
+**Artifact check.** A Development Game target is **monolithic**, so modules link into
+`RacingSim.exe` rather than shipping as DLLs. Manifest absence alone therefore proves
+nothing, and the binary itself was searched in both ASCII and UTF-16. The check carries
+its own positive control: the five runtime categories are found, so a null result means
+absence rather than a broken search.
+
+| symbol | in `RacingSim.exe` | expected |
+|---|---|---|
+| `RacingSim.Core.LogCategories` | absent | absent |
+| `FRacingSimLogCategoriesTest` | absent | absent |
+| `RacingSimTests` | absent | absent |
+| `LogRacingTests` | absent | absent |
+| `LogRacingCore` … `LogRacingStreaming` | **present** (UTF-16) | present |
+
+`RacingSimTests` is also absent from all three staging manifests. `UncookedOnly` holds
+even in a monolithic target.
 
 **Known consequence, accepted deliberately.** Boundaries between the five gameplay
 layers are **not compile-enforced** under this layout. Nothing prevents `Streaming/`
