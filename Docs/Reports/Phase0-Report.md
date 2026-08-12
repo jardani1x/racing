@@ -119,10 +119,14 @@ approve its own work; none holds write access.
 
 ### Findings routed to later tickets
 
-- **N-2 — `CORE-001` has two incompatible acceptance definitions.**
-  `Docs/15-ProjectStructure.md` shows folders inside one module; `Docs/Tickets.md`
-  requires one module per layer. **`CORE-001` cannot be dispatched until this is
-  resolved.** Recorded in `Docs/Tickets.md`.
+- **N-2 — `CORE-001` had two incompatible acceptance definitions. RESOLVED 2026-08-12
+  by the project owner.** `Docs/15-ProjectStructure.md` showed folders inside one
+  module; `Docs/Tickets.md` required one module per layer. The decision is **two
+  modules**: `RacingSim` (`Runtime`) carrying the five gameplay layers as folders, and
+  `RacingSimTests` (`UncookedOnly`) so test code physically cannot ship. All three
+  documents that disagreed — `Docs/15-ProjectStructure.md`, `Docs/Tickets.md`,
+  `README.md` — now agree. Accepted consequence: boundaries between the five gameplay
+  layers are enforced by review, not by the linker.
 - **N-1** — `EngineAssociation: "5.8"` cannot express the patch in a launcher install;
   fold an engine-CL assertion into the `CORE-002` build-ID scheme.
 - **F-4/F-5** — `Samples/` scripts are staged into the distributable despite being
@@ -254,14 +258,16 @@ terminating a running editor — was authorised, and those processes had already
 
 ## 8. Next unblocked ticket
 
-**`CORE-001`, gated on two things:**
+**`CORE-001`, gated on one remaining thing:**
 
-1. **Human signature on `Docs/Reports/M0-DecisionSheet.md`** (D-1 through D-9). No agent
-   may sign it; `PROMPT_TO_START.md` constraint 8 and `CLAUDE.md` both forbid
-   self-certification.
-2. **Resolution of N-2** — `CORE-001` currently has two incompatible acceptance
-   definitions and cannot be reviewed against both. Single module with folders, or one
-   module per layer. This is a design decision, recorded in `Docs/Tickets.md`.
+**Human signature on `Docs/Reports/M0-DecisionSheet.md`** (D-1 through D-9). No agent
+may sign it; `PROMPT_TO_START.md` constraint 8 and `CLAUDE.md` both forbid
+self-certification.
+
+N-2 — the contradictory `CORE-001` acceptance definitions — was **resolved on
+2026-08-12** by the project owner. The ticket now has a single reviewable acceptance
+checklist in `Docs/Tickets.md`, and `Docs/15-ProjectStructure.md` and `README.md` were
+updated to match. Nothing else blocks the ticket.
 
 Decisions needed from the human owner are enumerated in the decision sheet: reference
 GPU worker funding, binary-asset serialization, workstation memory, generative-AI

@@ -39,13 +39,14 @@ Real Ferrari, Lamborghini, Bugatti, Ford, Porsche, or other branded vehicles mus
 ```text
 RacingSim/
   RacingSim.uproject
-  Source/RacingSim/
-    Core/
-    Vehicle/
-    Race/
-    UI/
-    Streaming/
-    Tests/
+  Source/
+    RacingSim/          # Runtime module
+      Core/
+      Vehicle/
+      Race/
+      UI/
+      Streaming/
+    RacingSimTests/     # UncookedOnly module - never packaged
   Plugins/RacingAutomation/
   Content/
     Cars/Prototype/

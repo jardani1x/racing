@@ -103,31 +103,45 @@ that word remains untested. Gating is on `EBuildTargetType` and orthogonal to
 | TEST-001 | Test module and first smoke test | test-engineer + implementer | CORE-001 | A | OPEN |
 | CORE-003 | DataAsset validation framework | race-systems-engineer | CORE-002 | A | OPEN |
 
-**CORE-001 is the next unblocked ticket.** It replaces the Phase 0 stub module with
-the `Core`/`Vehicle`/`Race`/`UI`/`Streaming`/`Tests` layout from
-`Docs/15-ProjectStructure.md`. Acceptance: every layer compiles as its own module
-with explicit dependencies; no cyclic dependencies; logging category per layer;
-editor and Game targets both build with zero new warnings.
+**CORE-001 is the next ticket on the critical path**, gated only on the M0 signature
+(`Docs/Reports/M0-DecisionSheet.md`).
 
-> **CORE-001 cannot be dispatched until this contradiction is resolved** (raised by
-> `code-reviewer`, 2026-08-12). `Docs/15-ProjectStructure.md:4-33` and `README.md`
-> show `Core/ Vehicle/ Race/ UI/ Streaming/ Tests/` as **folders inside the single
-> `Source/RacingSim` module**. The acceptance sentence above requires **one module per
-> layer**. Those are different deliverables and the ticket cannot be reviewed against
-> both.
->
-> If multi-module wins, these must change together: `RacingSim.uproject:6-12` (the
-> `Modules` array lists only `RacingSim`); `Source/RacingSim.Target.cs:13` and
-> `Source/RacingSimEditor.Target.cs:13` (each adds only `RacingSim` to
-> `ExtraModuleNames`); and `Source/RacingSim/RacingSim.cpp:6` —
-> `IMPLEMENT_PRIMARY_GAME_MODULE` must remain in exactly one module, with the rest
-> using `IMPLEMENT_MODULE`. A `Tests` module must additionally be typed
-> `DeveloperTool`/`UncookedOnly` or guarded by `WITH_AUTOMATION_TESTS`, or test code
-> ships in the Game target.
->
-> Nothing else in the stub obstructs the replacement.
-> `Source/RacingSim/RacingSim.Build.cs:14-23` is minimal and correct, and both targets
-> have current receipts.
+### CORE-001 — acceptance criteria
+
+Module granularity was contradictory between `Docs/15-ProjectStructure.md` and this
+file (finding N-2, `code-reviewer` 2026-08-12). **Resolved 2026-08-12 by the project
+owner: two modules.**
+
+- [ ] `Source/RacingSim/` remains a single `Runtime` module and gains the folders
+      `Core/`, `Vehicle/`, `Race/`, `UI/`, `Streaming/`. Folders only — these five are
+      **not** separate modules.
+- [ ] A new `Source/RacingSimTests/` module is added, typed **`UncookedOnly`**, with
+      its own `RacingSimTests.Build.cs`. It must not appear in a packaged Game target.
+- [ ] `RacingSim.uproject` `Modules` array lists both modules with correct types.
+- [ ] `Source/RacingSim.Target.cs` and `Source/RacingSimEditor.Target.cs` add the
+      modules each target needs. The Game target must **not** pull `RacingSimTests`.
+- [ ] `IMPLEMENT_PRIMARY_GAME_MODULE` stays in exactly one module
+      (`Source/RacingSim/RacingSim.cpp:6`); `RacingSimTests` uses `IMPLEMENT_MODULE`.
+- [ ] One declared logging category per layer, and one for the test module.
+- [ ] Editor and Game targets both build with **zero new warnings**.
+- [ ] **Verification that the test module does not ship:** package a Game target and
+      confirm `RacingSimTests` appears in no staging manifest and in no `Mounting` line
+      of the packaged runtime log. This is the same check that caught B-1, and it must
+      be run the same way — against the artifact, not the `.uproject`.
+
+**Known consequence, accepted deliberately.** Boundaries between the five gameplay
+layers are **not compile-enforced** under this layout. Nothing prevents `Streaming/`
+from including a `Race/` header, and `CLAUDE.md` requires that no race truth lives in
+`Streaming`. That rule is enforced by review here, not by the linker. If it is violated
+in practice, promote the five layers to real modules — a mechanical change.
+
+**Caveat on the packaging check.** BLOCKER-006 is open, so the package must be produced
+with `-nocleanstage`, and such an archive has been observed carrying stale pak content.
+Confirm the staging manifest timestamps belong to the run under test before citing the
+result.
+
+Nothing in the current stub obstructs this. `Source/RacingSim/RacingSim.Build.cs:14-23`
+is minimal and correct, and both targets have current receipts.
 
 `CORE-002` must define the units policy (Unreal centimetres, documented SI
 conversions) and the build-ID scheme that `Docs/15-ProjectStructure.md` requires on
