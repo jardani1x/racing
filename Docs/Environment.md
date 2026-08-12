@@ -681,6 +681,16 @@ Gates A/B/C, none of which reference the worker.
   clones, and `git commit --no-verify` bypasses it. It is a real gate on this clone,
   which is where the project works today (single machine, no remote). It converts an
   honour system into something that fails loudly at the moment of the mistake.
+- **Side effect, caught and verified — `core.hooksPath` relocates the git-lfs hooks.**
+  Setting `core.hooksPath=.githooks` moves hook resolution away from `.git/hooks`, where
+  git-lfs installs `post-checkout`, `post-commit`, `post-merge` and `pre-push`. git-lfs
+  reinstalled them into `.githooks/`, so they are now **tracked in the repository**.
+  Each was inspected: all four are the stock two-line LFS shims
+  (`git lfs <hook> "$@"` behind a `command -v git-lfs` guard) and nothing else. The
+  project's own `pre-commit` was not touched — LFS does not install one.
+  Consequence to know: **deleting `.githooks/` now also disables git-lfs.** If
+  `core.hooksPath` is ever unset, re-run `git lfs install` so the hooks return to
+  `.git/hooks`.
 - owner: human project owner — **the decision is still yours.**
 - evidence needed: a decision to add an LFS-capable remote, adopt Perforce, or formally
   accept process-only serialization now that it is at least enforced locally. See D-2.
