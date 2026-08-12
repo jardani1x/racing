@@ -109,7 +109,7 @@ that word remains untested. Gating is on `EBuildTargetType` and orthogonal to
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
-| CORE-001 | Module/folder structure and logging categories | director | ENV-004 | A | **IMPLEMENTED 2026-08-12, all 8 criteria evidenced — awaiting `code-reviewer` gate before `DONE`** |
+| CORE-001 | Module/folder structure and logging categories | director | ENV-004 | A | **DONE** 2026-08-12 — `code-reviewer` approved at `9a7d5d4` after two blockers were closed. Ticket-level DONE only; **not** M0 sign-off |
 | CORE-002 | Settings, build ID, units, telemetry contracts | race-systems-engineer | CORE-001 | A, B | OPEN |
 | TEST-001 | Test module and first smoke test | test-engineer + implementer | CORE-001 | A | OPEN |
 | CORE-003 | DataAsset validation framework | race-systems-engineer | CORE-002 | A | OPEN |
@@ -220,6 +220,24 @@ closure is not.
 | N-4 | Adopt the `.target` receipt check as the primary non-shipping gate; keep the string search as corroboration. Also cover **test content** — `Content/Tests/Maps/` cooks into the pak, which neither current check inspects. Needs `DirectoriesToNeverCook` plus a pak-side check | `TEST-001` |
 | N-6 | `Docs/15-ProjectStructure.md` test-module tree omits `Core/`, which the implementation added | `CORE-002` |
 | N-7 | `.gitignore` — the `Samples/` comment block visually captures unrelated `Archive/` and `StagedBuilds/` entries | `CORE-002` |
+| NEW-1 | **Fixed immediately, not deferred.** The B-1 anchoring left `*.obj` unanchored one line above `*.lib`/`*.pdb`. `.obj` is both an MSVC object file and Wavefront OBJ, so `Source/Art/**/*.obj` and `Content/Raw/**/*.obj` were silently dropped — an original source mesh that never commits is an asset whose provenance cannot be demonstrated, while the author's clone looks fine. Anchored to `Intermediate/**` and `Binaries/**`; verified trackable at three source paths and still ignored at three build paths | closed in `CORE-001` |
+| NEW-2 | Six anchored `*.pdb`/`*.lib` patterns cannot match — their parent directories are excluded wholesale and git does not descend into an excluded directory. Harmless, but a reader would think them load-bearing. Commented as belt-and-braces rather than deleted | closed in `CORE-001` |
+
+**Reviewer's counterargument to approval, recorded because it is the real residual
+risk.** The non-shipping guarantee is the ticket's most consequential deliverable, and
+it is verified only for a Development Game target on one machine, resting on two
+unenforced one-line invariants. If someone sets `bBuildRequiresCookedDataOverride =
+false` or adds `RacingSimTests` to `RacingSim.Target.cs`, **no build fails and no test
+fails.** Approval was given because the mechanism is verified in engine source and the
+`.target` receipt corroborates it — but **`TEST-001` must add the automated check, or
+this decays into a one-time manual result.**
+
+**Decision owed at `CORE-002`, not inherited by default:** whether to keep
+`PublicIncludePaths.Add(ModuleDirectory)` or restructure to `Public/`+`Private/`. The
+reviewer would have chosen the split — the current fix publishes the whole module tree
+to every dependent, leaving no way to mark a header private later without the
+restructure that was avoided. Reversible at near-zero cost today; the cost rises with
+every header, and `CORE-002` adds headers.
 
 **Reviewer's assessment of the test itself, recorded rather than argued away.** The
 genuine guarantee is that `RacingSimTests` links against and loads the runtime module

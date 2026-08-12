@@ -47,11 +47,26 @@ Plugins/**/Intermediate/
 # a future Source/ThirdParty/**/x64/*.lib would be silently dropped while its
 # sibling *.dll commits via .gitattributes LFS tracking -- producing a repo that
 # links on the author's machine and nowhere else. (CORE-001, B-1.)
-*.obj
+# *.obj is anchored, and must stay anchored. It is both an MSVC object file and
+# Wavefront OBJ, the most common mesh interchange format. Unanchored, it silently
+# drops Source/Art/**/*.obj and Content/Raw/**/*.obj -- an original source mesh that
+# never commits is an asset whose provenance cannot be demonstrated later, while the
+# author's own clone looks fine. That collides directly with the ledger requirement
+# in CLAUDE.md and PROMPT_TO_START.md. (CORE-001, NEW-1.)
+Intermediate/**/*.obj
+Binaries/**/*.obj
+
+# Compiler-only extensions with no content-side meaning. Safe at any depth.
 *.ipdb
 *.iobj
 *.exp
 *.ilk
+
+# Belt-and-braces. These cannot match today -- Binaries/, Intermediate/ and
+# Plugins/**/Binaries/ are excluded wholesale above and git does not descend into an
+# excluded directory, so *.pdb/*.lib there are already ignored by those lines. Kept
+# so the intent survives if a parent exclusion is ever narrowed. Do not treat them as
+# load-bearing. (CORE-001, NEW-2.)
 Binaries/**/*.pdb
 Binaries/**/*.lib
 Intermediate/**/*.pdb
