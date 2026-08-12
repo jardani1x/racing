@@ -22,7 +22,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	"RacingSim.Core.LogCategories",
 	EAutomationTestFlags::EditorContext
 		| EAutomationTestFlags::CommandletContext
-		| EAutomationTestFlags::ProductFilter)
+		// SmokeFilter, not ProductFilter. The project's recorded automation command
+		// runs "Automation RunFilter Smoke", so a Product-filtered test would pass
+		// review, sit in the tree, and never execute under the documented gate --
+		// counted as coverage by every later ticket without ever running. The test
+		// completes in ~11 ms, which is what Smoke is for.
+		| EAutomationTestFlags::SmokeFilter)
 
 bool FRacingSimLogCategoriesTest::RunTest(const FString& Parameters)
 {

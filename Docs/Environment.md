@@ -173,9 +173,30 @@ Command syntax was read from engine source, not guessed:
 is memory-constrained (BLOCKER-003). Widening the filter is a later decision, not a
 default.
 
-**These are engine tests, not project tests.** The project has no tests yet —
-`TEST-001` is unstarted. This run proves the harness, the command form and report
-export work on this machine; it says nothing about RacingSim's correctness.
+**Corrected 2026-08-12.** This previously read "These are engine tests, not project
+tests. The project has no tests yet — `TEST-001` is unstarted." That stopped being true
+when `CORE-001` landed.
+
+The project now owns one test, `RacingSim.Core.LogCategories`
+(`Source/RacingSimTests/Core/RacingSimLogSpec.cpp`). It is **`SmokeFilter`**, so the
+command above discovers and runs it alongside the engine suite.
+
+**Proven, not assumed** — `RunFilter Smoke` on 2026-08-12 returned
+**succeeded=427, failed=0, notRun=0** (`reportCreatedOn 2026.08.12-07.13.48`), with
+`RacingSim.Core.LogCategories => Success` present in the results. The count rose from
+426 to 427, which is the project test being discovered by the filter rather than
+invoked by name.
+
+That filter choice is deliberate and was a `code-reviewer` blocker. The test was first
+written `ProductFilter`, which meant the only recorded automation command in this file
+could not run it: the suite would report 426/426 green while the project's own test
+never executed, and every later ticket would inherit that as "tests pass". A test the
+documented gate cannot see is not coverage. **Any new test must carry a filter that a
+recorded command actually uses**, and discoverability must be proven with a
+`RunFilter` log line — never with `RunTests <name>`, which bypasses filters entirely.
+
+Beyond that one test, the engine tests still say nothing about RacingSim's correctness;
+they prove the harness, command form and report export work on this machine.
 
 `-nullrhi` skips GPU work. Any future rendering or screenshot test must drop it.
 
@@ -793,6 +814,24 @@ system-level security setting was changed to resolve this.
   must not be cited as gate evidence while this blocker is open.
 - **Gate A is NOT claimed.** A packaged build now exists, but only via a workaround
   whose side effect is stale-file retention.
+
+### NOTE-003 — subagent reports do not survive a single dispatch reliably
+
+Observed 2026-08-12 across four dispatches of the mandatory review/test protocol.
+**Three of the four returned a fragment instead of a report** — an opening line
+("I'll start by reading the contract documents…"), a mid-sentence status
+("Now let's check the archive artifacts."), or a hook-compliance preamble — despite
+having done 39–60 tool calls and 7–19 minutes of real work each.
+
+The work is not lost. Sending the agent a follow-up message asking it to write up what
+it already gathered produces the full report without re-running the investigation.
+
+Practical consequence for anyone running the ticket protocol: **budget two round trips
+per agent**, and never interpret a fragment as "the agent found nothing". Re-dispatching
+from scratch would repeat expensive cook and package runs for no reason.
+
+The `pre:edit-write` and `pre:bash` fact-forcing gates fire inside subagents as well as
+in the main session, which is the likely mechanism for at least the preamble case.
 
 ### NOTE-001 — UnrealBuildTool opens a non-loopback listener
 

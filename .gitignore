@@ -1,7 +1,19 @@
 # Unreal Engine generated directories
 Binaries/
-Build/
 DerivedDataCache/
+
+# Build/ follows Epic's own pattern rather than a bare "Build/".
+# A bare ignore drops files that must be tracked once the project has branding or
+# platform packaging: Build/Windows/Resources/*.ico, Application.manifest, and
+# Build/*/PakBlacklist*.txt. Ignore the contents, keep the directory structure
+# traversable, then un-ignore what is genuinely source. (CORE-001, B-1.)
+Build/*
+!Build/*/
+Build/*/**
+!Build/*/Resources/
+!Build/*/Resources/**
+!Build/*/*.manifest
+!Build/*/PakBlacklist*.txt
 Intermediate/
 Saved/
 Platforms/*/Binaries/
@@ -24,18 +36,28 @@ Plugins/**/Intermediate/
 *.VC.opendb
 *.xcodeproj/
 *.xcworkspace/
-CMakeLists.txt
-Makefile
-compile_commands.json
+# Anchored to the repository root. Unanchored, these would drop a legitimately
+# vendored third-party CMakeLists.txt or Makefile under Source/ThirdParty. (CORE-001, B-1.)
+/CMakeLists.txt
+/Makefile
+/compile_commands.json
 
-# Build artifacts
+# Build artifacts.
+# Anchored to generated locations rather than ignored at any depth. Unanchored,
+# a future Source/ThirdParty/**/x64/*.lib would be silently dropped while its
+# sibling *.dll commits via .gitattributes LFS tracking -- producing a repo that
+# links on the author's machine and nowhere else. (CORE-001, B-1.)
 *.obj
-*.pdb
 *.ipdb
 *.iobj
 *.exp
-*.lib
 *.ilk
+Binaries/**/*.pdb
+Binaries/**/*.lib
+Intermediate/**/*.pdb
+Intermediate/**/*.lib
+Plugins/**/Binaries/**/*.pdb
+Plugins/**/Binaries/**/*.lib
 
 # Packaged / staged output
 Packaged/

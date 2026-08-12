@@ -29,7 +29,7 @@ reviews or tests its own change.**
 ### ENV-004 — acceptance criteria, closed 2026-08-10
 
 - [x] `RunUAT BuildCookRun` produces a staged, paked, archived Win64 Development build; archive path recorded. **Caveat lifted 2026-08-12:** BLOCKER-006 is resolved by `-stagingdirectory` outside `Documents\`; the clean-stage path now succeeds and `-nocleanstage` has been removed from the canonical command.
-- [x] Automation test command runs and reports pass/fail counts; log path recorded. 426/426 engine Smoke tests.
+- [x] Automation test command runs and reports pass/fail counts; log path recorded. 426/426 engine Smoke tests at close; **427/427 as of 2026-08-12**, the extra one being `RacingSim.Core.LogCategories` from `CORE-001`.
 - [x] Packaged build launches with Pixel Streaming 2 arguments; flag names derived from the PS2 CVar-to-arg transform in source. Streamer connected, joined, published video and audio tracks, and survived a signalling restart.
 - [x] Signalling server starts under node v24.18.0 at the pinned PSI commit. ASSUMPTION-001 resolved — **and corrected**: upstream *does* pin a version (`NODE_VERSION` = `v22.14.0`); v24.18.0 works but is two majors ahead.
 - [x] Every verified command pasted into `Docs/Environment.md`; failures recorded as blockers (BLOCKER-006) and notes (NOTE-002).
@@ -138,9 +138,15 @@ owner: two modules.**
       `Source/RacingSim/Core/RacingSimLog.h`, plus `LogRacingTests` in
       `Source/RacingSimTests/RacingSimTestsLog.h`. Asserted by
       `RacingSim.Core.LogCategories`, including distinctness and non-collision.
-- [x] Editor and Game targets both build with **zero new warnings.** Editor:
-      `Result: Succeeded`, 34.53 s, output filtered on `warning|error` matched nothing.
-      Game: built as part of `BuildCookRun`, `ExitCode=0`.
+- [x] Editor builds with **zero new warnings** — `Result: Succeeded`, output filtered on
+      `warning|error` matched nothing, confirmed in
+      `%LOCALAPPDATA%\UnrealBuildTool\Log.txt`.
+      **Game target: `ExitCode=0` from `BuildCookRun`; warning count NOT separately
+      verified.** The original wording claimed zero warnings for both targets on the
+      strength of an exit code, which `BuildCookRun` returns with warnings present.
+      Narrowed to what was measured after `code-reviewer` flagged it — the same shape as
+      the false Gate G "zero matches" claim corrected earlier this session. Filtered
+      Game-target warning output is owed at `TEST-001`.
 - [x] **Verification that the test module does not ship** — see the evidence block below.
 
 ### CORE-001 — verification evidence, 2026-08-12
@@ -180,16 +186,61 @@ absence rather than a broken search.
 `RacingSimTests` is also absent from all three staging manifests. `UncookedOnly` holds
 even in a monolithic target.
 
+**Path precision, per `code-reviewer` N-4.** Two files are named `RacingSim.exe`.
+`Packaged/Windows/RacingSim.exe` (171,520 bytes) is the **bootstrap launcher** and
+contains none of the needles — including the positive controls, so a check run there
+returns all-absent and looks like a pass. The binary that matters is
+`Packaged/Windows/RacingSim/Binaries/Win64/RacingSim.exe` (354,528,256 bytes). Always
+cite the full path, and always keep the positive control.
+
+**Stronger gate available, adopt at `TEST-001`:** `Binaries/Win64/RacingSim.target`
+contains **0** occurrences of `RacingSimTests` while `RacingSimEditor.target` contains
+**2**. That is UnrealBuildTool stating what it compiled, which beats string presence.
+
+**Mechanism, verified in engine source rather than assumed.**
+`ModuleDescriptor.cs:792-793` — `case ModuleHostType.UncookedOnly: return
+!bBuildRequiresCookedData;` and `TargetRules.cs:1190-1195` —
+`bBuildRequiresCookedData => bBuildRequiresCookedDataOverride ?? (Type == Game ||
+Client || Server)`. The exclusion keys off `bBuildRequiresCookedData`, **not**
+`TargetType` directly, and that is a settable override. So the guarantee rests on two
+one-line invariants that nothing enforces: nobody sets
+`bBuildRequiresCookedDataOverride = false` on a Game target, and nobody adds
+`RacingSimTests` to `RacingSim.Target.cs`. Both hold today.
+
+### CORE-001 — review findings assigned to later tickets
+
+Raised by `code-reviewer` at `3bbd9ca`. Assignment is required before CORE-001 closes;
+closure is not.
+
+| # | Finding | Ticket |
+|---|---|---|
+| N-1 | `Source/RacingSim/Core/RacingSimLog.h:16-18` — the logging-policy comment is **wrong**. It names the second macro parameter as the compile-time strip; the strip tests the **third** (`CompileTimeVerbosity`), which is `All` here, so **nothing is compiled out in any configuration**. Only `NO_LOGGING` removes these, and it would strip `Log` too. Set `CompileTimeVerbosity` deliberately and correct the comment | `CORE-002` |
+| N-2 | "test code physically cannot ship" is true only of code **in that module**. `WITH_DEV_AUTOMATION_TESTS` is 1 in a Development Game target, so an `IMPLEMENT_SIMPLE_AUTOMATION_TEST` written inside `Source/RacingSim/` compiles into the shipped exe and the CORE-001 gate would not see it. Add a rule that automation tests live only in `RacingSimTests` | `TEST-001` |
+| N-3 | "splitting into modules later is a mechanical change" is true **only until the first `UObject` exists**. UObject paths are `/Script/<Module>.<Class>`, so moving a UClass breaks every Blueprint, DataAsset and map reference without authored `CoreRedirects`. Record that cost and make the granularity decision final before the first UObject ships | `CORE-002` |
+| N-4 | Adopt the `.target` receipt check as the primary non-shipping gate; keep the string search as corroboration. Also cover **test content** — `Content/Tests/Maps/` cooks into the pak, which neither current check inspects. Needs `DirectoriesToNeverCook` plus a pak-side check | `TEST-001` |
+| N-6 | `Docs/15-ProjectStructure.md` test-module tree omits `Core/`, which the implementation added | `CORE-002` |
+| N-7 | `.gitignore` — the `Samples/` comment block visually captures unrelated `Archive/` and `StagedBuilds/` entries | `CORE-002` |
+
+**Reviewer's assessment of the test itself, recorded rather than argued away.** The
+genuine guarantee is that `RacingSimTests` links against and loads the runtime module
+and that exported categories are reachable across a DLL boundary — which is exactly what
+the `LNK2001` episode was about. But the count, distinctness and exact-name assertions
+**cannot fail**: `LogCategory.h:123` derives the category name from the identifier via
+`TEXT(#CategoryName)`, so a duplicate name is a duplicate-symbol link error rather than a
+silent merge, and a rename is already a compile error in the spec file. The claim that
+the test catches "distinctness and non-collision" overstates it. Not blocking — CORE-001
+delivers no behaviour — but `TEST-001` should add assertions that can actually fail,
+starting with whether the categories are registered with the log suppression system.
+
 **Known consequence, accepted deliberately.** Boundaries between the five gameplay
 layers are **not compile-enforced** under this layout. Nothing prevents `Streaming/`
 from including a `Race/` header, and `CLAUDE.md` requires that no race truth lives in
 `Streaming`. That rule is enforced by review here, not by the linker. If it is violated
 in practice, promote the five layers to real modules — a mechanical change.
 
-**Caveat on the packaging check.** BLOCKER-006 is open, so the package must be produced
-with `-nocleanstage`, and such an archive has been observed carrying stale pak content.
-Confirm the staging manifest timestamps belong to the run under test before citing the
-result.
+**Packaging note.** BLOCKER-006 was resolved in the same commit, so the package is
+produced with the clean-stage path and `-stagingdirectory` outside `Documents\`.
+`-nocleanstage` is no longer used and the stale-archive risk it carried is gone.
 
 Nothing in the current stub obstructs this. `Source/RacingSim/RacingSim.Build.cs:14-23`
 is minimal and correct, and both targets have current receipts.
@@ -199,9 +250,24 @@ conversions) and the build-ID scheme that `Docs/15-ProjectStructure.md` requires
 every competitive result. This closes the `Build ID/versioning method: UNVERIFIED`
 field in `Docs/Environment.md`.
 
-**Deferred review findings CORE-001 must also close** (raised by `code-reviewer`
-against the Phase 0 shell, 2026-08-10; accepted as deferrable because they are
-over-exclusions and hygiene on a stub CORE-001 replaces, not live defects):
+**Deferred review findings CORE-001 must also close — ALL FOUR CLOSED 2026-08-12.**
+
+Raised by `code-reviewer` against the Phase 0 shell on 2026-08-10, deferred as
+over-exclusions on a stub. A second `code-reviewer` pass at `3bbd9ca` correctly blocked
+CORE-001 for leaving this block open while the status line read "all 8 criteria
+evidenced" — the checkboxes were done, the ticket as written was not.
+
+Closure verified by `git check-ignore` with both controls, so the test discriminates:
+
+- **still ignored** (6/6): `Binaries/Win64/UnrealEditor-RacingSim.pdb`, the matching
+  `.lib`, `Build/Windows/FileOpenOrder/CookerOpenOrder.log`, `Saved/Logs/*.log`,
+  `Packaged/Windows/RacingSim.exe`, root `CMakeLists.txt`
+- **now trackable** (6/6, previously dropped): `Build/Windows/Resources/Icon.ico`,
+  `Build/Windows/Application.manifest`, `Build/Windows/PakBlacklist-Shipping.txt`,
+  `Source/ThirdParty/Foo/x64/foo.lib`, `Source/ThirdParty/Foo/CMakeLists.txt`,
+  `Source/ThirdParty/Foo/Makefile`
+
+The original findings, retained for the record:
 
 - `.gitignore:3` — bare `Build/` ignores the whole Unreal `Build/` tree at any
   depth, which will silently drop files that must be tracked later:
