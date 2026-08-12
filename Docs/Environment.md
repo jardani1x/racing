@@ -71,8 +71,8 @@ and its `EBuildTargetType` values were verified against
 | Enhanced Input | `Engine/Plugins/EnhancedInput` | Runtime | Keyboard/gamepad input layer | Yes |
 | Pixel Streaming 2 | `Engine/Plugins/Media/PixelStreaming2` | Runtime | Browser delivery (hard constraint #4) | Yes |
 | Functional Testing Editor | `Engine/Plugins/Tests/FunctionalTestingEditor` | Editor | Functional/automation test authoring | No |
-| Python Editor Script | `Engine/Plugins/Experimental/PythonScriptPlugin` | Editor | Editor/content automation only, never gameplay | No |
-| Editor Scripting Utilities | `Engine/Plugins/Editor/EditorScriptingUtilities` | Editor | Batch asset operations | No |
+| Python Editor Script | `Engine/Plugins/Experimental/PythonScriptPlugin` | Editor | Editor/content automation only, never gameplay | No module binaries — **but descriptor is staged and mounted**, see Gate G section |
+| Editor Scripting Utilities | `Engine/Plugins/Editor/EditorScriptingUtilities` | Editor | Batch asset operations | No module binaries — **but descriptor is staged and mounted**, see Gate G section |
 | Model Context Protocol | `Engine/Plugins/Experimental/ModelContextProtocol` | Editor | Experimental editor automation, loopback only | No |
 | All Toolsets | `Engine/Plugins/Experimental/Toolsets/AllToolsets` | Editor | MCP toolset registry dependency | No |
 
@@ -146,6 +146,17 @@ or the build aborts with `Unable to build while Live Coding is active` and exit 
 Report: `Saved/Automation/Report/{index.json,index.html}`. Counts must be read from
 `index.json` (`succeeded` / `failed` / `notRun`), **not** from the process exit code.
 
+> **`-log=AutomationSmoke.log` does not work — verified 2026-08-12.** On re-run,
+> `Saved/Logs/AutomationSmoke.log` was **not** updated; the transcript landed in the
+> default `Saved/Logs/RacingSim.log` instead, and the engine silently fell back rather
+> than erroring. The log's own echo of the command line renders the flag as
+> `-log=AutomationSmoke .log`, with a space inserted before the extension — that is the
+> engine's internal reconstruction, not a defect in the invocation, which was verified
+> byte-for-byte. **Treat `Saved/Automation/Report/index.json` as the only authoritative
+> evidence from this command, and do not rely on a distinctly named log file.**
+> Re-run confirmed 426 succeeded / 0 failed / 0 notRun,
+> `reportCreatedOn 2026.08.12-02.41.42`.
+
 Command syntax was read from engine source, not guessed:
 
 - Subcommands, `AutomationCommandline.cpp:570-740`: `List`, `RunTests`/`RunTest`,
@@ -196,15 +207,63 @@ cause is still unidentified. Do not present this as a clean Gate A pass.
 
 #### Packaged plugin manifest — Gate G evidence (`ENV-003`)
 
-Searched the packaged tree for editor-only plugin artifacts. **None present:**
-`ModelContextProtocol`, `AllToolsets`, `ToolsetRegistry`, `PythonScriptPlugin`,
-`EditorScriptingUtilities`, `AndroidFileServer` — zero matches.
-`Packaged/Windows/Engine/Plugins` contains only `NNE`.
+> **Corrected 2026-08-12 after independent review.** The original wording of this
+> section claimed a search of the packaged tree returned "zero matches" for all six
+> editor-only plugins. **That was false for two of them.** What had actually been
+> inspected was a directory listing of `Packaged/Windows/Engine/Plugins`, which is a
+> much narrower search than the sentence implied. The corrected findings follow.
 
-This proves hard constraint #6 by inspection of the artifact rather than by reading
-`.uproject` intent. `TargetAllowList: ["Editor"]` is confirmed effective for build
-and stage — independently corroborated in engine source at `PluginManager.cpp:2425`,
-`UEBuildTarget.cs:5835`, `CopyBuildToStagingDirectory.Automation.cs:884`.
+**Genuinely absent** — no descriptor, no binary, no mount:
+`ModelContextProtocol`, `AllToolsets`, `ToolsetRegistry`, `AndroidFileServer`.
+Confirmed three ways: absent from every staging manifest, absent from the pak file
+index, and absent from all ~190 `Mounting Engine plugin` lines in
+`Packaged/Windows/RacingSim/Saved/Logs/RacingSim.log`. Since MCP's own reference is
+suppressed, its declared `"Plugins"` dependencies are not followed either, which is
+why `ToolsetRegistry` never appears. **The MCP exclusion is real.**
+
+**Present, contrary to the "In shipping: No" column above** — `PythonScriptPlugin`
+and `EditorScriptingUtilities`:
+
+- `Packaged/Windows/Manifest_UFSFiles_Win64.txt` lists
+  `Engine/Plugins/Experimental/PythonScriptPlugin/PythonScriptPlugin.uplugin`,
+  `Engine/Plugins/Editor/EditorScriptingUtilities/EditorScriptingUtilities.uplugin`
+  and `Engine/Plugins/Editor/EditorScriptingUtilities/Config/DefaultEditorScriptingUtilities.ini`;
+- the runtime log records `Mounting Engine plugin EditorScriptingUtilities` and
+  `Mounting Engine plugin PythonScriptPlugin`.
+
+**Cause.** `FPluginReferenceDescriptor::IsEnabledForTarget`
+(`PluginReferenceDescriptor.cpp:64-85`, applied at `PluginManager.cpp:2425`) is
+evaluated **per reference**. `TargetAllowList` suppresses only the project's own
+reference; other enabled engine plugins reference these two with no allowlist and
+re-enable them. Corroborated inside the pak by other `.uplugin` descriptors declaring
+`"Name": "EditorScriptingUtilities", "Enabled": true`.
+
+The "In shipping" column above should therefore be read as a claim about **module
+binaries** — no Editor-type module is built into the Game target — not as a claim
+that the plugin is absent from the staged tree.
+
+**Cooked script-object residue.** `Packaged/Windows/RacingSim/Content/Paks/global.ucas`
+contains the global script-object names `/Script/ModelContextProtocol` (47
+occurrences), `/Script/ToolsetRegistry` (10), `/Script/PythonScriptPlugin` (5),
+`/Script/EditorScriptingUtilities` (3). Names only — no code, no descriptor, no mount.
+Expected, since the cook runs under `UnrealEditor-Cmd` with editor plugins loaded. Not
+a Gate G failure, but a `NoRedist` plugin leaving name traces in a shipped artifact
+belongs in the licensing record.
+
+**Consequence not previously recorded:** because editor plugins load in the cook
+commandlet, *which editor plugins are enabled changes the shipped bytes*. Disabling
+`AllToolsets` later will alter `global.ucas`. This belongs in the rollback and
+compatibility notes for any decision to narrow the MCP toolset surface.
+
+**What this section does and does not prove.** It proves, by artifact inspection
+rather than `.uproject` intent, that the two MCP plugins are excluded from a
+Game/Development target. `TargetAllowList: ["Editor"]` is effective for build and
+stage — corroborated at `PluginManager.cpp:2425`, `UEBuildTarget.cs:5835`,
+`CopyBuildToStagingDirectory.Automation.cs:884`. Gating is on `EBuildTargetType` and
+is orthogonal to `EBuildConfiguration`, so a Shipping Game target is excluded on the
+same code path. **But no Shipping-configuration build has ever been produced here.**
+`Docs/07-QualityGates.md:9` says "excluded from shipping"; that word remains untested,
+and the inference — though strong — is an inference.
 
 `PixelStreaming2` **is** staged (`Packaged/Windows/RacingSim/Samples/PixelStreaming2`),
 as required. Chaos Vehicles and Enhanced Input produced no separate plugin
@@ -627,18 +686,47 @@ gitignored dependency, which is itself a thing to track.
 - workaround: `-nocleanstage` skips the failing cleanup. With it the package
   succeeds (exit 0) and produces a valid archive. Flag confirmed at
   `ProjectParams.cs:2196` ("skip cleaning the stage directory").
-- **Root cause remains unidentified.** Untested hypotheses, in order of likelihood:
-  Windows Defender real-time scanning holding freshly written files; UE's
-  `DirectoryWatcher` (the cook log shows `ReadDirectoryChangesW failed ... GetLastError
-  code [6]` on a project path); or a file-sync/indexer agent on `Documents\`.
+- **Reproduced a third time on 2026-08-12 by `test-engineer`, with a sharper
+  signature.** UAT exit 102 again, elapsed 231.14 s. The cook succeeded (586 packages,
+  `LogCook: Display: Done!`) and UnrealPak/IoStore exited 0; only staging failed. The
+  precise failure point, not previously recorded:
+
+  ```text
+  Cleaning Stage Directory: ...\Saved\StagedBuilds\Windows
+  Failed to delete directory ...\Saved\StagedBuilds\Windows\Engine\Binaries\ThirdParty\DbgHelp in 10 attempts.
+  Exception in System.Private.CoreLib: Access to the path '\\?\...\ThirdParty\DbgHelp' is denied.
+  ```
+
+  A single named subdirectory — `Engine\Binaries\ThirdParty\DbgHelp` — and an
+  access-denied signature rather than a generic failure. That is a sharing-violation or
+  permission pattern, which fits the Defender hypothesis.
+  Caveat on this particular run: `Saved/StagedBuilds` was **not** empty beforehand
+  (52 files, ~1.08 GB, dated 2026-08-10), unlike the earlier investigation.
+- **Root cause remains unidentified.** Hypotheses, reordered by the 2026-08-12 evidence:
+  1. Windows Defender real-time scanning holding freshly written files — **now the
+     leading candidate**, on the access-denied signature at a single third-party
+     binary directory.
+  2. A file-sync or indexer agent on `Documents\`.
+  3. UE's `DirectoryWatcher` — **demoted.** The `ReadDirectoryChangesW failed ...
+     GetLastError code [6]` line was searched for in the fresh cook log
+     (`Cook-2026.08.12-10.47.07.txt`, 2,493 lines) and **not found**. Only benign
+     DLL-load `GetLastError=126` lines and a normal module-load line appear. Absence
+     here does not disprove the hypothesis, but it was never confirmed present in the
+     first place and must not be treated as corroborated.
 - owner: technical director
 - evidence needed: re-run **without** `-nocleanstage` after (a) excluding the project
   directory from Defender real-time protection, then (b) if that fails, using
   `-stagingdirectory=` to a path outside `Documents\`. Record which one changes the
   outcome. `handle.exe`/Process Explorer would identify the holder directly.
-- risk if left: `-nocleanstage` reuses stale staged files, so a deleted or renamed
-  asset can persist into a package and mask a packaging regression. Acceptable for a
-  project with no content; **not** acceptable once real assets exist.
+- risk if left — **observed, not theoretical, as of 2026-08-12.** The earlier wording
+  of this line said the workaround was "acceptable for a project with no content."
+  That was wrong. In the verified `-nocleanstage` run, `Packaged/Windows/RacingSim.exe`
+  was rewritten (`LastWriteTime` 2026-08-12 10:51:43) while every `.pak`, `.ucas` and
+  `.utoc` under `Packaged/Windows/RacingSim/Content/Paks` still carried
+  `LastWriteTime` 2026-08-10 22:12–22:13. The cook step ran and reprocessed all 586
+  packages that day; **the archive does not contain that cook's output.** A
+  `-nocleanstage` archive is therefore not evidence of the cook that produced it, and
+  must not be cited as gate evidence while this blocker is open.
 - **Gate A is NOT claimed.** A packaged build now exists, but only via a workaround
   whose side effect is stale-file retention.
 

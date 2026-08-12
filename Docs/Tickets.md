@@ -20,10 +20,10 @@ reviews or tests its own change.**
 |---|---|---|---|---|---|
 | ENV-001 | Record engine/toolchain/worker/browser matrix | director | — | A | **DONE** |
 | ENV-002 | Source control, LFS/locks, ignore rules, clean-clone test | director | — | A | **DONE** (locks inert — BLOCKER-002) |
-| ENV-003 | Enable/verify plugins and production exclusions | director | ENV-001 | A, G | **DONE** (packaged manifest check outstanding) |
+| ENV-003 | Enable/verify plugins and production exclusions | director | ENV-001 | A, G | **DONE** — manifest checked 2026-08-10; conclusion **corrected 2026-08-12**, see B-1 below |
 | ENV-004 | Discover build/test/cook/package commands | director | ENV-003 | A | **DONE** — all five criteria met; packaging still relies on the `-nocleanstage` workaround (BLOCKER-006) |
 | ENV-005 | Verify local Unreal MCP, generate client config | director | ENV-003 | G | **DONE** — loopback-only confirmed by probe; write test deliberately deferred |
-| LEGAL-001 | Inventory/quarantine assets, initialize ledger | ip-compliance-auditor | — | H | **DONE** — re-inventoried 2026-08-10; ledger now holds 6 assets and **6** open legal questions |
+| LEGAL-001 | Inventory/quarantine assets, initialize ledger | ip-compliance-auditor | — | H | **DONE** — re-inventoried 2026-08-10; audited 2026-08-12; ledger holds 6 assets and **5** open legal questions (#3 closed) |
 | ARCH-001 | Pixel Streaming 2 + scaling ADR | director | ENV-001 | — | **DONE** (ADR-0001..0004) |
 
 ### ENV-004 — acceptance criteria, closed 2026-08-10
@@ -56,14 +56,41 @@ override. **SEC-001 must assert that section stays absent.**
 recognized`, and a `-project=` argument split at `C:\Users\jun` that surfaced as a
 bogus JSON parse error. Quote every path; verify by reading logs, never exit codes.
 
-### ENV-005 — acceptance criteria
+### B-1 — Gate G plugin-exclusion evidence was wrong, corrected 2026-08-12
 
-- [ ] `ModelContextProtocol` + `AllToolsets` enabled; editor restarted.
-- [ ] `ModelContextProtocol.GenerateClientConfig ClaudeCode` run; generated `.mcp.json` inspected and confirmed gitignored.
-- [ ] `netstat` shows the listener bound to `127.0.0.1:8000` and **not** `0.0.0.0`.
-- [ ] A connection attempt from the machine's LAN address is refused.
-- [ ] One read-only tool discovery call succeeds before any write is permitted.
-- [ ] A packaged Game target's plugin manifest is inspected and contains neither plugin.
+Raised by `code-reviewer` in the M0 verification pass. `Docs/Environment.md:197-212`
+claimed a search of the packaged tree returned "zero matches" for six editor-only
+plugins. That is false for two of them. The artifact shows:
+
+- `Packaged/Windows/Manifest_UFSFiles_Win64.txt` lists `PythonScriptPlugin.uplugin`,
+  `EditorScriptingUtilities.uplugin` and `DefaultEditorScriptingUtilities.ini`;
+- `Packaged/Windows/RacingSim/Saved/Logs/RacingSim.log` records
+  `Mounting Engine plugin EditorScriptingUtilities` and
+  `Mounting Engine plugin PythonScriptPlugin`;
+- `global.ucas` carries the cooked script-object names `/Script/ModelContextProtocol`
+  (47), `/Script/ToolsetRegistry` (10), `/Script/PythonScriptPlugin` (5),
+  `/Script/EditorScriptingUtilities` (3).
+
+Cause: `FPluginReferenceDescriptor::IsEnabledForTarget`
+(`PluginReferenceDescriptor.cpp:64-85`) is evaluated **per reference**, applied at
+`PluginManager.cpp:2425`. The `.uproject` `TargetAllowList` suppresses only the
+project's own reference; other enabled engine plugins reference `PythonScriptPlugin`
+and `EditorScriptingUtilities` with no allowlist and re-enable them.
+
+**What still holds:** `ModelContextProtocol`, `AllToolsets` and `ToolsetRegistry` are
+genuinely absent as descriptors, binaries and mounts. The MCP exclusion is real. Only
+the blanket "zero matches" sentence, and the "In shipping: No" column for those two
+engine plugins, were wrong.
+
+**Consequence nobody had recorded:** because editor plugins load in the cook
+commandlet, *which editor plugins are enabled changes the shipped bytes*. Disabling
+`AllToolsets` later will alter `global.ucas`. This belongs in the rollback notes for
+any decision to narrow the MCP toolset surface.
+
+**Untested:** no Shipping-configuration build has ever been produced. The exclusion is
+confirmed for Game/Development only; `Docs/07-QualityGates.md:9` says "shipping", and
+that word remains untested. Gating is on `EBuildTargetType` and orthogonal to
+`EBuildConfiguration`, so the inference is strong — but it is an inference.
 
 ---
 
@@ -81,6 +108,26 @@ the `Core`/`Vehicle`/`Race`/`UI`/`Streaming`/`Tests` layout from
 `Docs/15-ProjectStructure.md`. Acceptance: every layer compiles as its own module
 with explicit dependencies; no cyclic dependencies; logging category per layer;
 editor and Game targets both build with zero new warnings.
+
+> **CORE-001 cannot be dispatched until this contradiction is resolved** (raised by
+> `code-reviewer`, 2026-08-12). `Docs/15-ProjectStructure.md:4-33` and `README.md`
+> show `Core/ Vehicle/ Race/ UI/ Streaming/ Tests/` as **folders inside the single
+> `Source/RacingSim` module**. The acceptance sentence above requires **one module per
+> layer**. Those are different deliverables and the ticket cannot be reviewed against
+> both.
+>
+> If multi-module wins, these must change together: `RacingSim.uproject:6-12` (the
+> `Modules` array lists only `RacingSim`); `Source/RacingSim.Target.cs:13` and
+> `Source/RacingSimEditor.Target.cs:13` (each adds only `RacingSim` to
+> `ExtraModuleNames`); and `Source/RacingSim/RacingSim.cpp:6` —
+> `IMPLEMENT_PRIMARY_GAME_MODULE` must remain in exactly one module, with the rest
+> using `IMPLEMENT_MODULE`. A `Tests` module must additionally be typed
+> `DeveloperTool`/`UncookedOnly` or guarded by `WITH_AUTOMATION_TESTS`, or test code
+> ships in the Game target.
+>
+> Nothing else in the stub obstructs the replacement.
+> `Source/RacingSim/RacingSim.Build.cs:14-23` is minimal and correct, and both targets
+> have current receipts.
 
 `CORE-002` must define the units policy (Unreal centimetres, documented SI
 conversions) and the build-ID scheme that `Docs/15-ProjectStructure.md` requires on
