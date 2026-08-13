@@ -448,6 +448,73 @@ render frame rate; reset can never award progress or duplicate a checkpoint.
 
 The circuit must be **original**. No real track name, layout, signage or venue.
 
+### RACE-001 — acceptance criteria, opened 2026-08-13
+
+Scope per this row: `Race state machine and monotonic clock`. Owner
+`race-systems-engineer`. Gate B. Depends on `CORE-002` (DONE).
+
+**Deliberately track-agnostic.** `TRACK-001`/`TRACK-002` (checkpoints, centerline) and
+lap/sector validation (`RACE-002`) are later, separate tickets. RACE-001 is the state
+machine skeleton and the clock everything else attaches to — it must not reference a
+checkpoint, a lap, or a track asset.
+
+- [x] Race state enum (e.g. `ERaceState`: PreRace, Countdown, Racing, Finished, Results)
+      lives in `Core/RacingSimTypes.h` alongside the project's other shared vocabulary
+      (`ERacingRunValidity`, `ERacingInputDeviceType`) — `UI/` needs to read it for the
+      HUD later without depending on `Race/`.
+- [x] The state machine itself (transition logic, clock ownership) lives in `Race/`, not
+      `Core/` — it is race truth, not a shared contract. `CLAUDE.md`: "No race truth
+      lives in `Streaming`" implies the inverse too — race truth lives in `Race/`.
+- [x] Only the authored transition graph is legal (e.g. PreRace→Countdown→Racing→
+      Finished→Results, Results→PreRace on restart). An illegal transition attempt is
+      rejected and logged, never silently applied and never a crash.
+- [x] Countdown, start, finish, results, and restart transitions are deterministic and
+      idempotent — calling the same transition twice produces no additional effect
+      (Gate B, verbatim).
+- [x] Race clock is monotonic and independent of render frame rate (Gate B, verbatim):
+      elapsed time is derived from a monotonic time source (e.g. `FPlatformTime::Seconds()`),
+      not accumulated from per-tick `DeltaTime`, so it cannot drift under frame-rate
+      variance or a paused/hitched frame.
+- [x] Clock is a single server-side authority — nothing client-side interpolates or
+      guesses race time; this is the source `RACE-002` will time laps against.
+- [x] Restart/reset can never award progress: restarting mid-race returns the state
+      machine to `PreRace`/`Countdown` with the clock re-zeroed, never to a state that
+      preserves partial progress (Gate B, verbatim — the checkpoint half of this rule is
+      `RACE-002`'s, the state/clock half is this ticket's).
+- [x] No per-frame allocations, no broad actor searches, no synchronous asset loads in
+      the state machine's `Tick` or transition paths (`CLAUDE.md` coding rules).
+- [x] `RacingSimTests` gains automation coverage: every legal transition, every illegal
+      transition attempt (rejected, not crashed), idempotency of each transition called
+      twice, and clock monotonicity under a simulated variable/dropped frame rate.
+- [x] Editor **and** Game targets build with zero new warnings.
+
+### RACE-001 — verification evidence, 2026-08-13
+
+- Editor (`RacingSimEditor Win64 Development`): `Result: Succeeded`, 0 `warning|error`
+  matches in the filtered UBT log.
+- Game (`RacingSim Win64 Development`): `Result: Succeeded`, 0 `warning|error` matches
+  in the filtered UBT log.
+- Automation `Smoke` filter, this worktree: `Saved/Automation/Report/index.json` —
+  `succeeded: 442, failed: 0, notRun: 0`, all 8 `RacingSim.Race.*` suites
+  (`ClockMonotonic`, `ClockUnderStates`, `Countdown`, `Idempotency`,
+  `PlatformTimeSource`, `Reentrancy`, `RestartAwardsNoProgress`, `Ruleset`,
+  `StateMachineSemantics`, `TransitionGraph`) present and `Success`.
+- One real bug found and fixed by the director during verification: the automation
+  run's first pass (`442` total, `1` failed) found `RaceClockSpec.cpp`'s "A 4-second
+  stall is counted in full" test used a `1e-12` tolerance on a `TestEqual` at
+  `Epoch = 987654.5` (~1e6 magnitude, double ULP ~1.2e-10 there) comparing against a
+  non-exactly-representable literal (`4.016`) — tighter than double precision allows.
+  Fixed by widening to `1e-9` with a comment explaining why the whole/half-integer
+  cases elsewhere in the same file are safe at `0.0` tolerance and this one is not.
+  This is very likely what the implementing agent's cut-off final message ("Let me fix
+  several floating-point-exactness and API risks I spotted before building") was about
+  to address before its run ended.
+- `race-systems-engineer`'s implementation additionally includes
+  `Source/RacingSim/Race/RaceRulesetDataAsset.h/.cpp` (ruleset id, countdown seconds,
+  content version/hash, validation) — not explicitly named in the acceptance criteria
+  above but a reasonable supporting type for `PollAutoTransitions()`'s automatic
+  countdown; flagged for `code-reviewer` to judge as in-scope or split out.
+
 ---
 
 ## Epic 4 — HUD

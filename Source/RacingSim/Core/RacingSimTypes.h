@@ -93,6 +93,67 @@ enum class ERacingPenaltyReason : uint8
 	Other			UMETA(DisplayName = "Other")
 };
 
+/**
+ * Where a race session is in its lifecycle.
+ *
+ * RACE-001. Lives in Core/ rather than Race/ for one concrete reason: UI/ has to
+ * read it to drive the HUD (countdown banner, finish banner, results screen) and
+ * UI/ must not take a dependency on Race/ to do it. Race/ owns the *transitions*;
+ * Core/ owns only the vocabulary.
+ *
+ * The authored transition graph, and the fact that only it is legal, is enforced
+ * by URaceStateMachine (Race/RaceStateMachine.h). Nothing else in the project may
+ * assign this enum. Reading it is free; writing it is Race/'s alone.
+ *
+ *   PreRace --> Countdown --> Racing --> Finished --> Results
+ *      ^                                                 |
+ *      +---------------- Restart (legal from any) -------+
+ *
+ * There is deliberately no Unknown/None/Invalid member, unlike ERacingRunValidity.
+ * A run's validity genuinely can be "not yet determined"; a state machine's state
+ * cannot. PreRace is enumerator 0, so a default-constructed ERaceState is the
+ * correct boot state rather than a sentinel that every consumer must special-case.
+ * The cost is that an out-of-range cast cannot be distinguished from PreRace by
+ * value alone -- which is why URaceStateMachine range-checks at its own boundary
+ * instead of relying on a sentinel to do it.
+ *
+ * Docs/01-Architecture.md draws the graph with Boot/Loading/Grid ahead of
+ * Countdown. Those are collapsed into PreRace here: RACE-001 is track-agnostic, so
+ * there is no track or car to load or grid onto yet, and modelling three states
+ * that no code can currently distinguish would be modelling a fiction. Splitting
+ * PreRace later is an additive change (append enumerators, add edges); merging
+ * states that shipped separately would not be.
+ */
+UENUM(BlueprintType)
+enum class ERaceState : uint8
+{
+	/**
+	 * Session exists, nothing is timed, drive input is not released.
+	 * Clock invariant: reset to zero and not running. This is the only state a
+	 * restart may land in, and it is enumerator 0 on purpose.
+	 */
+	PreRace		UMETA(DisplayName = "Pre-race"),
+
+	/**
+	 * 3-2-1-Go. Drive input stays locked. The race clock is still zero and still
+	 * not running -- a countdown that fed the race clock would hand every driver a
+	 * head start measured in whatever the countdown cost.
+	 */
+	Countdown	UMETA(DisplayName = "Countdown"),
+
+	/** Drive input released, race clock running. The only state in which race time accrues. */
+	Racing		UMETA(DisplayName = "Racing"),
+
+	/**
+	 * The result is frozen. Race clock stopped exactly once; further sampling
+	 * returns the same duration no matter how long the finish presentation runs.
+	 */
+	Finished	UMETA(DisplayName = "Finished"),
+
+	/** Final time, validity and restart/exit controls are shown. Clock stays frozen. */
+	Results		UMETA(DisplayName = "Results")
+};
+
 /** Speed unit shown to the player. Presentation only -- see RacingSimUnits.h; storage is always cm/s. */
 UENUM(BlueprintType)
 enum class ERacingSpeedDisplayUnit : uint8
