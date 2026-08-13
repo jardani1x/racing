@@ -495,7 +495,7 @@ checkpoint, a lap, or a track asset.
 - Game (`RacingSim Win64 Development`): `Result: Succeeded`, 0 `warning|error` matches
   in the filtered UBT log.
 - Automation `Smoke` filter, this worktree: `Saved/Automation/Report/index.json` —
-  `succeeded: 442, failed: 0, notRun: 0`, all 8 `RacingSim.Race.*` suites
+  `succeeded: 442, failed: 0, notRun: 0`, all 10 `RacingSim.Race.*` suites
   (`ClockMonotonic`, `ClockUnderStates`, `Countdown`, `Idempotency`,
   `PlatformTimeSource`, `Reentrancy`, `RestartAwardsNoProgress`, `Ruleset`,
   `StateMachineSemantics`, `TransitionGraph`) present and `Success`.
@@ -514,6 +514,50 @@ checkpoint, a lap, or a track asset.
   content version/hash, validation) — not explicitly named in the acceptance criteria
   above but a reasonable supporting type for `PollAutoTransitions()`'s automatic
   countdown; flagged for `code-reviewer` to judge as in-scope or split out.
+
+### RACE-001 — review findings, pass 1
+
+`code-reviewer` verdict: **approve with conditions** (no BLOCKER, no HIGH). Confirmed
+`URaceRulesetDataAsset` is in-scope (not scope creep) and confirmed the plain-`UObject`
+design (vs. `AActor`/subsystem) holds up. Independently verified the clock arithmetic
+numerically and the track-agnostic constraint by grep. Did not run the build or tests
+itself — build/test evidence above is director-provided.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| M1 | `HasRaceAuthority` fails open on a null `UWorld` (commandlet/automation), which is also reachable from some legitimate client-side outers — no automation coverage of either branch | Fixed — direct tests added for `HasRaceAuthority(nullptr)` and the world-less-context branch; the untested net-client branch is recorded as accepted risk in this section (below) rather than faked with a synthetic PIE world |
+| M2 | `URaceRulesetDataAsset::Validate()` has no runtime caller; a NaN or negative `CountdownSeconds` reaches `GetCountdownRemainingSeconds()` (`BlueprintCallable`) as NaN, or causes instant release | Fixed — `CreateWithTimeSource` now rejects non-finite/negative `CountdownSeconds` at construction (falls back to manual countdown, logged). Deliberately NOT full `Validate()`: that also rejects `CountdownSeconds == 0.0`, which the project's own automation intentionally relies on for an instant-release countdown — `Validate()` remains a publish-time content check, not a construction-time gate. Tests added for both NaN and negative cases |
+| M3 | The production `Create()` path (real `PlatformMonotonicSeconds` source) is never exercised — every test uses the fake time source | Fixed — a smoke test now exercises `Create()` end-to-end through `BeginCountdown`/`StartRace`, asserting only finiteness and non-decrease (no wall-clock duration assertion) |
+| M4 | `CommitTransition` discards `FRaceClock::Start/Stop`'s `bool` return; a refused `Start` (non-finite reading) would still enter `Racing` and freeze a 0.000 result with no invalidity marker | **Deferred to `RACE-002`** — the fix requires plumbing `ERacingRunValidity` (Core, reserved by CORE-002) into a result, which is RACE-002/RACE-003's job, not this ticket's. Unreachable with the shipped platform source today |
+| M5 | No exit actions (contrary to `Docs/01-Architecture.md`'s original "one entry action, one exit action" line) — countdown-clock teardown is duplicated into two entry actions instead | **Batched forward, documented** — `Docs/01-Architecture.md` now states the deviation explicitly and flags it as the first thing a new edge leaving `Countdown` must remember. Reviewer confirmed no re-review needed |
+| M6 | `RaceStateMachineSpec.cpp`'s countdown-boundary test used non-binary-exact deltas (`2.9 + 0.1`) landing on a zero-margin `TestTrue`/`TestFalse` pair that passes only by rounding luck at this epoch | Fixed — replaced with binary-exact `2.875 + 0.125`, matching the discipline already used elsewhere in the same file |
+| M7 | `Docs/15-ProjectStructure.md` and `Docs/01-Architecture.md` not updated: stale `Race/` file list, stale state diagram (`Boot->Loading->Grid->Countdown`, Restart landing in `Countdown`), `URaceClock` proposed as a `UObject` vs. shipped `FRaceClock` struct | Fixed — both docs updated to match shipped reality |
+| L1 | Ticket's own evidence section said "8" `RacingSim.Race.*` suites; actual count is 10 | Fixed |
+| L2 | `GetTransitionTarget(PreRace, Restart, ...)` returns `true` (static graph query) while `RequestTransition` returns `Redundant` for the same case (instance behaviour) — a caller using only the static helper could disagree with the object | **Batched forward** — reviewer did not require a fix for re-review; both behaviours are individually correct and tested, the disagreement is between two different questions ("is this an edge" vs. "would calling it do anything") |
+| L3 | `Restart` from `PreRace` bumps no session id and broadcasts nothing | **Batched forward**, noted for `UI-001`/`RACE-002` |
+| L4 | `CurrentState`/`SessionId` are non-`Transient` `UPROPERTY`s while `FRaceClock` is not a `UPROPERTY` at all — a duplicate/save could restore `Racing` with a zeroed clock | **Batched forward** |
+| L5 | Test lambdas bound to `OnRaceStateChanged` are never explicitly unbound (safe today, since nothing broadcasts after the owning `TStrongObjectPtr` goes out of scope) | **Batched forward** |
+| L6 | `ComputeContentHash`'s "any added field MUST be hashed" comment is unenforced by any guard | **Batched forward** |
+| L7 | The tolerance fix (`1e-12` -> `1e-9`) was the looser of two valid repairs; a binary-exact fixture value would have preserved `0.0` tolerance | Not changed — reviewer noted this is a preference, not an objection; `1e-9` at a 4-second interval is 1 ns and cannot mask a real defect |
+| L8 | No runtime `checkSlow(IsInGameThread())` guard on `FRaceClock::Sample()`'s mutating path | **Batched forward** |
+
+**Accepted risk (M1, net-client branch):** `HasRaceAuthority`'s net-client-rejection
+branch (`World->GetNetMode() != NM_Client`) has no automation coverage — constructing a
+real networked `UWorld` under `-nullrhi Automation RunFilter Smoke` is out of proportion
+for this ticket. The first ticket that constructs a `URaceStateMachine` inside a real
+PIE/networked session (`RACE-002` or later, once `ARaceDirector` exists) must add that
+coverage before this project ships with online play.
+
+### RACE-002 — findings inherited from RACE-001
+
+Raised by `code-reviewer` against RACE-001 (`Source/RacingSim/Race/RaceStateMachine.cpp`),
+deferred here because closing them requires the lap/result plumbing RACE-002 owns. Read
+before writing RACE-002's acceptance criteria:
+
+| ID | Finding | What RACE-002 must do |
+| --- | --- | --- |
+| M4 (RACE-001 pass 1) | `URaceStateMachine::CommitTransition` discards `FRaceClock::Start()`/`Stop()`'s `bool` return. If `Start` ever refuses a reading (non-finite — unreachable with the shipped platform source, but reachable once a real result is written), the machine still enters `Racing` and later freezes a silent `0.000` result with nothing marking the run invalid | Check the return value; on refusal, mark the run's `ERacingRunValidity` (Core, reserved by CORE-002) invalid rather than letting a zero-duration result reach a leaderboard |
+| M1's accepted risk (RACE-001 pass 1) | `URaceStateMachine::HasRaceAuthority`'s net-client-rejection branch has no automation coverage | Once `ARaceDirector` (or equivalent) constructs a `URaceStateMachine` inside a real PIE/networked session, add a test exercising the net-client rejection path |
 
 ---
 

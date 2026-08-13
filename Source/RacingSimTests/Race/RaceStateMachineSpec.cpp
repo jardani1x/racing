@@ -369,6 +369,53 @@ bool FRaceStateMachineSemanticsTest::RunTest(const FString& Parameters)
 			URaceStateMachine::CreateWithTimeSource(GetTransientPackage(), nullptr, nullptr));
 	}
 
+	// -- HasRaceAuthority: the two branches this commandlet CAN exercise ------
+	//
+	// code-reviewer M1: a real net-client UWorld cannot be constructed under
+	// -nullrhi Automation RunFilter Smoke without standing up PIE, which is out
+	// of proportion for a ticket-001 skeleton. What IS testable here -- a null
+	// context refusing, and a null-world (transient/commandlet) context passing
+	// -- is tested directly rather than only indirectly through Create()'s
+	// error-message assertions above. The untested net-client branch is recorded
+	// as accepted risk in Docs/Tickets.md (RACE-001 review findings): the first
+	// ticket that constructs this machine inside a real PIE/networked session
+	// (RACE-002 or later) must add that coverage before this project ships with
+	// online play.
+	{
+		TestFalse(TEXT("HasRaceAuthority(nullptr) is false"),
+			URaceStateMachine::HasRaceAuthority(nullptr));
+		TestTrue(TEXT("HasRaceAuthority is true for a world-less (transient/commandlet) context"),
+			URaceStateMachine::HasRaceAuthority(GetTransientPackage()));
+	}
+
+	// -- Create() with the real platform time source (M3) --------------------
+	//
+	// Every other case in this file uses CreateWithTimeSource with a fake clock.
+	// This proves the production wiring -- Create() -> PlatformMonotonicSeconds
+	// -- actually produces a finite, non-decreasing race time end-to-end, without
+	// asserting a wall-clock duration (which would make the test's runtime the
+	// test's tolerance).
+	{
+		const TStrongObjectPtr<URaceStateMachine> Machine(URaceStateMachine::Create(GetTransientPackage()));
+		if (TestNotNull(TEXT("Create() succeeds with the real platform time source"), Machine.Get()))
+		{
+			Machine->BeginCountdown();
+			Machine->StartRace();
+
+			double Previous = Machine->GetRaceElapsedSeconds();
+			TestTrue(TEXT("Real-clock elapsed time is finite"), FMath::IsFinite(Previous));
+			TestTrue(TEXT("Real-clock elapsed time is non-negative"), Previous >= 0.0);
+
+			for (int32 Index = 0; Index < 5; ++Index)
+			{
+				const double Sample = Machine->GetRaceElapsedSeconds();
+				TestTrue(TEXT("Real-clock elapsed time stays finite across repeated samples"), FMath::IsFinite(Sample));
+				TestTrue(TEXT("Real-clock elapsed time never decreases"), Sample >= Previous);
+				Previous = Sample;
+			}
+		}
+	}
+
 	// -- Exhaustive 5 x 5 instance matrix ------------------------------------
 	//
 	// A FRESH machine per pair. Reusing one would make each result depend on the
@@ -821,9 +868,17 @@ bool FRaceRestartAwardsNoProgressTest::RunTest(const FString& Parameters)
 		Machine->BeginCountdown();
 		TestEqual(TEXT("The new countdown starts from the full duration"),
 			Machine->GetCountdownRemainingSeconds(), 3.0, 1e-9);
-		GRaceSpecNowSeconds += 2.9;
+		// code-reviewer M6: 2.9 + 0.1 lands the boundary assertion below on a sum
+		// (2.9 has no exact binary representation) that happens to round to exactly
+		// 3.0 at this epoch, but is not guaranteed to -- a change to the epoch or the
+		// split would flip the assertion on rounding, not on a real state-machine
+		// defect. 2.875 + 0.125 are both exact powers-of-two sums, so the boundary
+		// is genuinely exact here rather than exact by luck, matching the discipline
+		// used elsewhere in this file (see the two blocks using deliberately
+		// binary-exact deltas).
+		GRaceSpecNowSeconds += 2.875;
 		TestFalse(TEXT("The new countdown does not inherit the old one's progress"), Machine->PollAutoTransitions());
-		GRaceSpecNowSeconds += 0.1;
+		GRaceSpecNowSeconds += 0.125;
 		TestTrue(TEXT("The new countdown expires on its own schedule"), Machine->PollAutoTransitions());
 	}
 
@@ -917,6 +972,45 @@ bool FRaceCountdownTest::RunTest(const FString& Parameters)
 			Machine->PollAutoTransitions());
 		TestEqual(TEXT("A zero countdown still goes through Countdown into Racing"),
 			*StateName(Machine->GetRaceState()), *StateName(ERaceState::Racing));
+	}
+
+	// -- An invalid ruleset falls back to manual, not to NaN ------------------
+	//
+	// code-reviewer M2: a NaN or negative CountdownSeconds must not reach
+	// GetCountdownRemainingSeconds(), a BlueprintCallable getter a HUD could bind
+	// to directly. Construction must refuse the ruleset, not merely note it.
+	{
+		AddExpectedMessagePlain(
+			TEXT("invalid CountdownSeconds"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+
+		const TStrongObjectPtr<URaceRulesetDataAsset> NaNRuleset(NewObject<URaceRulesetDataAsset>());
+		NaNRuleset->RulesetId = TEXT("Ruleset.Test.NaN");
+		NaNRuleset->CountdownSeconds = FMath::Sqrt(-1.0);
+
+		GRaceSpecNowSeconds = 85000.0;
+		const TStrongObjectPtr<URaceStateMachine> Machine(
+			URaceStateMachine::CreateWithTimeSource(GetTransientPackage(), NaNRuleset.Get(), &RaceSpecTimeSource));
+
+		TestFalse(TEXT("A NaN CountdownSeconds is rejected, not installed"), Machine->HasAutomaticCountdown());
+		Machine->BeginCountdown();
+		TestTrue(TEXT("Countdown does not remain NaN"),
+			FMath::IsFinite(Machine->GetCountdownRemainingSeconds()));
+		TestEqual(TEXT("Countdown is manual: it does not release on its own"),
+			Machine->GetCountdownRemainingSeconds(), 0.0, 0.0);
+	}
+	{
+		AddExpectedMessagePlain(
+			TEXT("invalid CountdownSeconds"), ELogVerbosity::Error, EAutomationExpectedMessageFlags::Contains, 1);
+
+		const TStrongObjectPtr<URaceRulesetDataAsset> NegativeRuleset(NewObject<URaceRulesetDataAsset>());
+		NegativeRuleset->RulesetId = TEXT("Ruleset.Test.Negative");
+		NegativeRuleset->CountdownSeconds = -1.0;
+
+		GRaceSpecNowSeconds = 85500.0;
+		const TStrongObjectPtr<URaceStateMachine> Machine(
+			URaceStateMachine::CreateWithTimeSource(GetTransientPackage(), NegativeRuleset.Get(), &RaceSpecTimeSource));
+
+		TestFalse(TEXT("A negative CountdownSeconds is rejected, not installed"), Machine->HasAutomaticCountdown());
 	}
 
 	// -- Without a ruleset: the countdown is manual --------------------------

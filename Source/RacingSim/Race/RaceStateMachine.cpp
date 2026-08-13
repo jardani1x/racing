@@ -166,7 +166,6 @@ URaceStateMachine* URaceStateMachine::CreateWithTimeSource(UObject* Owner, URace
 
 	URaceStateMachine* Machine = NewObject<URaceStateMachine>(Owner);
 	Machine->TimeSource = InTimeSource;
-	Machine->Ruleset = InRuleset;
 
 	if (InRuleset == nullptr)
 	{
@@ -174,6 +173,26 @@ URaceStateMachine* URaceStateMachine::CreateWithTimeSource(UObject* Owner, URace
 		// rather than by the clock. Logged once, at Display, so a session that is
 		// silently manual is visible in a log without being alarming.
 		UE_LOG(LogRacingRace, Display, TEXT("Race state machine created with no ruleset: countdown is manual, PollAutoTransitions will not advance it."));
+	}
+	// Deliberately NOT InRuleset->Validate() here: Validate() also rejects
+	// CountdownSeconds == 0.0 as "legal for automation but not for a published
+	// run" (RaceRulesetDataAsset.h), and 0.0 is exactly the value this project's
+	// own automation uses for an instant-release countdown. Validate() is a
+	// publish-time content check (CORE-003's job); construction only needs to
+	// stop the two values that corrupt state rather than merely being
+	// gameplay-unwise: non-finite reaches GetCountdownRemainingSeconds()
+	// (a BlueprintCallable getter) as NaN, and negative satisfies the `<`
+	// comparison in PollAutoTransitions() on every poll from the moment
+	// Countdown is entered, same effective bug as NaN.
+	else if (!FMath::IsFinite(InRuleset->CountdownSeconds) || InRuleset->CountdownSeconds < 0.0)
+	{
+		UE_LOG(LogRacingRace, Error,
+			TEXT("Race state machine created with an invalid CountdownSeconds (%f); falling back to manual countdown."),
+			InRuleset->CountdownSeconds);
+	}
+	else
+	{
+		Machine->Ruleset = InRuleset;
 	}
 
 	return Machine;
