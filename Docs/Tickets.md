@@ -110,7 +110,7 @@ that word remains untested. Gating is on `EBuildTargetType` and orthogonal to
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | CORE-001 | Module/folder structure and logging categories | director | ENV-004 | A | **DONE** 2026-08-12 — `code-reviewer` approved at `9a7d5d4` after two blockers were closed. Ticket-level DONE only; **not** M0 sign-off |
-| CORE-002 | Settings, build ID, units, telemetry contracts | race-systems-engineer | CORE-001 | A, B | OPEN |
+| CORE-002 | Settings, build ID, units, telemetry contracts | race-systems-engineer | CORE-001 | A, B | **DONE** 2026-08-13 — `code-reviewer` approved across two passes at `f84300c`; `test-engineer` independently confirmed both targets build clean and 432/432 automation Smoke tests pass. Merged to `main` at `358848b`. Two MEDIUM findings (build-ID authority/sanitisation edge cases) tracked forward into `CORE-003` |
 | TEST-001 | Test module and first smoke test | test-engineer + implementer | CORE-001 | A | OPEN |
 | CORE-003 | DataAsset validation framework | race-systems-engineer | CORE-002 | A | OPEN |
 
