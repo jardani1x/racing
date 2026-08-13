@@ -10,10 +10,19 @@ separate test module.
 
 Rationale: the five gameplay layers are folder conventions, not link-enforced
 boundaries, because the boundaries are not yet proven by real code and premature
-modularization creates churn when they shift. Splitting them into separate modules
-later is a mechanical change. `Tests` **is** a real module, because that is a
-correctness requirement rather than a preference — an `UncookedOnly` module cannot be
-built into a packaged Game target, so test code physically cannot ship.
+modularization creates churn when they shift. `Tests` **is** a real module, because
+that is a correctness requirement rather than a preference — an `UncookedOnly`
+module cannot be built into a packaged Game target, so test code physically cannot
+ship.
+
+**Finality (CORE-002, closes N-3):** this decision was reopenable only until the
+first real `UObject` existed to exercise it. `URacingSimSettings`
+(`Core/RacingSimSettings.h`) is that `UObject`, so the two-module layout above is now
+final for the gameplay layers — a later split into separate modules is no longer a
+"mechanical change" available on demand: it means moving a `UDeveloperSettings`
+subclass and everything that depends on it (including `RacingSimTests`) across a
+module boundary, which is a real migration, not a folder rename. If the layers are
+ever promoted to real modules, treat it as its own ticket with its own review.
 
 Consequence to accept knowingly: **architecture boundaries between the five gameplay
 layers are not compile-enforced.** Nothing stops `Streaming/` from including a `Race/`
@@ -26,9 +35,12 @@ Source/
   RacingSim/                      <- Runtime module
     RacingSim.Build.cs
     Core/
-      RacingSimTypes.h
-      RacingSimSettings.*
-      RacingTelemetry.*
+      RacingSimLog.*                <- CORE-001
+      RacingSimTypes.h              <- CORE-002: shared enums, penalty summary
+      RacingSimUnits.h              <- CORE-002: cm/SI conversion policy, header-only
+      RacingSimBuildId.*            <- CORE-002: build ID + version stamp contract
+      RacingSimSettings.*           <- CORE-002: UDeveloperSettings, config=Game
+      RacingTelemetry.*             <- CORE-002: telemetry data contracts
     Vehicle/
       RacingVehiclePawn.*
       RacingVehicleMovementFacade.*
@@ -52,6 +64,8 @@ Source/
 
   RacingSimTests/                 <- UncookedOnly module, never packaged
     RacingSimTests.Build.cs
+    RacingSimTestsLog.h
+    Core/                         <- mirrors the runtime layer folders
     Vehicle/
     Race/
     UI/
@@ -123,3 +137,25 @@ Every competitive result records:
 - validity/penalty state.
 
 This prevents leaderboard comparisons across incompatible builds.
+
+**Implemented by CORE-002** as `FRacingSimVersionStamp` in
+`Source/RacingSim/Core/RacingSimBuildId.h` — one struct carrying all eight items, so a
+result cannot be written with half of them. `MakeCurrent()` fills only what this build
+genuinely knows (build ID, engine patch and changelist, physics policy version, assist
+preset); track, car, ruleset, input type and validity stay unpopulated until
+`TRACK-001`, `VEH-003`, `RACE-001`, `VEH-001` and `RACE-002` fill them, and
+`IsPublishable()` refuses a stamp that still has holes.
+
+Game build ID scheme (`ERacingBuildIdScheme`):
+
+- `Derived` — `<channel>-<projectversion>-<engineversion>+<changelist>-<config>-<targettype>`,
+  e.g. `dev-0.1.0-5.8.1+56057345-Development-Editor`. Always available, never
+  authoritative: two different local source trees on one engine patch produce the same
+  string.
+- `Explicit` — stamped by CI into `URacingSimSettings::ExplicitBuildId`. The only scheme
+  a published leaderboard may accept (`FRacingSimBuildId::bIsAuthoritative`).
+
+Also implemented: the **units policy** in `Source/RacingSim/Core/RacingSimUnits.h`.
+Storage and simulation are Unreal centimetres everywhere; SI and display units exist
+only at presentation and at authored-data load. Variables not in Unreal units carry the
+unit in the name.

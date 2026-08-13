@@ -268,6 +268,97 @@ conversions) and the build-ID scheme that `Docs/15-ProjectStructure.md` requires
 every competitive result. This closes the `Build ID/versioning method: UNVERIFIED`
 field in `Docs/Environment.md`.
 
+### CORE-002 — acceptance criteria, opened 2026-08-12
+
+Scope per this row: `Settings, build ID, units, telemetry contracts`. Owner
+`race-systems-engineer`. Gates A, B. Depends on `CORE-001` (DONE).
+
+**Include-layout decision (project owner, 2026-08-12):** keep
+`PublicIncludePaths.Add(ModuleDirectory)` from `CORE-001`. Do **not** restructure to
+`Public/`+`Private/` in this ticket.
+
+- [x] `Core/RacingSimSettings.h/.cpp` — `URacingSimSettings` (`UDeveloperSettings`,
+      `config="Game"`), editable in Project Settings. This is the module's **first
+      UObject**, so it is also the moment `N-3` (module-granularity finality) is tested
+      for real rather than in the abstract.
+- [x] Build ID scheme defined as a data contract (not populated with real track/car
+      values yet — those land with `TRACK-001`/`VEH-003`) covering every field
+      `Docs/15-ProjectStructure.md` "Versioning" section requires: game build ID, engine
+      patch, track definition/version hash, car spec/tune version, physics policy
+      version, assist preset, input type, validity/penalty state.
+- [x] Units policy: Unreal-internal values stay centimetres; SI conversion constants/
+      functions (cm↔m, cm/s↔km/h or m/s as needed) live in `Core/` with unit tests.
+      Every conversion site documents cm vs SI in a comment per `CLAUDE.md`.
+- [x] `Core/RacingTelemetry.h/.cpp` — shared telemetry data-contract structs consumed by
+      `Vehicle`/`Race`/`UI`/`Streaming`. Contracts only, no gameplay logic, matching
+      `Core`'s architecture role (`CLAUDE.md` Architecture boundaries).
+- [x] `N-1` closed: `RacingSimLog.h`'s `CompileTimeVerbosity` third parameter and its
+      comment are corrected to match the mechanism actually verified in
+      `LogMacros.h`/`LogVerbosity.h` — not asserted from memory. Current code claims
+      Verbose/VeryVerbose compile out of Shipping; the parameter as written (`All`)
+      does not do that.
+- [x] `N-3` closed: record here that the two-module decision
+      (`Docs/15-ProjectStructure.md`, 2026-08-12) is now exercised by a real UObject and
+      stands as final — no further deferral.
+- [x] `N-6` closed: `Docs/15-ProjectStructure.md`'s `RacingSimTests/` tree adds `Core/`
+      (already present on disk at `Source/RacingSimTests/Core/RacingSimLogSpec.cpp`).
+- [x] `N-7` closed: `.gitignore` re-scoped so the `Samples/PixelStreaming2/WebServers/`
+      rationale comment (lines 80-84) no longer visually reads as covering the unrelated
+      `Archive/`/`StagedBuilds/` lines beneath it.
+- [x] Editor **and** Game targets build with zero new warnings — `Result: Succeeded`
+      plus filtered `warning|error` output inspected for both, closing the Game-target
+      gap CORE-001 left open.
+- [x] `RacingSimTests` gains automation coverage for unit-conversion correctness and
+      settings default values.
+- [x] `Docs/Environment.md`'s `Build ID/versioning method: UNVERIFIED` field is closed
+      with the implemented scheme.
+
+### CORE-002 — verification evidence, 2026-08-13
+
+- Editor (`RacingSimEditor Win64 Development`): `Result: Succeeded`, 0 `warning|error`
+  matches in the filtered UBT log.
+- Game (`RacingSim Win64 Development`): `Result: Succeeded`, 0 `warning|error` matches
+  in the filtered UBT log.
+- Automation `Smoke` filter, this worktree: `Saved/Automation/Report/index.json` —
+  `succeeded: 432, failed: 0, notRun: 0`.
+- `code-reviewer` pass 1: 2 HIGH, 8 MEDIUM, 7 LOW. Verdict "changes requested, no
+  blockers." Independently verified the build/test evidence above rather than trusting
+  the report.
+
+### CORE-002 — review findings, pass 1
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| H-1 | `IsPublishable()` did not check `bIsAuthoritative`; a complete-but-Derived stamp would pass | Fixed — `IsPublishable()` now rejects a non-authoritative `GameBuildId`; test added (`RacingSimVersionSpec.cpp`) |
+| H-2 | `SanitiseComponent` can silently mutate a stamped Explicit ID (e.g. `"1.4.0+4417"`, `"feature/x"`), losing traceability while still marked authoritative | Fixed — `Current()` now warns with both raw and sanitised values when they differ; still authoritative (CI's responsibility to supply a clean stamp, now surfaced loudly); tests added for `+` and `/` cases |
+| M-1 | `RacingSimSettings.h` comment falsely claimed `-`/`+` are stripped from a derived ID | Fixed — comment corrected; derived ID declared opaque/never-parsed; hyphenated-channel test added |
+| M-2 | `TelemetryStaleAfterSeconds = 0` disables staleness checking on a comment citing a convention documented on a different field | Fixed — "0 disables" documented on the field itself in `RacingSimSettings.h`, with a warning against leaving it there in a built config |
+| M-3 | `USTRUCT(BlueprintType)` contracts (telemetry conversions, `ToString()`, `IsStaleAt`, etc.) have no `UFUNCTION`-callable equivalents, so Blueprint/UMG cannot actually reach them despite the HUD being UMG per `CLAUDE.md` | **Deferred to `UI-001`** — needs a `URacingTelemetryFunctionLibrary` with `BlueprintPure` wrappers; out of scope for a Core-only contract ticket |
+| M-4 | `FRacingTelemetryFrame` embeds `TArray`-bearing structs, so copying "the one frame the HUD may read" heap-allocates; `CLAUDE.md` forbids per-frame allocation | **Deferred to `UI-001`** alongside M-3 — needs either a documented pass-by-`const&` contract or a `TInlineAllocator` |
+| M-5 | `ClampMin`/`ClampMax` metadata is not enforced on `-ini:` config overrides or on `BlueprintReadOnly`-only telemetry fields | **Deferred to `CORE-003`** (DataAsset/config validation framework) — the natural home for a `PostInitProperties` range-clamp pass |
+| M-6 | `Docs/15-ProjectStructure.md` still said "splitting later is a mechanical change" after `N-3` should have closed that claim | Fixed — finality recorded in the document itself, not only in a C++ comment |
+| M-7 | Game-target build evidence predated the final source revision | Fixed — both targets rebuilt at the final revision (see verification evidence above) |
+| M-8 | `Docs/Environment.md`'s build-ID description was inaccurate (claimed 2 components from `FEngineVersion`/`FApp`; actually 5, one of which reads `GConfig`) | Fixed — description rewritten to the actual 5-component format with the `GetProjectVersion()` `0.0.0`-fallback caveat noted |
+| L-1..L-5, L-7 | Comment/trait/NaN/log-cadence nits | **Batched forward** — reviewer confirmed not required for re-review |
+| L-6 | This acceptance-criteria block existed only on `main`, uncommitted, absent from this branch | Fixed by this edit |
+
+### CORE-002 — review findings, pass 2 (re-review)
+
+Verdict: **approved for merge**, conditional on the three items below — no further review
+cycle required once applied. Confirmed the M-3/M-4/M-5 deferrals to `UI-001`/`CORE-003`
+(M-4 partially — see below). Independently re-verified all pass-1 fixes against the
+post-fix worktree, including a rebuild at the exact final revision.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM-1 | H-2's fix still marks a sanitisation-mutated Explicit ID `bIsAuthoritative = true`, despite the fix's own comment stating this breaks CI traceability and uniqueness | **Batched forward to `CORE-003`** (see below) — no production caller of `IsPublishable` exists yet; tracked rather than fixed blind |
+| MEDIUM-2 | `SanitiseComponent` rejects `+`, but the Derived-scheme composer embeds a literal `+` itself (engine changelist separator) — inconsistent, and the H-2 warning fires on every standard semver-style CI stamp (`1.4.0+4417`) | **Batched forward to `CORE-003`** alongside MEDIUM-1 |
+| MEDIUM-3 | The two H-2 tests registered the identical `AddExpectedMessagePlain` pattern string; `TSet`-keyed dedup makes the second registration silently replace the first, so the test passes even if only one case actually warns | **Fixed** — patterns now include the raw stamped value (`"...stamped \"1.4.0+4417\""` / `"...stamped \"feature/x\""`), making them distinct and provably tied to the right input |
+| MEDIUM-4 | M-3/M-4/M-5 dispositions lived only in this ticket's closed history, not in the receiving tickets' own bodies | **Fixed** — see `### CORE-003 — findings inherited from CORE-002` and `### UI-001 — findings inherited from CORE-002` below |
+| MEDIUM-5 | `RacingSimLog.h`'s Shipping/Test `CompileTimeVerbosity = Log` branch has no compile evidence (only Development built) | **Batched forward** — engine's own `static_assert` (`LogCategory.h:121-122`) is satisfied by inspection; no Shipping/Test config exists yet for this project |
+| LOW-1..LOW-3 | Doc-comment/asymmetry nits | **Batched forward** |
+| LOW-4 | Entire CORE-002 change set was uncommitted at review time — no revision to pin evidence to | **Fixed** — committed before dispatching `test-engineer` (see commit referenced in the completion report) |
+
 **Deferred review findings CORE-001 must also close — ALL FOUR CLOSED 2026-08-12.**
 
 Raised by `code-reviewer` against the Phase 0 shell on 2026-08-10, deferred as
@@ -301,6 +392,22 @@ The original findings, retained for the record:
 - `Config/DefaultGame.ini` — the `bShould*` / `bOnlyCookProductionAssets` values
   restate engine defaults (`AssetManagerSettings.h:73-76`), adding drift risk with
   no behavioural change. Already removed in Phase 0; do not reintroduce.
+
+---
+
+### CORE-003 — findings inherited from CORE-002
+
+Raised by `code-reviewer` against CORE-002 (`Source/RacingSim/Core/RacingSimSettings.h`,
+`RacingSimBuildId.cpp`, `RacingTelemetry.cpp`), deferred here because CORE-003 (this
+ticket) is the DataAsset/config validation framework and these are all "unenforced range
+or invariant" problems, not contract-shape problems. Read before writing CORE-003's
+acceptance criteria — do not rediscover these from scratch:
+
+| ID | Finding | What CORE-003 must do |
+| --- | --- | --- |
+| M-5 (pass 1) | `ClampMin`/`ClampMax` metadata on `URacingSimSettings` properties (e.g. `TelemetrySampleRateHz`, `PhysicsPolicyVersion`) is enforced only in the details panel, not on `-ini:Game:...=` config overrides. `LapTimeFractionalDigits=99`, `TelemetrySampleRateHz=1e6`, or a negative `PhysicsPolicyVersion` load unchallenged from an ini | Add a `PostInitProperties`/config-load validation pass that re-applies the same range constraints the `UPROPERTY` metadata declares, and a test that an out-of-range ini value is clamped or rejected |
+| MEDIUM-1 (pass 2) | `FRacingSimBuildId::Current()` (`RacingSimBuildId.cpp`, Explicit-scheme branch) marks a sanitisation-mutated stamped ID `bIsAuthoritative = true` even though the fix's own comment states this breaks CI traceability and the uniqueness guarantee that `bIsAuthoritative` promises | Decide and implement the safer rule already used one branch below in the same function for the empty-stamp case: `Result.bIsAuthoritative = (Stamped == Trimmed);` — i.e. a mutated stamp is not authoritative |
+| MEDIUM-2 (pass 2) | `SanitiseComponent`'s allow-list rejects `+`, but the Derived-scheme ID composer embeds a literal `+` itself (`RacingSimBuildId.cpp`, changelist separator) — inconsistent, and it means the H-2 warning fires on every conventionally-formatted CI stamp (semver build metadata, `1.4.0+4417`) | Either add `+` to the allow-list, or document explicitly why Derived may use `+` and Explicit may not |
 
 ---
 
@@ -355,6 +462,18 @@ The circuit must be **original**. No real track name, layout, signage or venue.
 HUD reads authoritative race state; it never computes race truth. Position is shown
 only when opponents exist. Text must stay readable at the lowest supported stream
 tier — a Pixel Streaming constraint, not a normal UI one.
+
+### UI-001 — findings inherited from CORE-002
+
+Raised by `code-reviewer` against CORE-002 (`Source/RacingSim/Core/RacingTelemetry.h`,
+`RacingSimUnits.h`), deferred here because no Blueprint/UMG consumer existed yet at
+CORE-002 to validate the wrapper shape against. Read before writing UI-001's acceptance
+criteria:
+
+| ID | Finding | What UI-001 must do |
+| --- | --- | --- |
+| M-3 (pass 1) | `RacingTelemetry.h`/`RacingSimUnits.h` structs are `USTRUCT(BlueprintType)` but their member functions (`GetForwardSpeedKph/Mph/MetresPerSecond`, `IsStaleAt`, `AreSectorsConsistent`, `IsComplete`, `IsPopulated`, `ToString`, unit conversions) are plain C++ — a `USTRUCT` member function cannot be a `UFUNCTION`, so none of this is reachable from Blueprint/UMG despite the HUD being UMG per `CLAUDE.md` | Add a `URacingTelemetryFunctionLibrary` with `BlueprintPure` wrappers. Keep it in `Source/RacingSim/Core/` even though this ticket owns the work — it wraps *Core* contracts (unit conversions, staleness), and putting it in `UI/` would give CORE-002's unit-conversion policy a second home |
+| M-4 (pass 1) | `FRacingTelemetryFrame` (`RacingTelemetry.h`) embeds two `FRacingLapTiming`, each carrying a `TArray<double> SectorDurationsSeconds` — copying "the single frame the HUD is allowed to read" heap-allocates twice per copy, and `CLAUDE.md` forbids per-frame allocation | Either document that frames are passed by `const&` and never copied per tick, or replace the `TArray` with a `TArray<double, TInlineAllocator<N>>` sized to the real sector count once track data exists |
 
 ---
 

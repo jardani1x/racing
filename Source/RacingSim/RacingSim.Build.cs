@@ -37,7 +37,13 @@ public class RacingSim : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"InputCore",
-			"EnhancedInput"
+			"EnhancedInput",
+
+			// CORE-002: URacingSimSettings derives from UDeveloperSettings, which
+			// lives in the DeveloperSettings module (not in Engine). Public rather
+			// than private because Core/RacingSimSettings.h exposes the base class
+			// to every dependent, including RacingSimTests.
+			"DeveloperSettings"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });
