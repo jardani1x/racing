@@ -467,7 +467,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 |---|---|---|---|---|---|
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | OPEN |
 | TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | OPEN |
-| RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | OPEN |
+| RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001 | B | OPEN |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
