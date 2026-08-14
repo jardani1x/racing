@@ -395,6 +395,37 @@ The original findings, retained for the record:
 
 ---
 
+### CORE-003 — acceptance criteria, opened 2026-08-14
+
+Scope per this row: `DataAsset validation framework`. Owner `race-systems-engineer`.
+Gate A. Depends on `CORE-002` (DONE). Read "### CORE-003 — findings inherited from
+CORE-002" immediately below **first** — it names two concrete defects this ticket
+must close, not just a framework to build in the abstract.
+
+- [ ] A reusable, reflection-driven validation pass that re-applies a `UPROPERTY`'s
+      `ClampMin`/`ClampMax` metadata after config/ini load — closing the gap that
+      metadata only constrains the Details panel today, not an
+      `-ini:Game:[...]:Field=value` override.
+- [ ] `URacingSimSettings` calls this pass (e.g. from a config-load hook) so an
+      out-of-range ini value (`TelemetrySampleRateHz=1e6`, negative
+      `PhysicsPolicyVersion`, etc.) is clamped or rejected rather than loading
+      unchallenged.
+- [ ] `URaceRulesetDataAsset::Validate()` (RACE-001) is evaluated for reuse under this
+      same framework rather than staying a one-off pattern — either adopt it as the
+      framework's shape, or state in this ticket why it stays separate.
+- [ ] M-5 (pass 1, CORE-002) closed — see the inherited-findings table below.
+- [ ] MEDIUM-1 (pass 2, CORE-002) closed: `FRacingSimBuildId::Current()`'s Explicit
+      branch stops marking a sanitisation-mutated stamp `bIsAuthoritative = true`;
+      adopt the same rule already used one branch below in the same function for the
+      empty-stamp case (`Result.bIsAuthoritative = (Stamped == Trimmed)`).
+- [ ] MEDIUM-2 (pass 2, CORE-002) closed: either add `+` to `SanitiseComponent`'s
+      allow-list, or document explicitly why Derived may embed `+` and Explicit may
+      not.
+- [ ] `RacingSimTests` gains automation coverage: an out-of-range ini value is
+      clamped/rejected for at least two distinct properties, plus tests for both
+      MEDIUM-1 and MEDIUM-2's fixed behavior.
+- [ ] Editor **and** Game targets build with zero new warnings.
+
 ### CORE-003 — findings inherited from CORE-002
 
 Raised by `code-reviewer` against CORE-002 (`Source/RacingSim/Core/RacingSimSettings.h`,
@@ -447,6 +478,82 @@ scenarios never produce a valid lap; the timer is monotonic and independent of
 render frame rate; reset can never award progress or duplicate a checkpoint.
 
 The circuit must be **original**. No real track name, layout, signage or venue.
+
+### RACE-001 — acceptance criteria, opened 2026-08-13
+
+Scope per this row: `Race state machine and monotonic clock`. Owner
+`race-systems-engineer`. Gate B. Depends on `CORE-002` (DONE).
+
+**Deliberately track-agnostic.** `TRACK-001`/`TRACK-002` (checkpoints, centerline) and
+lap/sector validation (`RACE-002`) are later, separate tickets. RACE-001 is the state
+machine skeleton and the clock everything else attaches to — it must not reference a
+checkpoint, a lap, or a track asset.
+
+- [ ] Race state enum (e.g. `ERaceState`: PreRace, Countdown, Racing, Finished, Results)
+      lives in `Core/RacingSimTypes.h` alongside the project's other shared vocabulary
+      (`ERacingRunValidity`, `ERacingInputDeviceType`) — `UI/` needs to read it for the
+      HUD later without depending on `Race/`.
+- [ ] The state machine itself (transition logic, clock ownership) lives in `Race/`, not
+      `Core/` — it is race truth, not a shared contract. `CLAUDE.md`: "No race truth
+      lives in `Streaming`" implies the inverse too — race truth lives in `Race/`.
+- [ ] Only the authored transition graph is legal (e.g. PreRace→Countdown→Racing→
+      Finished→Results, Results→PreRace on restart). An illegal transition attempt is
+      rejected and logged, never silently applied and never a crash.
+- [ ] Countdown, start, finish, results, and restart transitions are deterministic and
+      idempotent — calling the same transition twice produces no additional effect
+      (Gate B, verbatim).
+- [ ] Race clock is monotonic and independent of render frame rate (Gate B, verbatim):
+      elapsed time is derived from a monotonic time source (e.g. `FPlatformTime::Seconds()`),
+      not accumulated from per-tick `DeltaTime`, so it cannot drift under frame-rate
+      variance or a paused/hitched frame.
+- [ ] Clock is a single server-side authority — nothing client-side interpolates or
+      guesses race time; this is the source `RACE-002` will time laps against.
+- [ ] Restart/reset can never award progress: restarting mid-race returns the state
+      machine to `PreRace`/`Countdown` with the clock re-zeroed, never to a state that
+      preserves partial progress (Gate B, verbatim — the checkpoint half of this rule is
+      `RACE-002`'s, the state/clock half is this ticket's).
+- [ ] No per-frame allocations, no broad actor searches, no synchronous asset loads in
+      the state machine's `Tick` or transition paths (`CLAUDE.md` coding rules).
+- [ ] `RacingSimTests` gains automation coverage: every legal transition, every illegal
+      transition attempt (rejected, not crashed), idempotency of each transition called
+      twice, and clock monotonicity under a simulated variable/dropped frame rate.
+- [ ] Editor **and** Game targets build with zero new warnings.
+
+### TRACK-001 — acceptance criteria, opened 2026-08-14
+
+Scope per this row: `Original circuit graybox and spline centerline`. Owner
+`race-systems-engineer`. Gate B. Depends on `CORE-001` (DONE). **Original circuit
+only** — no real track name, layout, signage, or venue (`CLAUDE.md` non-negotiable
+decisions; `LEGAL-001`'s ledger governs any external reference art).
+
+**Deliberately checkpoint-agnostic**, mirroring RACE-001's split: ordered checkpoint
+gates and crossing-direction validation are `TRACK-002`, not this ticket. TRACK-001 is
+the centerline/track-identity contract everything else attaches to.
+
+- [ ] `ATrackDefinitionActor` (`Source/RacingSim/Race/`, per `Docs/01-Architecture.md`'s
+      proposed types) exposes: centerline spline (closed loop), track length in
+      centimetres (with a documented cm→SI conversion, per `CLAUDE.md` units rule and
+      `RacingSimUnits.h`'s existing conversion policy), sector boundary markers along
+      the spline, start/finish transform, grid slot transforms, and reset sample points
+      (nearest-valid-track-point candidates for `VEH-005`'s safe reset, later).
+- [ ] Spline-distance and nearest-point queries are exposed as a typed, testable API
+      (not raw `USplineComponent` calls scattered across callers) — this is the surface
+      `RACE-002`'s progress/lap logic and `VEH-005`'s reset will consume.
+- [ ] Track identity uses `FRacingContentVersion` (`CORE-002`, `RacingSimBuildId.h`) —
+      `GetContentVersion()`/content-hash pattern, matching `URaceRulesetDataAsset`'s
+      precedent from `RACE-001` — so `FRacingSimVersionStamp::TrackVersion` (reserved by
+      CORE-002) can be populated from a real asset instead of staying empty.
+- [ ] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, per
+      `Docs/15-ProjectStructure.md`'s planned tree) containing one closed-loop
+      `ATrackDefinitionActor` instance, using only primitive/placeholder geometry — no
+      final art, no license-ledger-requiring external asset. Sufficient for `TRACK-002`
+      and `RACE-002`'s automation to exercise real checkpoint/lap logic against.
+- [ ] `RacingSimTests` gains automation coverage for the centerline/spline-query API
+      (distance along spline, nearest point, sector boundaries) that does **not**
+      require the test map — testable against a procedurally-constructed spline in a
+      transient world/commandlet, matching RACE-001's testability-first design so the
+      cheap, certain work doesn't block on the level-authoring step.
+- [ ] Editor **and** Game targets build with zero new warnings.
 
 ---
 
