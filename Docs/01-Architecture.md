@@ -60,22 +60,52 @@ Do not let race or UI code depend directly on volatile Chaos internals. The faca
 
 Proposed types:
 
-- `ARaceDirector`: authoritative state machine and session orchestration.
+- `ARaceDirector`: session orchestration. Owns a `URaceStateMachine` (see below) rather
+  than being the state machine itself — RACE-001 split ownership from transition logic
+  for testability (a plain `UObject` can be exhaustively tested under `-nullrhi` in a
+  commandlet without a `UWorld`; an `AActor` cannot). Not yet implemented; the property
+  that will hold the `URaceStateMachine` must be a `UPROPERTY` (a `UObject` is not
+  GC-rooted by its outer alone).
+- `URaceStateMachine` (**RACE-001, shipped**): the authoritative transition graph and
+  clock owner. `Source/RacingSim/Race/RaceStateMachine.h` carries the full design
+  rationale for the split from `ARaceDirector`.
+- `URaceRulesetDataAsset` (**RACE-001, shipped**): typed countdown length and other
+  state-machine tunables, per `CLAUDE.md`'s "no magic numbers" rule.
 - `ATrackDefinitionActor`: centerline spline, track length, sectors, start/finish, grid, reset samples.
 - `ATrackCheckpoint`: ordered trigger gate with crossing direction and width/height.
 - `URaceProgressComponent`: expected checkpoint, lap, spline distance, progress, validity, penalties.
-- `URaceClock`: monotonic timing and split/delta calculations.
+- `FRaceClock` (**RACE-001, shipped**): monotonic timing via timestamp subtraction, not
+  accumulation — see `Source/RacingSim/Race/RaceClock.h`. Shipped as a plain struct, not
+  a `UObject`/`URaceClock`: it has a mutating accessor and is internal race truth, not a
+  Blueprint-facing contract; `URaceStateMachine` exposes the two numbers Blueprint/UMG
+  need.
 - `URaceResult`: immutable finish result and validation metadata.
 
-State machine:
+State machine (**RACE-001, shipped** — collapses `Boot`/`Loading`/`Grid` into a single
+`PreRace`, since none of the three yet has an owner or a distinct entry action; split
+them out only when one gets real content, per `ERaceState`'s doc comment in
+`RacingSimTypes.h`):
 
 ```text
-Boot -> Loading -> Grid -> Countdown -> Racing -> Finished -> Results
-                                      ^                  |
-                                      +----- Restart ----+
+PreRace -> Countdown -> Racing -> Finished -> Results
+   ^           |           |          |          |
+   +-----------+-- Restart (legal from every state, always lands in PreRace) --+
 ```
 
-Every transition has preconditions, one owner, one entry action, one exit action, and automation coverage.
+`Restart` is deliberately one edge from all five states rather than only from
+`Results`: a restart legal only from the terminal state would leave a player stuck in
+`Racing` after an abandon, and every caller would grow its own ad-hoc reset path. See
+`ERaceTransition::Restart`'s doc comment for the full reasoning.
+
+Every transition has preconditions, one owner, and one entry action, and every
+transition has automation coverage. **No exit actions** (contrary to the "one exit
+action" this section originally specified): `URaceStateMachine::CommitTransition`
+implements entry actions only, so clock teardown (e.g. stopping the countdown clock)
+is duplicated into each destination's entry action instead. `code-reviewer` flagged
+this as a real but currently-harmless coupling risk (finding M5, RACE-001 review) —
+the first new edge leaving `Countdown` must remember to stop the countdown clock in
+its own entry action, since nothing will do it on the way out. Revisit if that
+duplication grows past two call sites.
 
 ### UI
 
