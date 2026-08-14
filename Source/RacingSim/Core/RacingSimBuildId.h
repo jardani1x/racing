@@ -118,10 +118,18 @@ struct RACINGSIM_API FRacingSimBuildId
 	ERacingBuildIdScheme Scheme = ERacingBuildIdScheme::Derived;
 
 	/**
-	 * True when this ID is unique per build, i.e. it came from the Explicit
-	 * scheme with a non-empty stamped value. Results produced with
-	 * bIsAuthoritative == false are developer results and must be labelled as
-	 * such wherever they are shown.
+	 * True when this ID is unique per build and traceable back to the CI run that
+	 * produced it: the Explicit scheme, a non-empty stamped value, AND a value
+	 * that survived sanitisation byte-for-byte.
+	 *
+	 * That last condition is CORE-003's fix for CORE-002 finding MEDIUM-1. A
+	 * mutated stamp is not authoritative, because sanitisation is lossy --
+	 * "feature/x" and "feature-x" both record as "featurex", so the flag could
+	 * otherwise promise uniqueness for two different builds sharing one ID.
+	 *
+	 * Results produced with bIsAuthoritative == false are developer results and
+	 * must be labelled as such wherever they are shown; IsPublishable() refuses
+	 * them outright.
 	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Racing|Version")
 	bool bIsAuthoritative = false;

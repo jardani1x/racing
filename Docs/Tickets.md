@@ -395,6 +395,213 @@ The original findings, retained for the record:
 
 ---
 
+### CORE-003 — acceptance criteria, opened 2026-08-14
+
+Scope per this row: `DataAsset validation framework`. Owner `race-systems-engineer`.
+Gate A. Depends on `CORE-002` (DONE). Read "### CORE-003 — findings inherited from
+CORE-002" immediately below **first** — it names two concrete defects this ticket
+must close, not just a framework to build in the abstract.
+
+> **Note on this block, 2026-08-14.** These criteria existed only in the `main`
+> working tree, uncommitted, and were absent from the implementation branch —
+> exactly the CORE-002 `LOW-4` failure repeating. Copied here verbatim before
+> implementation started, then checked off in place.
+
+- [x] A reusable, reflection-driven validation pass that re-applies a `UPROPERTY`'s
+      `ClampMin`/`ClampMax` metadata after config/ini load — closing the gap that
+      metadata only constrains the Details panel today, not an
+      `-ini:Game:[...]:Field=value` override.
+      → `Source/RacingSim/Core/RacingSimValidation.h/.cpp`,
+      `namespace RacingSim::Validation`. `EnforceRanges(UObject*, TConstArrayView<FRacingPropertyRange>)`
+      resolves each declared range by name to an `FProperty`, reads/writes through
+      `FNumericProperty`, and clamps. No dependency on `URacingSimSettings`; it lives in
+      `Core/` and takes any `UObject`.
+- [x] `URacingSimSettings` calls this pass (e.g. from a config-load hook) so an
+      out-of-range ini value (`TelemetrySampleRateHz=1e6`, negative
+      `PhysicsPolicyVersion`, etc.) is clamped or rejected rather than loading
+      unchallenged.
+      → `PostInitProperties()`, `PostReloadConfig()` and (editor) `PostEditChangeProperty()`
+      all call `ValidateConfiguredRanges()`. Ordering verified in engine source, not
+      assumed: `UObjectGlobals.cpp:4274` runs `LoadConfig`, `:4320` runs
+      `PostInitProperties`, so the ini and any `-ini:` override are already applied.
+- [x] `URaceRulesetDataAsset::Validate()` (RACE-001) is evaluated for reuse under this
+      same framework rather than staying a one-off pattern — either adopt it as the
+      framework's shape, or state in this ticket why it stays separate.
+      → **Decision: they stay separate, and they compose.** See "CORE-003 — decision:
+      `URaceRulesetDataAsset::Validate()` stays separate" below.
+- [x] M-5 (pass 1, CORE-002) closed — see the inherited-findings table below.
+      → `RacingSim.Core.SettingsIniOverrideClamp` drives `LapTimeFractionalDigits=99`
+      and `TelemetrySampleRateHz=1000000.0` through `GConfig` + `UObject::ReloadConfig`
+      and asserts they arrive as `3` and `240`.
+- [x] MEDIUM-1 (pass 2, CORE-002) closed: `FRacingSimBuildId::Current()`'s Explicit
+      branch stops marking a sanitisation-mutated stamp `bIsAuthoritative = true`;
+      adopt the same rule already used one branch below in the same function for the
+      empty-stamp case (`Result.bIsAuthoritative = (Stamped == Trimmed)`).
+      → Applied verbatim at `RacingSimBuildId.cpp:162`. `FRacingSimBuildId::bIsAuthoritative`'s
+      doc comment updated to state the new condition.
+- [x] MEDIUM-2 (pass 2, CORE-002) closed: either add `+` to `SanitiseComponent`'s
+      allow-list, or document explicitly why Derived may embed `+` and Explicit may
+      not.
+      → **Decision: `+` added to the allow-list**, which is now `[A-Za-z0-9._+-]`.
+      Rationale and the rejected alternative are recorded in the code at
+      `RacingSimBuildId.cpp` `SanitiseComponent` and summarised below.
+- [x] `RacingSimTests` gains automation coverage: an out-of-range ini value is
+      clamped/rejected for at least two distinct properties, plus tests for both
+      MEDIUM-1 and MEDIUM-2's fixed behavior.
+      → `Source/RacingSimTests/Core/RacingSimValidationSpec.cpp` (3 new tests) and
+      updates to `RacingSimVersionSpec.cpp`. See the verification evidence below.
+- [x] Editor **and** Game targets build with zero new warnings.
+      → See "CORE-003 — verification evidence" below.
+
+### CORE-003 — verification evidence, 2026-08-14
+
+Run in this ticket's worktree
+(`.claude/worktrees/agent-aa457d3da1306fb55`), so paths below are worktree-relative.
+
+- Editor (`RacingSimEditor Win64 Development`): `Result: Succeeded`, `EXITCODE=0`,
+  219.14 s. Filtered for `warning|error` (case-insensitive) over the full UBT
+  transcript: **0 matches**.
+- Game (`RacingSim Win64 Development`): `Result: Succeeded`, `EXITCODE=0`, 300.71 s,
+  output `Binaries/Win64/RacingSim.exe`. Filtered the same way: **0 matches**.
+  Note the Game target compiles `RacingSim` only — `RacingSimTests` is absent from it,
+  which is the module split doing its job.
+- Automation `Smoke` filter: `Saved/Automation/Report/index.json` —
+  **`succeeded: 435, failed: 0, notRun: 0`**, `reportCreatedOn 2026.08.14-07.06.02`.
+  Baseline at CORE-002 was 432; the three new tests are the difference.
+- All nine project tests `Success`: `RacingSim.Core.BuildId`, `.LogCategories`,
+  `.RangeEnforcement`, `.SettingsDefaults`, `.SettingsIniOverrideClamp`,
+  `.SettingsRangeMetadata`, `.Telemetry`, `.Units`, `.VersionStamp`.
+
+**The first Smoke run failed, and that is the most useful evidence here.**
+`succeeded: 434, failed: 1` at `reportCreatedOn 2026.08.14-07.03.12`.
+`RacingSim.Core.SettingsIniOverrideClamp` reported the clamp working correctly —
+
+```text
+Range validation corrected a configured value: RacingSimSettings::LapTimeFractionalDigits
+  loaded as 99, which is outside the declared range [0, 3]; corrected to 3.
+Range validation corrected a configured value: RacingSimSettings::TelemetrySampleRateHz
+  loaded as 1e+06, which is outside the declared range [0, 240]; corrected to 240.
+```
+
+— while failing on its own `AddExpectedMessagePlain` patterns, which had been written
+`URacingSimSettings::...`. `UClass::GetName()` returns the reflected name without the
+C++ prefix. The patterns were wrong; the code was not. This is worth recording because
+it demonstrates the new spec file is genuinely discovered by the `RunFilter Smoke`
+gate and can actually fail — the property `Docs/Environment.md` insists on, and the
+thing a green-on-first-run suite never proves.
+
+**Revision integrity.** `RacingSimBuildId.cpp` (MEDIUM-1 + MEDIUM-2) was last written
+13:15:27; `Binaries/Win64/UnrealEditor-RacingSim.dll` was produced 13:48:38 and
+`Binaries/Win64/RacingSim.exe` 14:53:15, both after it. The test run that produced the
+435/0/0 report used `UnrealEditor-RacingSimTests.dll` built 15:04:30. Both fixes are in
+the tested binaries.
+
+**What was NOT done, stated plainly:** no packaged (`BuildCookRun`) run and no
+Shipping-configuration build. `WITH_METADATA == 0` in the Game target is established
+from engine source (`CoreMiscDefines.h:31`, `TargetRules.cs:1203`,
+`UEBuildTarget.cs:6556`) and from `RacingSim.Target.cs` declaring `TargetType.Game`
+with no `bBuildWithEditorOnlyData` override — but the metadata-absent path has not
+been *executed*, only reasoned about and compiled. See the counter-case below.
+
+### CORE-003 — counter-case: the strongest argument against this design
+
+The range table duplicates the `ClampMin`/`ClampMax` metadata, and duplication is the
+thing this ticket was supposed to eliminate. A reviewer is entitled to say: read the
+metadata, delete the table, done.
+
+That version does not work, and the reason is the interesting part. `FField`'s metadata
+accessors are compiled out unless `WITH_METADATA` is 1, and `WITH_METADATA` *is*
+`WITH_EDITORONLY_DATA` (`CoreMiscDefines.h:31`), which UBT sets to 0 for any target
+that is not Editor or Program (`TargetRules.cs:1203`, `UEBuildTarget.cs:6556`). So a
+metadata-reading pass would enforce ranges in the editor, enforce nothing in the
+packaged Game build a CI `-ini:` override actually ships to, and **pass every test** —
+because automation runs in the editor. It would be a worse defect than M-5, delivered
+with green evidence.
+
+The residual weakness of the design actually chosen is honest and narrower: the table
+and the metadata are two statements of one fact, kept in agreement by
+`RacingSim.Core.SettingsRangeMetadata` rather than by construction. That test checks
+both directions and carries three negative controls (a wrong bound, a missing entry, a
+dropped `ClampMax`), plus an assertion that `WITH_METADATA != 0` so it cannot pass
+vacuously. If it is ever weakened or skipped, the duplication becomes a real hazard.
+
+### CORE-003 — decision: `URaceRulesetDataAsset::Validate()` stays separate
+
+`URaceRulesetDataAsset` does not exist on `main`; it is being written concurrently
+under `RACE-001` (which is still `OPEN`) in a different worktree. It was read there
+rather than imagined, and this decision is written against that code — **it is a
+recommendation to `RACE-001`, not a change made to it.** CORE-003 deliberately does
+not touch a file owned by an in-flight ticket.
+
+**Decision: do not reshape `Validate()` into the range framework. Keep both, and have
+`Validate()` be the caller.**
+
+Reasoning, from what the two things actually check:
+
+1. **They answer different questions.** `EnforceRanges` answers "is this number
+   inside its declared bounds", mechanically, from reflection. `Validate()` answers
+   "is this asset fit to produce a publishable result" — `RulesetId.IsNone()` is not a
+   range, and `CountdownSeconds == 0.0` is explicitly *legal* (automation uses it to
+   skip the wait) while still being refused for a published run. A range framework
+   cannot express "legal, but not for this purpose", and widening it until it could
+   would turn a 30-line reflection pass into a rules engine.
+2. **They differ on clamp-vs-reject, correctly.** The config pass clamps, because a
+   settings CDO has no last-known-good value and a Pixel Streaming worker should not
+   refuse to boot over an ini typo. `Validate()` rejects and returns a reason, because
+   an authored asset has an author who can fix it, and silently clamping a designer's
+   countdown would hide the mistake. Merging them would force one policy on both.
+3. **`Validate()` is a `bool` + reason; the framework returns a structured result.**
+   Callers of `Validate()` are gates ("may this run start?"). Callers of
+   `EnforceRanges` are load hooks that must repair and continue.
+
+**What `RACE-001` should adopt instead**, and the only part of this that is a real
+handoff: `URaceRulesetDataAsset` should declare a range table exactly as
+`URacingSimSettings::GetValidatedPropertyRanges()` does, call `EnforceRanges` from
+`PostLoad()`, and have `Validate()` call it first and fail if `NumFailed() > 0`. That
+gets the DataAsset the same "the `ClampMin` you wrote is actually enforced" guarantee
+without collapsing the two functions. The framework was written to `UObject*` and a
+range table precisely so it can be reused this way — it has no knowledge of
+`URacingSimSettings`.
+
+**Counter-case, recorded rather than hidden:** this leaves the project with two
+validation entry points, and a future reader may reasonably ask which to call. The
+mitigation is a naming and ownership rule, not a merge: `EnforceRanges` is a *load
+repair* and always runs automatically from a load hook; `Validate` is a *gate* and is
+always called explicitly by something that is about to trust the data. If a third
+pattern appears, this decision should be revisited at `RACE-002`.
+
+### CORE-003 — decision: MEDIUM-2, `+` added to the allow-list
+
+`SanitiseComponent`'s allow-list is now `[A-Za-z0-9._+-]`.
+
+**Why this direction.** The Derived composer already embeds a literal `+` as the
+engine-changelist separator (`5.8.1+56057345`), so the allow-list rejecting `+` made
+the two schemes contradict each other, and it made the H-2 sanitisation warning fire
+on every conventionally formatted CI stamp — semver build metadata is `1.4.0+4417`. A
+warning that fires on correct input is a warning that gets ignored, which would then
+hide the real cases (`feature/x`).
+
+**The alternative that was rejected**, and its cost: removing `+` from the *Derived*
+composer instead (e.g. `5.8.1.56057345`) would have preserved a stricter
+"URL-safe-everywhere" property. It was rejected because `+` is only ambiguous inside
+an `application/x-www-form-urlencoded` **query string**, where it decodes to a space —
+and derived IDs already carried that exposure, so allowing `+` on the Explicit path
+makes an existing hazard consistent and testable rather than introducing a new one. It
+also avoids changing an already-documented, already-tested output format for no
+behavioural gain.
+
+**The rule this places on consumers:** percent-encode a build ID before putting it in
+a query string. `RacingSim.Core.BuildId` now asserts that every ID *either* scheme
+produces matches `[A-Za-z0-9._+-]`, so that rule has exactly one character to worry
+about. That assertion is new and deliberately covers the Derived composer, which
+inserts its separators *after* sanitising its components and is therefore not covered
+by `SanitiseComponent` at all.
+
+**Interaction with MEDIUM-1, which is the point of doing both together:** MEDIUM-2
+removes the false positives, and MEDIUM-1 makes the remaining true positives
+non-authoritative. `1.4.0+4417` now round-trips verbatim and stays authoritative;
+`feature/x` still warns, and now correctly produces an unpublishable result.
+
 ### CORE-003 — findings inherited from CORE-002
 
 Raised by `code-reviewer` against CORE-002 (`Source/RacingSim/Core/RacingSimSettings.h`,

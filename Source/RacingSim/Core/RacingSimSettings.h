@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DeveloperSettings.h"
 #include "Core/RacingSimTypes.h"
+#include "Core/RacingSimValidation.h"
 #include "RacingSimSettings.generated.h"
 
 /**
@@ -45,6 +46,58 @@ public:
 	virtual FText GetSectionDescription() const override;
 #endif
 	//~ End UDeveloperSettings interface
+
+	//~ Begin UObject interface
+	/**
+	 * Runs the CORE-003 range pass. This is the config-load hook, and the ordering
+	 * is the whole point: UObjectGlobals.cpp calls LoadConfig() at line 4274 and
+	 * PostInitProperties() at line 4320 (UE 5.8.1, verified in source), so by the
+	 * time this runs the ini and any -ini: command-line override have already been
+	 * applied to these fields.
+	 */
+	virtual void PostInitProperties() override;
+
+	/**
+	 * The second config-load path. `ReloadConfig` (console command, hot reload,
+	 * editor "reset to defaults") re-reads the ini without reconstructing the
+	 * object, so it bypasses PostInitProperties entirely. Missing this hook would
+	 * leave a documented, tested clamp that a single console command turns off.
+	 */
+	virtual void PostReloadConfig(FProperty* PropertyThatWasLoaded) override;
+
+#if WITH_EDITOR
+	/**
+	 * Editor edits are already clamped by the Details panel, so this is belt and
+	 * braces -- but a value can also be pasted, scripted from Python, or set from
+	 * Blueprint, and none of those go through the spin box.
+	 */
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+	//~ End UObject interface
+
+	/**
+	 * The declared ranges enforced on this class, mirroring each property's
+	 * ClampMin/ClampMax metadata.
+	 *
+	 * Public because the automation test asserts, in both directions, that this
+	 * table and the UPROPERTY metadata agree -- including that no clamped config
+	 * property is missing from it. See RacingSimValidation.h for why the ranges
+	 * are declared here rather than read back from the metadata at runtime
+	 * (metadata is compiled out of non-editor targets).
+	 *
+	 * ANY NEW CLAMPED CONFIG PROPERTY MUST BE ADDED HERE. The test named above is
+	 * what makes that a failure rather than a silent gap.
+	 */
+	static TConstArrayView<RacingSim::Validation::FRacingPropertyRange> GetValidatedPropertyRanges();
+
+	/**
+	 * Re-apply GetValidatedPropertyRanges() to this object's current values and
+	 * log anything corrected.
+	 *
+	 * @param SourceDescription where the values came from, used only in the log.
+	 * @return the pass result, so callers and tests can inspect it without parsing a log.
+	 */
+	RacingSim::Validation::FRacingValidationResult ValidateConfiguredRanges(const TCHAR* SourceDescription);
 
 	// ======================================================================
 	// Units
@@ -92,10 +145,11 @@ public:
 	 * Free-form but conventionally one of: dev, ci, qa, release. Whitespace and
 	 * unsafe filename/URL/CSV characters are stripped when the ID is composed
 	 * (see RacingSim::BuildIdPrivate::SanitiseComponent), so a stray space or
-	 * slash in an ini cannot reach the ID. '-' and '.' are NOT stripped -- a
-	 * derived build ID is an opaque string for display and comparison only;
-	 * nothing in the project splits it back into components, so a channel or
-	 * project version containing '-' does not create ambiguity.
+	 * slash in an ini cannot reach the ID. The allow-list is [A-Za-z0-9._+-], so
+	 * '-', '.' and '+' are NOT stripped -- a derived build ID is an opaque string
+	 * for display and comparison only; nothing in the project splits it back into
+	 * components, so a channel or project version containing '-' does not create
+	 * ambiguity.
 	 */
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Versioning")
 	FString BuildChannel = TEXT("dev");

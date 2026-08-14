@@ -29,11 +29,39 @@ namespace RacingSim::BuildIdPrivate
 		Out.Reserve(In.Len());
 		for (const TCHAR Ch : In)
 		{
-			// Allow only characters that survive a filename, a URL and a CSV cell.
-			// '-' included: it is exactly as safe as '.'/'_' in all three contexts,
-			// and CI-stamped explicit IDs (e.g. "ci-2026.08.12-4417") must round-trip
-			// verbatim -- see RacingSim.Core.BuildId's "used verbatim once sanitised" case.
-			const bool bAllowed = FChar::IsAlnum(Ch) || Ch == TEXT('.') || Ch == TEXT('_') || Ch == TEXT('-');
+			// Allow-list: [A-Za-z0-9._+-]. Everything here survives a filename, a
+			// CSV cell, and a URL *path* segment.
+			//
+			// '-' : exactly as safe as '.'/'_' in all three contexts, and CI-stamped
+			//       explicit IDs (e.g. "ci-2026.08.12-4417") must round-trip verbatim
+			//       -- see RacingSim.Core.BuildId's "used verbatim once sanitised" case.
+			//
+			// '+' : added by CORE-003, closing CORE-002 finding MEDIUM-2. The
+			//       Derived-scheme composer below already embeds a literal '+' as
+			//       the engine-changelist separator ("5.8.1+56057345"), so rejecting
+			//       it here made the two schemes contradict each other, and it made
+			//       the sanitisation warning fire on every conventionally formatted
+			//       CI stamp -- semver build metadata is "1.4.0+4417". A warning that
+			//       fires on the correct input is a warning that gets ignored, which
+			//       would then hide the real cases ("feature/x").
+			//
+			//       DECISION AND ITS COST, recorded rather than hidden. The
+			//       alternative was to remove '+' from the Derived composer instead,
+			//       which would have preserved a stricter "URL-safe everywhere"
+			//       property. It was rejected because '+' in a URL is only ambiguous
+			//       inside an application/x-www-form-urlencoded *query string*, where
+			//       it decodes to a space -- and derived IDs already carried that
+			//       exposure, so allowing '+' here does not introduce a new hazard,
+			//       it makes an existing one consistent and testable. The rule any
+			//       consumer must follow: percent-encode a build ID before putting
+			//       it in a query string. RacingSim.Core.BuildId asserts that every
+			//       ID either scheme produces matches [A-Za-z0-9._+-], so that rule
+			//       has exactly one character to worry about.
+			const bool bAllowed = FChar::IsAlnum(Ch)
+				|| Ch == TEXT('.')
+				|| Ch == TEXT('_')
+				|| Ch == TEXT('-')
+				|| Ch == TEXT('+');
 			if (bAllowed)
 			{
 				Out.AppendChar(Ch);
@@ -94,25 +122,44 @@ FRacingSimBuildId FRacingSimBuildId::Current()
 		const FString Stamped = SanitiseComponent(Trimmed);
 		if (!Stamped.IsEmpty())
 		{
-			// Sanitisation can mutate a stamped ID (semver build metadata like
-			// "+4417" or a branch-qualified stamp like "feature/x" both contain
-			// characters this allow-list rejects). A silently mutated ID breaks
-			// the authoritative promise: it may no longer trace back to the CI
-			// run that produced it, and two distinct stamps can collapse to the
-			// same sanitised string. Warn loudly with both values so CI is fixed
-			// rather than trusting a corrupted-but-plausible ID forever.
+			// Sanitisation can still mutate a stamped ID -- a branch-qualified
+			// stamp like "feature/x" contains characters the allow-list rejects.
+			// (Semver build metadata, "1.4.0+4417", no longer does: see MEDIUM-2
+			// in SanitiseComponent above.) A silently mutated ID breaks the
+			// authoritative promise: it may no longer trace back to the CI run
+			// that produced it, and two distinct stamps can collapse to the same
+			// sanitised string -- "feature/x" and "feature-x" both become
+			// "featurex". Warn loudly with both values so CI is fixed rather than
+			// trusting a corrupted-but-plausible ID forever.
 			if (Stamped != Trimmed)
 			{
 				UE_LOG(
 					LogRacingCore,
 					Warning,
 					TEXT("ExplicitBuildId was sanitised: stamped \"%s\" but recorded \"%s\". ")
-					TEXT("Fix the CI-stamped value to use only [A-Za-z0-9._-] so it round-trips verbatim."),
+					TEXT("The recorded ID is NOT authoritative and results from this build cannot be published. ")
+					TEXT("Fix the CI-stamped value to use only [A-Za-z0-9._+-] so it round-trips verbatim."),
 					*Trimmed,
 					*Stamped);
 			}
+
 			Result.Value = Stamped;
-			Result.bIsAuthoritative = true;
+
+			// CORE-003, closing CORE-002 finding MEDIUM-1. This previously read
+			// `= true` unconditionally, directly contradicting the comment above
+			// it: an ID that no longer matches what CI stamped cannot honour the
+			// uniqueness-and-traceability promise that bIsAuthoritative makes, and
+			// IsPublishable() reads that flag as permission to publish. The rule
+			// below is the same one the empty-stamp fallback already used one
+			// branch down -- authority requires the value to survive sanitisation
+			// untouched, not merely to be non-empty.
+			//
+			// Consequence, stated plainly because it is the point: a CI job that
+			// stamps "feature/x" now produces unpublishable results instead of
+			// publishable wrong ones. That is a louder failure than before, and it
+			// is the correct direction -- the alternative is a leaderboard that
+			// cannot say which build set a lap.
+			Result.bIsAuthoritative = (Stamped == Trimmed);
 			return Result;
 		}
 
