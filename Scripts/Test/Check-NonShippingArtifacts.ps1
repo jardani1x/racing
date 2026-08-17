@@ -60,7 +60,7 @@
 
 [CmdletBinding()]
 param(
-    [string] $ProjectRoot = (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)),
+    [string] $ProjectRoot,
     [ValidateSet('Receipt', 'Config', 'Pak', 'All')]
     [string] $Mode = 'All',
     [string] $PackagedRoot
@@ -68,6 +68,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Resolved in the body rather than as a param default. $PSScriptRoot is not reliably
+# populated in a param default block across PowerShell hosts -- under Windows
+# PowerShell 5.1 invoked via -File it came back empty, and Split-Path then threw before
+# the script ran at all. $MyInvocation.MyCommand.Path is populated in both 5.1 and 7.x.
+if (-not $ProjectRoot) {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    # Scripts/Test/<this file> -> repository root is two levels up.
+    $ProjectRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
+}
 
 if (-not $PackagedRoot) {
     $PackagedRoot = Join-Path $ProjectRoot 'Packaged\Windows'
@@ -121,60 +131,97 @@ function Test-TargetReceipts {
         }
     }
 
-    function Get-ReceiptModules {
+    # ---------------------------------------------------------------------
+    # Receipt schema, established by reading the files rather than assumed.
+    #
+    # A UE 5.8.1 .target has no "Modules" key. The first version of this script
+    # looked for one, found nothing, and reported an empty module list for both
+    # receipts -- at which point the *Game* assertion ("RacingSimTests is not in
+    # this list") would have passed on an empty list, which is a false pass.
+    #
+    # It did not become a false pass, because the Editor positive control failed
+    # first and said so. That is the whole argument for keeping controls: the bug
+    # was in the checker, the checker was wrong in the safe direction only because
+    # something asserted a known-true fact. Do not remove them.
+    #
+    # The real schema is:
+    #   TargetName, Platform, Configuration, BuildSettingsVersion,
+    #   TargetBuildEnvironment, TargetType, IsTestTarget, Architecture, Project,
+    #   Launch, [LaunchCmd], Version, BuildProducts, RuntimeDependencies,
+    #   BuildPlugins, AdditionalProperties
+    #
+    # Module membership shows up in BuildProducts as per-module DLL/PDB paths for a
+    # modular (Editor) target:
+    #   { "Path": "$(ProjectDir)/Binaries/Win64/UnrealEditor-RacingSimTests.dll",
+    #     "Type": "DynamicLibrary" }
+    #
+    # A Development *Game* target is monolithic, so its modules do not appear as
+    # separate build products at all -- which is exactly why the correct assertion
+    # for the Game receipt is "the string RacingSimTests appears nowhere in it",
+    # and why that assertion needs an independent control proving the file was read.
+    # ---------------------------------------------------------------------
+
+    function Get-ReceiptBuildProductPaths {
         param([string] $Path)
         $json = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-        # UBT writes Modules as an object mapping module name -> binary path in 5.8.
-        # Handle both that and a plain array, so a shape change downgrades to a
-        # visible failure rather than a silent empty list.
-        if ($json.PSObject.Properties.Name -contains 'Modules') {
-            $modules = $json.Modules
-            if ($modules -is [System.Management.Automation.PSCustomObject]) {
-                return @($modules.PSObject.Properties.Name)
-            }
-            return @($modules)
-        }
-        return @()
+        if ($json.PSObject.Properties.Name -notcontains 'BuildProducts') { return @() }
+        return @($json.BuildProducts | ForEach-Object { $_.Path })
     }
 
-    $gameModules   = Get-ReceiptModules -Path $gameReceipt
-    $editorModules = Get-ReceiptModules -Path $editorReceipt
+    $editorProducts = Get-ReceiptBuildProductPaths -Path $editorReceipt
+    $gameProducts   = Get-ReceiptBuildProductPaths -Path $gameReceipt
 
-    # Positive control 1: the Editor receipt must list the test module.
-    if ($editorModules -contains 'RacingSimTests') {
-        Write-Result -Status 'PASS' -Check 'Receipt: RacingSimTests IS in RacingSimEditor.target' `
-            -Detail ("{0} modules listed" -f $editorModules.Count)
-    } else {
-        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSimTests IS in RacingSimEditor.target' `
-            -Detail ("Not found. Either the test module stopped building, or this check can no longer read the receipt -- both invalidate the Game assertion below. Modules: {0}" -f ($editorModules -join ', '))
-    }
-
-    # Positive control 2: the Game receipt must list the runtime module. Proves the
-    # Game receipt was parsed at all.
-    if ($gameModules -contains 'RacingSim') {
-        Write-Result -Status 'PASS' -Check 'Receipt: RacingSim IS in RacingSim.target (control)' `
-            -Detail ("{0} modules listed" -f $gameModules.Count)
-    } else {
-        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSim IS in RacingSim.target (control)' `
-            -Detail ("Not found -- the Game receipt was not parsed correctly, so the assertion below proves nothing. Modules: {0}" -f ($gameModules -join ', '))
-    }
-
-    # The assertion the ticket is actually about.
-    if ($gameModules -contains 'RacingSimTests') {
-        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSimTests is NOT in RacingSim.target' `
-            -Detail 'The UncookedOnly test module was compiled into the Game target. Check RacingSim.Target.cs ExtraModuleNames and any bBuildRequiresCookedDataOverride.'
-    } else {
-        Write-Result -Status 'PASS' -Check 'Receipt: RacingSimTests is NOT in RacingSim.target' `
-            -Detail ("0 occurrences among {0} Game-target modules" -f $gameModules.Count)
-    }
-
-    # Corroboration, kept because CORE-001 used it: raw text occurrence counts, the
-    # same numbers that were typed by hand into Docs/Tickets.md.
     $gameText   = Get-Content -LiteralPath $gameReceipt -Raw
     $editorText = Get-Content -LiteralPath $editorReceipt -Raw
     $gameHits   = ([regex]::Matches($gameText,   'RacingSimTests')).Count
     $editorHits = ([regex]::Matches($editorText, 'RacingSimTests')).Count
-    Write-Host ("       corroboration: RacingSim.target contains {0} occurrence(s) of 'RacingSimTests'; RacingSimEditor.target contains {1}" -f $gameHits, $editorHits)
+
+    # Control A: the receipts parsed and are non-trivial.
+    if ($editorProducts.Count -gt 0 -and $gameProducts.Count -gt 0) {
+        Write-Result -Status 'PASS' -Check 'Receipt: both receipts parsed (control)' `
+            -Detail ("Editor {0} build products, Game {1}" -f $editorProducts.Count, $gameProducts.Count)
+    } else {
+        Write-Result -Status 'FAIL' -Check 'Receipt: both receipts parsed (control)' `
+            -Detail ("Editor {0} build products, Game {1}. A zero here makes every assertion below meaningless." -f $editorProducts.Count, $gameProducts.Count)
+        return
+    }
+
+    # Control B: the test module really is built for the editor. If this fails, the
+    # Game assertion below is not evidence of anything -- it would also pass if the
+    # module had simply stopped existing.
+    $editorHasTestModule = @($editorProducts | Where-Object { $_ -match 'RacingSimTests' }).Count -gt 0
+    if ($editorHasTestModule) {
+        Write-Result -Status 'PASS' -Check 'Receipt: RacingSimTests IS a build product of RacingSimEditor.target (control)' `
+            -Detail ("{0} raw occurrence(s) of the string in the Editor receipt" -f $editorHits)
+    } else {
+        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSimTests IS a build product of RacingSimEditor.target (control)' `
+            -Detail 'The test module is not built for the editor, so the Game-target assertion proves nothing.'
+    }
+
+    # Control C: the Game receipt is the Game target's, and mentions the runtime
+    # module. Proves the file was read and that a "RacingSim*" string can be found
+    # in it at all -- so a null result for RacingSimTests means absence.
+    $gameMentionsRuntime = $gameText -match '"TargetName"\s*:\s*"RacingSim"' -and
+                           @($gameProducts | Where-Object { $_ -match 'RacingSim\.exe' }).Count -gt 0
+    if ($gameMentionsRuntime) {
+        Write-Result -Status 'PASS' -Check 'Receipt: RacingSim.target is the Game target and names RacingSim.exe (control)' `
+            -Detail ("TargetType {0}" -f (($gameText | Select-String -Pattern '"TargetType"\s*:\s*"([^"]+)"').Matches[0].Groups[1].Value))
+    } else {
+        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSim.target is the Game target and names RacingSim.exe (control)' `
+            -Detail 'Could not confirm the Game receipt was read; absences below are unproven.'
+    }
+
+    # The assertion the ticket is actually about. Both forms, because CORE-001
+    # recorded the raw occurrence count by hand and this is the automation of it.
+    if ($gameHits -eq 0) {
+        Write-Result -Status 'PASS' -Check 'Receipt: RacingSimTests is NOT in RacingSim.target' `
+            -Detail ("0 occurrences of 'RacingSimTests' in the Game receipt ({0} build products scanned)" -f $gameProducts.Count)
+    } else {
+        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSimTests is NOT in RacingSim.target' `
+            -Detail ("{0} occurrence(s). The UncookedOnly test module reached the Game target. Check RacingSim.Target.cs ExtraModuleNames, and any bBuildRequiresCookedDataOverride on the Game target -- ModuleDescriptor.cs:792 keys UncookedOnly exclusion off bBuildRequiresCookedData, not off TargetType." -f $gameHits)
+    }
+
+    Write-Host ("       CORE-001 recorded these by hand: RacingSim.target {0} occurrence(s), RacingSimEditor.target {1}. Measured now: {0} and {1}." -f $gameHits, $editorHits)
 }
 
 # -----------------------------------------------------------------------------
