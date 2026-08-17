@@ -395,6 +395,44 @@ The original findings, retained for the record:
 
 ---
 
+### TEST-001 — acceptance criteria, opened 2026-08-17
+
+Scope per this row: `Test module and first smoke test`. Gate A. Depends on `CORE-001`
+(DONE). **Ownership note:** the table's `test-engineer + implementer` owner reuses a
+pattern that also appears on `VEH-006`/`RACE-004`/`UI-004`/`STREAM-003` — `test-engineer`
+is read-only validation per `CLAUDE.md` and cannot write code. Implementation here is
+`race-systems-engineer` (continuity with `CORE-001`/`CORE-002`); `test-engineer` runs the
+standard validation gate afterward, same as every other ticket.
+
+`CORE-001` already delivered a `RacingSimTests` module and a first spec
+(`RacingSim.Core.LogCategories`, 1/1 passing) — the literal title is technically met.
+This ticket exists to close what `CORE-001`'s own review left open (`N-2`, `N-4`) rather
+than to build the module from scratch: it converts a one-time manual verification into
+something the project asserts automatically, every build.
+
+- [ ] `N-2` closed: a written rule (`Docs/01-Architecture.md` or equivalent) that
+      `IMPLEMENT_SIMPLE_AUTOMATION_TEST`/spec files may live only under
+      `Source/RacingSimTests/`, plus a check that fails the build or a test if an
+      automation-test macro appears inside `Source/RacingSim/`.
+- [ ] `N-4` (receipt check) closed: the `.target`-file check demonstrated manually at
+      `CORE-001` (`Binaries/Win64/RacingSim.target` contains 0 occurrences of
+      `RacingSimTests`; `RacingSimEditor.target` contains it) is automated — runnable
+      from a script or test, not re-typed by hand at every future ticket.
+- [ ] `N-4` (test content) closed: any test-only content under `Content/Tests/` is
+      excluded from a packaged Game build via `DirectoriesToNeverCook` (or equivalent),
+      verified by a pak-side check — `CORE-001`'s binary-search method covered code, not
+      cooked content, and nothing today checks the latter.
+- [ ] The non-shipping guarantee gains an assertion that can actually fail. Per
+      `CORE-001`'s own reviewer note, `RacingSim.Core.LogCategories` cannot fail on a
+      duplicate or rename — that is already a link/compile error, not a test outcome.
+      Add coverage that is meaningfully falsifiable, e.g. that every declared category is
+      reachable through the log-suppression system at runtime.
+- [ ] Editor **and** Game targets build with zero new warnings.
+- [ ] `Docs/15-ProjectStructure.md`'s test-module description matches the final tree and
+      names the enforcement mechanism added here.
+
+---
+
 ### CORE-003 — acceptance criteria, opened 2026-08-14
 
 Scope per this row: `DataAsset validation framework`. Owner `race-systems-engineer`.
