@@ -111,7 +111,7 @@ that word remains untested. Gating is on `EBuildTargetType` and orthogonal to
 |---|---|---|---|---|---|
 | CORE-001 | Module/folder structure and logging categories | director | ENV-004 | A | **DONE** 2026-08-12 — `code-reviewer` approved at `9a7d5d4` after two blockers were closed. Ticket-level DONE only; **not** M0 sign-off |
 | CORE-002 | Settings, build ID, units, telemetry contracts | race-systems-engineer | CORE-001 | A, B | **DONE** 2026-08-13 — `code-reviewer` approved across two passes at `f84300c`; `test-engineer` independently confirmed both targets build clean and 432/432 automation Smoke tests pass. Merged to `main` at `358848b`. Two MEDIUM findings (build-ID authority/sanitisation edge cases) tracked forward into `CORE-003` |
-| TEST-001 | Test module and first smoke test | test-engineer + implementer | CORE-001 | A | OPEN |
+| TEST-001 | Test module and first smoke test | race-systems-engineer (impl) + test-engineer (validation) | CORE-001 | A | **IMPLEMENTED, GATES PENDING** 2026-08-17 — branch `worktree-agent-a489f0e1e76ec91e0`, `40508ac..c5d0960`. Both targets `Result: Succeeded` with 0 `warning|error` matches; 445/0/0 automation Smoke; package `ExitCode=0`; N-2 enforcement driven to a real failure twice and reverted. **Not merged**; `code-reviewer` and `test-engineer` have not run |
 | CORE-003 | DataAsset validation framework | race-systems-engineer | CORE-002 | A | OPEN |
 
 **CORE-001 is the next ticket on the critical path**, gated only on the M0 signature
@@ -410,26 +410,233 @@ This ticket exists to close what `CORE-001`'s own review left open (`N-2`, `N-4`
 than to build the module from scratch: it converts a one-time manual verification into
 something the project asserts automatically, every build.
 
-- [ ] `N-2` closed: a written rule (`Docs/01-Architecture.md` or equivalent) that
+- [x] `N-2` closed: a written rule (`Docs/01-Architecture.md` or equivalent) that
       `IMPLEMENT_SIMPLE_AUTOMATION_TEST`/spec files may live only under
       `Source/RacingSimTests/`, plus a check that fails the build or a test if an
       automation-test macro appears inside `Source/RacingSim/`.
-- [ ] `N-4` (receipt check) closed: the `.target`-file check demonstrated manually at
+- [x] `N-4` (receipt check) closed: the `.target`-file check demonstrated manually at
       `CORE-001` (`Binaries/Win64/RacingSim.target` contains 0 occurrences of
       `RacingSimTests`; `RacingSimEditor.target` contains it) is automated — runnable
       from a script or test, not re-typed by hand at every future ticket.
-- [ ] `N-4` (test content) closed: any test-only content under `Content/Tests/` is
+- [x] `N-4` (test content) closed: any test-only content under `Content/Tests/` is
       excluded from a packaged Game build via `DirectoriesToNeverCook` (or equivalent),
       verified by a pak-side check — `CORE-001`'s binary-search method covered code, not
       cooked content, and nothing today checks the latter.
-- [ ] The non-shipping guarantee gains an assertion that can actually fail. Per
+      **Closed with a stated limit:** the mechanism, the package and the check are all
+      real, but `/Game/Tests` holds no cooked asset yet, so the check cannot currently
+      fail on this criterion's actual subject. See *The one criterion that is closed but
+      not yet proven* below.
+- [x] The non-shipping guarantee gains an assertion that can actually fail. Per
       `CORE-001`'s own reviewer note, `RacingSim.Core.LogCategories` cannot fail on a
       duplicate or rename — that is already a link/compile error, not a test outcome.
       Add coverage that is meaningfully falsifiable, e.g. that every declared category is
       reachable through the log-suppression system at runtime.
-- [ ] Editor **and** Game targets build with zero new warnings.
-- [ ] `Docs/15-ProjectStructure.md`'s test-module description matches the final tree and
+- [x] Editor **and** Game targets build with zero new warnings.
+- [x] `Docs/15-ProjectStructure.md`'s test-module description matches the final tree and
       names the enforcement mechanism added here.
+
+### TEST-001 — verification evidence, 2026-08-17
+
+Implemented on branch `worktree-agent-a489f0e1e76ec91e0`. **Not merged.** `code-reviewer`
+and `test-engineer` gates have not run; nothing below is a review approval.
+
+**Worktree note.** The director's brief named the worktree `test-001-retry`. The agent
+harness isolates this agent to `.claude/worktrees/agent-a489f0e1e76ec91e0` and refuses git
+operations against any other worktree, so the work is on the branch above, cut from the
+same base commit `340c9ea`. Not a scope decision — a sandbox constraint, recorded so the
+merge targets the right branch.
+
+#### Files changed
+
+| File | Change |
+|---|---|
+| `Source/RacingSim/RacingSim.Build.cs` | `EnforceNoAutomationTestsInRuntimeModule()` — build-time source scan (N-2) |
+| `Source/RacingSimTests/Tests/AutomationTestPlacementSpec.cpp` | new — `RacingSim.Tests.AutomationTestPlacement` (N-2, runtime layer) |
+| `Source/RacingSimTests/Tests/NonShippingArtifactSpec.cpp` | new — `RacingSim.Tests.NonShippingArtifacts` (N-4, inside the Smoke gate) |
+| `Source/RacingSimTests/Core/RacingSimLogSuppressionSpec.cpp` | new — `RacingSim.Core.LogCategoryRegistration` (falsifiable log coverage) |
+| `Scripts/Test/Check-NonShippingArtifacts.ps1` | new — receipt / config / pak+binary checks, `-Mode Receipt|Config|Pak|All` |
+| `Config/DefaultGame.ini` | `[/Script/UnrealEd.ProjectPackagingSettings]` `DirectoriesToNeverCook` for `/Game/Tests`, `/Game/Developer` |
+| `Content/Tests/README.md`, `Content/Tests/Maps/.gitkeep` | new — the excluded directory, and what it is for |
+| `Docs/01-Architecture.md` | the written N-2 rule and the three-layer enforcement table |
+| `Docs/15-ProjectStructure.md` | test-module description, real file tree, enforcement mechanism; corrects the "test code physically cannot ship" overclaim |
+
+#### Builds — both targets, zero warnings
+
+Command form is the verified one in `Docs/Environment.md` under *Compile editor target*,
+with the target name substituted for the Game build.
+
+| Target | Result | `warning|error` matches in that command's own stdout |
+|---|---|---|
+| `RacingSimEditor Win64 Development` | `Result: Succeeded`, 607.99 s (from scratch, no makefile) | **0** |
+| `RacingSim Win64 Development` | `Result: Succeeded`, 232.47 s (from scratch) | **0** |
+| `RacingSimEditor Win64 Development` (final, after the probe revert) | `Result: Succeeded`, 44.55 s | **0** |
+| `RacingSim Win64 Development` (final, after the probe revert) | `Result: Succeeded`, 58.69 s | **0** |
+
+**Warning counts are taken from each command's own captured stdout, not from
+`%LOCALAPPDATA%\UnrealBuildTool\Log.txt`.** That file is machine-global and was observed
+mid-session containing a *different* worktree's build
+(`agent-aa457d3da1306fb55`, `Log started at 08/17/2026 14:12:51`) while this ticket's
+builds were running. It is not usable as per-build evidence while agents build
+concurrently, and any future ticket citing it should check whose build it holds first.
+
+#### Package
+
+Verified `BuildCookRun` from `Docs/Environment.md`, staging outside `Documents\` per
+BLOCKER-006 (`%LOCALAPPDATA%\RacingSimStage-a489f0e1`):
+
+```text
+LogCook: Display: Done!
+LogPakFile: Display: UnrealPak executed in 4.048256 / 1.913048 / 4.285396 seconds
+BUILD SUCCESSFUL
+AutomationTool exiting with ExitCode=0 (Success)
+```
+
+#### Automation
+
+`Automation RunFilter Smoke`, exactly the recorded command, report at
+`Saved/Automation/Report/index.json`, `reportCreatedOn 2026.08.17-06.45.43`:
+
+**succeeded = 445, succeededWithWarnings = 0, failed = 0, notRun = 0**, 8.81 s.
+
+Baseline at `RACE-001` was 442. The three added tests account for the delta exactly:
+`RacingSim.Core.LogCategoryRegistration`, `RacingSim.Tests.AutomationTestPlacement`,
+`RacingSim.Tests.NonShippingArtifacts`. All 19 `RacingSim.*` tests report `Success`;
+no pre-existing suite regressed.
+
+Filter choice is not incidental — all three carry `SmokeFilter`, so the project's one
+documented command discovers them. A test the documented gate cannot see is not coverage.
+
+#### Negative controls — the checks were made to fail on purpose
+
+A gate that has never failed is a gate nobody has tested. Both N-2 layers were driven to
+a real failure and then reverted; the working tree is clean and neither probe is committed.
+
+**Probe 1 — new file.** `IMPLEMENT_SIMPLE_AUTOMATION_TEST` in a new
+`Source/RacingSim/Core/ZZTempViolationProbe.cpp`:
+
+```text
+Invalidating makefile for RacingSimEditor (source file added)
+Unable to instantiate module 'RacingSim': RacingSim: automation-test macros are not
+permitted in the runtime module.
+...
+  ...\Source\RacingSim\Core\ZZTempViolationProbe.cpp (around line 4): IMPLEMENT_SIMPLE_AUTOMATION_TEST
+Result: Failed (RulesError)      -- 2.34 s
+```
+
+**Probe 2 — existing file, which is the one that matters.** The same macro appended to
+`Source/RacingSim/Core/RacingSimLog.cpp`. The module's *file list* is unchanged here, so
+this is the case a naive scan would miss once UBT cached its makefile:
+
+```text
+Invalidating makefile for RacingSimEditor (RacingSimLog.cpp modified)
+Unable to instantiate module 'RacingSim': ...
+  ...\Source\RacingSim\Core\RacingSimLog.cpp (around line 13): IMPLEMENT_SIMPLE_AUTOMATION_TEST
+Result: Failed (RulesError)      -- 3.97 s
+```
+
+That first line is the evidence for the design choice: the scan registers every file it
+reads in `ModuleRules.ExternalDependencies` (`ModuleRules.cs:1437`, consumed at
+`UEBuildTarget.cs:3460`), so an in-file edit invalidates the makefile and re-runs the
+check. Without it the check would run once and then silently stop checking — exactly the
+decay `CORE-001`'s reviewer predicted for the hand-typed receipt check.
+
+Reported line numbers are approximate (`around line N`) because comments are stripped
+before matching and block-comment stripping is not line-preserving. The file name is the
+actionable part.
+
+**Probe 3 — found by accident, and the most useful result here.** The first version of
+the receipt check looked for a `Modules` key in the `.target` JSON. **UE 5.8.1 `.target`
+files have no such key** — the top-level keys are `TargetName`, `Platform`,
+`Configuration`, `BuildSettingsVersion`, `TargetBuildEnvironment`, `TargetType`,
+`IsTestTarget`, `Architecture`, `Project`, `Launch`, `[LaunchCmd]`, `Version`,
+`BuildProducts`, `RuntimeDependencies`, `BuildPlugins`, `AdditionalProperties`. The
+parser therefore read an empty module list for both receipts — and **the assertion this
+ticket is about, "`RacingSimTests` is not among the Game target's modules", would have
+passed vacuously on that empty list.**
+
+It did not become a false pass only because the Editor-side positive control asserted a
+known-true fact and failed first. That is the argument for every control in this ticket,
+and the reason none of them should be tidied away as redundant. It is also the same shape
+as the false Gate G "zero matches" claim corrected in `Docs/Environment.md`: a search that
+is narrower than the sentence describing it reads as a clean result.
+
+#### Check results
+
+`Scripts/Test/Check-NonShippingArtifacts.ps1 -Mode All` (receipt + config) and
+`-Mode Pak` against the package above:
+
+```text
+[PASS] Receipt: both receipts parsed (control)            Editor 1330 build products, Game 10
+[PASS] Receipt: RacingSimTests IS a build product of RacingSimEditor.target (control)
+[PASS] Receipt: RacingSim.target is the Game target and names RacingSim.exe (control)
+[PASS] Receipt: RacingSimTests is NOT in RacingSim.target
+       CORE-001 recorded these by hand: RacingSim.target 0 occurrence(s),
+       RacingSimEditor.target 2. Measured now: 0 and 2.
+[PASS] Config: /Game/Tests is in DirectoriesToNeverCook
+[PASS] Config: /Game/Developer is in DirectoriesToNeverCook
+[PASS] Config: matcher is sound (negative control)
+
+[PASS] Pak: byte search works (control: /Script/Engine found)   5 containers
+[PASS] Pak: '/Game/Tests/' absent from packaged containers
+[PASS] Pak: '/Game/Developer/' absent from packaged containers
+[PASS] Binary: control symbol LogRacingCore found in packaged exe
+[PASS] Binary: 'LogRacingTests' absent from packaged exe
+[PASS] Binary: 'RacingSim.Core.LogCategories' absent from packaged exe
+[PASS] Binary: 'RacingSim.Tests.AutomationTestPlacement' absent from packaged exe
+```
+
+The automated numbers reproduce `CORE-001`'s hand-typed ones exactly (0 and 2), which is
+the whole point of the ticket: the same fact, now asserted by something that runs.
+
+The binary check searches
+`Packaged/Windows/RacingSim/Binaries/Win64/RacingSim.exe` (354,582,016 bytes), not the
+171 KB bootstrap launcher at `Packaged/Windows/RacingSim.exe` — the trap `CORE-001`
+recorded, where the wrong file returns all-absent including the controls and looks like a
+pass. The control (`LogRacingCore` found) is what distinguishes the two.
+
+#### The one criterion that is closed but not yet proven
+
+**`/Game/Tests` contains no cooked asset**, so the pak-side check currently verifies an
+exclusion whose subject does not exist. What *is* proven: the setting is present and
+resolves through `GConfig` as the cooker reads it; a package was produced; the byte search
+works (its positive control found `/Script/Engine`); and `/Game/Tests/` is absent. What is
+**not** proven is that `DirectoriesToNeverCook` would actually stop a real cooked asset —
+that requires an asset to exist and be referenced.
+
+Creating one would mean authoring a `.uasset`, which needs an `Docs/AssetOwnership.tsv`
+claim and serialized binary-asset ownership under hard constraint #7 — out of scope for a
+test-infrastructure ticket. Recorded in `Content/Tests/README.md` and
+`Docs/15-ProjectStructure.md` as an obligation on the first ticket to add a functional-test
+map (`TRACK-002` or `RACE-002`): re-run `-Mode Pak` against a fresh package, because that
+is the first run capable of failing.
+
+#### Strongest counter-case to accepting this ticket
+
+**The three-layer enforcement protects the runtime module and nothing else.** Every check
+is hard-coded to `Source/RacingSim/`. The instant a fourth module appears — and
+`Docs/15-ProjectStructure.md` already anticipates `Plugins/RacingAutomation/Source/`, plus
+the layer-promotion path it says to treat as its own ticket — that module is unguarded,
+and it is unguarded *silently*: no build fails, no test fails, and this evidence section
+still reads green. The failure mode is identical to the one N-2 was raised about, just one
+level up. Nothing in this ticket makes adding a module force a decision about it.
+
+Second, weaker but real: `RacingSim.Tests.AutomationTestPlacement` depends on
+`FAutomationTestFramework::GetValidTestNames`, which filters by application context
+(`AutomationTest.cpp:800-845`). A test flagged `ClientContext`-only in the runtime module
+is invisible to it. That specific gap is covered by the build scan, which is why both
+layers exist — but the coverage argument holds only while both layers are maintained, and
+the build scan is the one a future author is most likely to find annoying and weaken.
+
+#### Remaining risks and rollback
+
+- Rollback is `git revert` of the range `40508ac..c5d0960` on this branch; no engine
+  source, no `.uasset`, no shared config outside `Config/DefaultGame.ini` was touched.
+- The `Build.cs` scan reads every runtime-module source file on each makefile
+  regeneration. Measured cost is inside the 2.34 s failure path above, i.e. negligible at
+  today's ~20 files. If the module grows to thousands, re-measure rather than assume.
+- The comment stripper in the scan does not understand string literals. A banned macro
+  name inside a string literal followed by `(` would false-positive. No plausible code
+  contains that, and the error direction is safe (false positive, never false negative).
 
 ---
 
