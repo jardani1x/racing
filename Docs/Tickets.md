@@ -407,6 +407,7 @@ must close, not just a framework to build in the abstract.
 > exactly the CORE-002 `LOW-4` failure repeating. Copied here verbatim before
 > implementation started, then checked off in place.
 
+
 - [x] A reusable, reflection-driven validation pass that re-applies a `UPROPERTY`'s
       `ClampMin`/`ClampMax` metadata after config/ini load — closing the gap that
       metadata only constrains the Details panel today, not an
@@ -657,7 +658,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 |---|---|---|---|---|---|
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | OPEN |
 | TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | OPEN |
-| RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | OPEN |
+| RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | OPEN |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
@@ -668,6 +669,117 @@ scenarios never produce a valid lap; the timer is monotonic and independent of
 render frame rate; reset can never award progress or duplicate a checkpoint.
 
 The circuit must be **original**. No real track name, layout, signage or venue.
+
+### RACE-001 — acceptance criteria, opened 2026-08-13
+
+Scope per this row: `Race state machine and monotonic clock`. Owner
+`race-systems-engineer`. Gate B. Depends on `CORE-002` (DONE).
+
+**Deliberately track-agnostic.** `TRACK-001`/`TRACK-002` (checkpoints, centerline) and
+lap/sector validation (`RACE-002`) are later, separate tickets. RACE-001 is the state
+machine skeleton and the clock everything else attaches to — it must not reference a
+checkpoint, a lap, or a track asset.
+
+- [x] Race state enum (e.g. `ERaceState`: PreRace, Countdown, Racing, Finished, Results)
+      lives in `Core/RacingSimTypes.h` alongside the project's other shared vocabulary
+      (`ERacingRunValidity`, `ERacingInputDeviceType`) — `UI/` needs to read it for the
+      HUD later without depending on `Race/`.
+- [x] The state machine itself (transition logic, clock ownership) lives in `Race/`, not
+      `Core/` — it is race truth, not a shared contract. `CLAUDE.md`: "No race truth
+      lives in `Streaming`" implies the inverse too — race truth lives in `Race/`.
+- [x] Only the authored transition graph is legal (e.g. PreRace→Countdown→Racing→
+      Finished→Results, Results→PreRace on restart). An illegal transition attempt is
+      rejected and logged, never silently applied and never a crash.
+- [x] Countdown, start, finish, results, and restart transitions are deterministic and
+      idempotent — calling the same transition twice produces no additional effect
+      (Gate B, verbatim).
+- [x] Race clock is monotonic and independent of render frame rate (Gate B, verbatim):
+      elapsed time is derived from a monotonic time source (e.g. `FPlatformTime::Seconds()`),
+      not accumulated from per-tick `DeltaTime`, so it cannot drift under frame-rate
+      variance or a paused/hitched frame.
+- [x] Clock is a single server-side authority — nothing client-side interpolates or
+      guesses race time; this is the source `RACE-002` will time laps against.
+- [x] Restart/reset can never award progress: restarting mid-race returns the state
+      machine to `PreRace`/`Countdown` with the clock re-zeroed, never to a state that
+      preserves partial progress (Gate B, verbatim — the checkpoint half of this rule is
+      `RACE-002`'s, the state/clock half is this ticket's).
+- [x] No per-frame allocations, no broad actor searches, no synchronous asset loads in
+      the state machine's `Tick` or transition paths (`CLAUDE.md` coding rules).
+- [x] `RacingSimTests` gains automation coverage: every legal transition, every illegal
+      transition attempt (rejected, not crashed), idempotency of each transition called
+      twice, and clock monotonicity under a simulated variable/dropped frame rate.
+- [x] Editor **and** Game targets build with zero new warnings.
+
+### RACE-001 — verification evidence, 2026-08-13
+
+- Editor (`RacingSimEditor Win64 Development`): `Result: Succeeded`, 0 `warning|error`
+  matches in the filtered UBT log.
+- Game (`RacingSim Win64 Development`): `Result: Succeeded`, 0 `warning|error` matches
+  in the filtered UBT log.
+- Automation `Smoke` filter, this worktree: `Saved/Automation/Report/index.json` —
+  `succeeded: 442, failed: 0, notRun: 0`, all 10 `RacingSim.Race.*` suites
+  (`ClockMonotonic`, `ClockUnderStates`, `Countdown`, `Idempotency`,
+  `PlatformTimeSource`, `Reentrancy`, `RestartAwardsNoProgress`, `Ruleset`,
+  `StateMachineSemantics`, `TransitionGraph`) present and `Success`.
+- One real bug found and fixed by the director during verification: the automation
+  run's first pass (`442` total, `1` failed) found `RaceClockSpec.cpp`'s "A 4-second
+  stall is counted in full" test used a `1e-12` tolerance on a `TestEqual` at
+  `Epoch = 987654.5` (~1e6 magnitude, double ULP ~1.2e-10 there) comparing against a
+  non-exactly-representable literal (`4.016`) — tighter than double precision allows.
+  Fixed by widening to `1e-9` with a comment explaining why the whole/half-integer
+  cases elsewhere in the same file are safe at `0.0` tolerance and this one is not.
+  This is very likely what the implementing agent's cut-off final message ("Let me fix
+  several floating-point-exactness and API risks I spotted before building") was about
+  to address before its run ended.
+- `race-systems-engineer`'s implementation additionally includes
+  `Source/RacingSim/Race/RaceRulesetDataAsset.h/.cpp` (ruleset id, countdown seconds,
+  content version/hash, validation) — not explicitly named in the acceptance criteria
+  above but a reasonable supporting type for `PollAutoTransitions()`'s automatic
+  countdown; flagged for `code-reviewer` to judge as in-scope or split out.
+
+### RACE-001 — review findings, pass 1
+
+`code-reviewer` verdict: **approve with conditions** (no BLOCKER, no HIGH). Confirmed
+`URaceRulesetDataAsset` is in-scope (not scope creep) and confirmed the plain-`UObject`
+design (vs. `AActor`/subsystem) holds up. Independently verified the clock arithmetic
+numerically and the track-agnostic constraint by grep. Did not run the build or tests
+itself — build/test evidence above is director-provided.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| M1 | `HasRaceAuthority` fails open on a null `UWorld` (commandlet/automation), which is also reachable from some legitimate client-side outers — no automation coverage of either branch | Fixed — direct tests added for `HasRaceAuthority(nullptr)` and the world-less-context branch; the untested net-client branch is recorded as accepted risk in this section (below) rather than faked with a synthetic PIE world |
+| M2 | `URaceRulesetDataAsset::Validate()` has no runtime caller; a NaN or negative `CountdownSeconds` reaches `GetCountdownRemainingSeconds()` (`BlueprintCallable`) as NaN, or causes instant release | Fixed — `CreateWithTimeSource` now rejects non-finite/negative `CountdownSeconds` at construction (falls back to manual countdown, logged). Deliberately NOT full `Validate()`: that also rejects `CountdownSeconds == 0.0`, which the project's own automation intentionally relies on for an instant-release countdown — `Validate()` remains a publish-time content check, not a construction-time gate. Tests added for both NaN and negative cases |
+| M3 | The production `Create()` path (real `PlatformMonotonicSeconds` source) is never exercised — every test uses the fake time source | Fixed — a smoke test now exercises `Create()` end-to-end through `BeginCountdown`/`StartRace`, asserting only finiteness and non-decrease (no wall-clock duration assertion) |
+| M4 | `CommitTransition` discards `FRaceClock::Start/Stop`'s `bool` return; a refused `Start` (non-finite reading) would still enter `Racing` and freeze a 0.000 result with no invalidity marker | **Deferred to `RACE-002`** — the fix requires plumbing `ERacingRunValidity` (Core, reserved by CORE-002) into a result, which is RACE-002/RACE-003's job, not this ticket's. Unreachable with the shipped platform source today |
+| M5 | No exit actions (contrary to `Docs/01-Architecture.md`'s original "one entry action, one exit action" line) — countdown-clock teardown is duplicated into two entry actions instead | **Batched forward, documented** — `Docs/01-Architecture.md` now states the deviation explicitly and flags it as the first thing a new edge leaving `Countdown` must remember. Reviewer confirmed no re-review needed |
+| M6 | `RaceStateMachineSpec.cpp`'s countdown-boundary test used non-binary-exact deltas (`2.9 + 0.1`) landing on a zero-margin `TestTrue`/`TestFalse` pair that passes only by rounding luck at this epoch | Fixed — replaced with binary-exact `2.875 + 0.125`, matching the discipline already used elsewhere in the same file |
+| M7 | `Docs/15-ProjectStructure.md` and `Docs/01-Architecture.md` not updated: stale `Race/` file list, stale state diagram (`Boot->Loading->Grid->Countdown`, Restart landing in `Countdown`), `URaceClock` proposed as a `UObject` vs. shipped `FRaceClock` struct | Fixed — both docs updated to match shipped reality |
+| L1 | Ticket's own evidence section said "8" `RacingSim.Race.*` suites; actual count is 10 | Fixed |
+| L2 | `GetTransitionTarget(PreRace, Restart, ...)` returns `true` (static graph query) while `RequestTransition` returns `Redundant` for the same case (instance behaviour) — a caller using only the static helper could disagree with the object | **Batched forward** — reviewer did not require a fix for re-review; both behaviours are individually correct and tested, the disagreement is between two different questions ("is this an edge" vs. "would calling it do anything") |
+| L3 | `Restart` from `PreRace` bumps no session id and broadcasts nothing | **Batched forward**, noted for `UI-001`/`RACE-002` |
+| L4 | `CurrentState`/`SessionId` are non-`Transient` `UPROPERTY`s while `FRaceClock` is not a `UPROPERTY` at all — a duplicate/save could restore `Racing` with a zeroed clock | **Batched forward** |
+| L5 | Test lambdas bound to `OnRaceStateChanged` are never explicitly unbound (safe today, since nothing broadcasts after the owning `TStrongObjectPtr` goes out of scope) | **Batched forward** |
+| L6 | `ComputeContentHash`'s "any added field MUST be hashed" comment is unenforced by any guard | **Batched forward** |
+| L7 | The tolerance fix (`1e-12` -> `1e-9`) was the looser of two valid repairs; a binary-exact fixture value would have preserved `0.0` tolerance | Not changed — reviewer noted this is a preference, not an objection; `1e-9` at a 4-second interval is 1 ns and cannot mask a real defect |
+| L8 | No runtime `checkSlow(IsInGameThread())` guard on `FRaceClock::Sample()`'s mutating path | **Batched forward** |
+
+**Accepted risk (M1, net-client branch):** `HasRaceAuthority`'s net-client-rejection
+branch (`World->GetNetMode() != NM_Client`) has no automation coverage — constructing a
+real networked `UWorld` under `-nullrhi Automation RunFilter Smoke` is out of proportion
+for this ticket. The first ticket that constructs a `URaceStateMachine` inside a real
+PIE/networked session (`RACE-002` or later, once `ARaceDirector` exists) must add that
+coverage before this project ships with online play.
+
+### RACE-002 — findings inherited from RACE-001
+
+Raised by `code-reviewer` against RACE-001 (`Source/RacingSim/Race/RaceStateMachine.cpp`),
+deferred here because closing them requires the lap/result plumbing RACE-002 owns. Read
+before writing RACE-002's acceptance criteria:
+
+| ID | Finding | What RACE-002 must do |
+| --- | --- | --- |
+| M4 (RACE-001 pass 1) | `URaceStateMachine::CommitTransition` discards `FRaceClock::Start()`/`Stop()`'s `bool` return. If `Start` ever refuses a reading (non-finite — unreachable with the shipped platform source, but reachable once a real result is written), the machine still enters `Racing` and later freezes a silent `0.000` result with nothing marking the run invalid | Check the return value; on refusal, mark the run's `ERacingRunValidity` (Core, reserved by CORE-002) invalid rather than letting a zero-duration result reach a leaderboard |
+| M1's accepted risk (RACE-001 pass 1) | `URaceStateMachine::HasRaceAuthority`'s net-client-rejection branch has no automation coverage | Once `ARaceDirector` (or equivalent) constructs a `URaceStateMachine` inside a real PIE/networked session, add a test exercising the net-client rejection path |
 
 ### RACE-002 — findings inherited from CORE-003
 
@@ -682,6 +794,42 @@ recorded here rather than only in CORE-003's own body — the same mistake CORE-
 | C3-2 | **`VerifyRangesMatchMetadata()`'s direction-2 sweep filters on `CPF_Config`**, so for a `UDataAsset` (whose properties are `EditAnywhere`, not `config`) it checks nothing. That is the direction that catches "a new clamped property was added and nobody updated the table" — i.e. the reuse recommended in C3-1 silently loses the guarantee that makes the duplication safe | Before reusing the framework on a DataAsset, either parameterise the property filter in `RacingSimValidation.cpp` (pass the required `EPropertyFlags`, defaulting to `CPF_Config`) or add an equivalent explicit coverage test for the asset. **Do not reuse the framework on a DataAsset without closing this** — the range table would be unguarded against drift |
 | C3-3 | A property's `ClampMin` is not always its safe value. `TelemetryStaleAfterSeconds` clamping to its minimum (0.0) *disables* staleness checking. `CORE-003` added `FRacingPropertyRange::WithReplacement()` for this | When declaring ranges for lap/sector tolerances, check each bound: if the extreme value means "off" or "unbounded" rather than "least", declare a `WithReplacement()` and assert the resulting behaviour, not just that the field is in range |
 | C3-4 | The derived build-ID format now embeds `+` on both schemes (`[A-Za-z0-9._+-]`). Results written by `RACE-003` must percent-encode a build ID before putting it in a URL query string, where `+` decodes to a space | Carry this into the results/metadata format at `RACE-003`; `RacingSim.Core.BuildId` asserts the character set |
+
+### TRACK-001 — acceptance criteria, opened 2026-08-14
+
+Scope per this row: `Original circuit graybox and spline centerline`. Owner
+`race-systems-engineer`. Gate B. Depends on `CORE-001` (DONE). **Original circuit
+only** — no real track name, layout, signage, or venue (`CLAUDE.md` non-negotiable
+decisions; `LEGAL-001`'s ledger governs any external reference art).
+
+**Deliberately checkpoint-agnostic**, mirroring RACE-001's split: ordered checkpoint
+gates and crossing-direction validation are `TRACK-002`, not this ticket. TRACK-001 is
+the centerline/track-identity contract everything else attaches to.
+
+- [ ] `ATrackDefinitionActor` (`Source/RacingSim/Race/`, per `Docs/01-Architecture.md`'s
+      proposed types) exposes: centerline spline (closed loop), track length in
+      centimetres (with a documented cm→SI conversion, per `CLAUDE.md` units rule and
+      `RacingSimUnits.h`'s existing conversion policy), sector boundary markers along
+      the spline, start/finish transform, grid slot transforms, and reset sample points
+      (nearest-valid-track-point candidates for `VEH-005`'s safe reset, later).
+- [ ] Spline-distance and nearest-point queries are exposed as a typed, testable API
+      (not raw `USplineComponent` calls scattered across callers) — this is the surface
+      `RACE-002`'s progress/lap logic and `VEH-005`'s reset will consume.
+- [ ] Track identity uses `FRacingContentVersion` (`CORE-002`, `RacingSimBuildId.h`) —
+      `GetContentVersion()`/content-hash pattern, matching `URaceRulesetDataAsset`'s
+      precedent from `RACE-001` — so `FRacingSimVersionStamp::TrackVersion` (reserved by
+      CORE-002) can be populated from a real asset instead of staying empty.
+- [ ] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, per
+      `Docs/15-ProjectStructure.md`'s planned tree) containing one closed-loop
+      `ATrackDefinitionActor` instance, using only primitive/placeholder geometry — no
+      final art, no license-ledger-requiring external asset. Sufficient for `TRACK-002`
+      and `RACE-002`'s automation to exercise real checkpoint/lap logic against.
+- [ ] `RacingSimTests` gains automation coverage for the centerline/spline-query API
+      (distance along spline, nearest point, sector boundaries) that does **not**
+      require the test map — testable against a procedurally-constructed spline in a
+      transient world/commandlet, matching RACE-001's testability-first design so the
+      cheap, certain work doesn't block on the level-authoring step.
+- [ ] Editor **and** Game targets build with zero new warnings.
 
 ---
 

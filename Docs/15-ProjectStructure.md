@@ -49,8 +49,12 @@ Source/
       VehicleResetComponent.*
       CarSpecDataAsset.*
     Race/
-      RaceDirector.*
-      RaceClock.*
+      RaceClock.*                   <- RACE-001: monotonic timestamp-subtraction clock
+      RaceStateMachine.*             <- RACE-001: authored transition graph, track-agnostic
+      RaceRulesetDataAsset.*         <- RACE-001: countdown length + other state-machine tunables
+      RaceDirector.*                 <- planned, not yet implemented. Will own a URaceStateMachine
+                                         (Docs/01-Architecture.md's "session orchestration" role);
+                                         RACE-001's header documents the split in detail.
       TrackDefinitionActor.*
       TrackCheckpoint.*
       RaceProgressComponent.*
