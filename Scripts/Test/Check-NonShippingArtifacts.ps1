@@ -294,20 +294,60 @@ function Test-PakContents {
         return
     }
 
+    # Chunked search. The first implementation compared bytes in a nested PowerShell
+    # loop; against a 217 MB .ucas and a 354 MB .exe that did not finish in ten
+    # minutes, which makes a check nobody will run. Rewritten to stream 8 MB chunks
+    # and let .NET's String.IndexOf do the scanning.
+    #
+    # Latin-1 is the encoding used for the conversion because it is the only one that
+    # maps every byte 0x00-0xFF to exactly one char and back. That makes an arbitrary
+    # binary buffer searchable as a string without loss.
+    #
+    # The UTF-16LE case falls out of the same trick: "abc" encoded UTF-16LE is
+    # 61 00 62 00 63 00, which read as Latin-1 is "a\0b\0c\0". So the wide needle is
+    # just the narrow one with NULs interleaved, and one search routine covers both.
+    # Both encodings are searched for the reason CORE-001 recorded: UE stores some
+    # name tables narrow and some wide, and searching one encoding only produces a
+    # confident false negative.
+    #
+    # Chunks overlap by (needle length - 1) so a match spanning a boundary is not
+    # missed -- the classic off-by-one that makes a chunked scanner silently unsound.
     function Test-BytesContain {
         param([string] $File, [string] $Needle)
-        $bytes = [System.IO.File]::ReadAllBytes($File)
-        $ascii = [System.Text.Encoding]::ASCII.GetBytes($Needle)
-        $wide  = [System.Text.Encoding]::Unicode.GetBytes($Needle)
-        foreach ($pattern in @($ascii, $wide)) {
-            $limit = $bytes.Length - $pattern.Length
-            for ($i = 0; $i -le $limit; $i++) {
-                $match = $true
-                for ($j = 0; $j -lt $pattern.Length; $j++) {
-                    if ($bytes[$i + $j] -ne $pattern[$j]) { $match = $false; break }
+
+        $narrow = $Needle
+        $wide = -join ($Needle.ToCharArray() | ForEach-Object { "$_`0" })
+        $needles = @($narrow, $wide)
+
+        $maxNeedle = ($needles | Measure-Object -Property Length -Maximum).Maximum
+        $overlap = $maxNeedle - 1
+        $chunkSize = 8MB
+
+        $stream = [System.IO.File]::OpenRead($File)
+        try {
+            $buffer = New-Object byte[] ($chunkSize + $overlap)
+            $carry = 0
+            while ($true) {
+                $read = $stream.Read($buffer, $carry, $chunkSize)
+                if ($read -le 0) { break }
+                $valid = $carry + $read
+                # GetEncoding(28591) rather than ::Latin1 -- the named property only
+                # exists on .NET 5+, so it would break this script under Windows
+                # PowerShell 5.1, which is the shell available by default here.
+                $text = [System.Text.Encoding]::GetEncoding(28591).GetString($buffer, 0, $valid)
+                foreach ($n in $needles) {
+                    if ($text.IndexOf($n, [System.StringComparison]::Ordinal) -ge 0) { return $true }
                 }
-                if ($match) { return $true }
+                # Carry the tail forward so a boundary-spanning match still matches.
+                if ($valid -ge $overlap -and $overlap -gt 0) {
+                    [System.Array]::Copy($buffer, $valid - $overlap, $buffer, 0, $overlap)
+                    $carry = $overlap
+                } else {
+                    $carry = 0
+                }
             }
+        } finally {
+            $stream.Dispose()
         }
         return $false
     }
