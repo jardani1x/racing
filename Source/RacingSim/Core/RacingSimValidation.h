@@ -260,11 +260,16 @@ namespace RacingSim::Validation
 	 * PostInitProperties, which UObjectGlobals.cpp runs at line 4320, after
 	 * LoadConfig at line 4274 (verified in UE 5.8.1 source, not assumed).
 	 *
-	 * Non-finite handling: NaN and +/-Inf compare false against every bound, so
-	 * they would slip through a naive clamp. They are replaced by the range's
-	 * minimum when it has one, else its maximum, else 0, and reported as
-	 * ReplacedNonFinite. A non-finite value carries no information, so there is no
-	 * "nearest legal value" to move it to; the safe end of the range is used.
+	 * Non-finite and out-of-range handling: NaN and +/-Inf compare false against
+	 * every bound, so they would slip through a naive clamp. A declared
+	 * ReplacementValue (see WithReplacement()) wins first if the range has one,
+	 * then the nearest bound (Min for non-finite/below-min, Max for above-max),
+	 * then 0.0 if neither bound is declared. A non-finite value carries no
+	 * information, so there is no "nearest legal value" to move it to; a
+	 * replacement or the range's own safe end is used. Reported as
+	 * ReplacedNonFinite for the non-finite case, ReplacedOutOfRange when a
+	 * declared replacement is used for an in-bounds-domain violation, and
+	 * ClampedToMin/ClampedToMax when no replacement is declared.
 	 *
 	 * Not thread-safe with respect to concurrent readers of Object. Called during
 	 * object construction and from explicit reload paths, both game thread.

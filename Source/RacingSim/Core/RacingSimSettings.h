@@ -202,6 +202,17 @@ public:
 	float TelemetrySampleRateHz = 30.0f;
 
 	/**
+	 * Class default for TelemetryStaleAfterSeconds. Shared by the UPROPERTY
+	 * initialiser below and by GetValidatedPropertyRanges()'s WithReplacement()
+	 * entry for this field (RacingSimSettings.cpp), so the two cannot silently
+	 * diverge -- 0.0 is a valid ClampMin for this field but means "disabled",
+	 * not "least value", so a plain clamp-to-min would be the wrong repair for
+	 * an out-of-range ini override (see RacingSimValidation.h's non-finite/
+	 * out-of-range policy).
+	 */
+	static constexpr double DefaultTelemetryStaleAfterSeconds = 0.5;
+
+	/**
 	 * A telemetry frame older than this many seconds is stale and must not be
 	 * displayed as live. Guards the HUD against a dead producer -- a frozen
 	 * speedometer reading a plausible number is worse than a blank one.
@@ -212,5 +223,5 @@ public:
 	 * field exists to prevent.
 	 */
 	UPROPERTY(config, EditAnywhere, BlueprintReadOnly, Category = "Telemetry", meta = (ClampMin = "0.0", UIMin = "0.05", UIMax = "5.0"))
-	double TelemetryStaleAfterSeconds = 0.5;
+	double TelemetryStaleAfterSeconds = DefaultTelemetryStaleAfterSeconds;
 };

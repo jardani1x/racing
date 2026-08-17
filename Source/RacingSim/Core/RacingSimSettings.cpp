@@ -54,10 +54,11 @@ TConstArrayView<RacingSim::Validation::FRacingPropertyRange> URacingSimSettings:
 		// to 0.0 would therefore take an obviously broken config and quietly
 		// disarm the guard that stops the HUD presenting a dead producer's frozen
 		// numbers as live. Corrections go to the class default instead, which
-		// keeps the guard armed. Must stay in step with the initialiser on
-		// TelemetryStaleAfterSeconds in RacingSimSettings.h.
+		// keeps the guard armed. Shares URacingSimSettings::DefaultTelemetryStaleAfterSeconds
+		// with the UPROPERTY initialiser on TelemetryStaleAfterSeconds in
+		// RacingSimSettings.h so the two cannot silently diverge.
 		FRacingPropertyRange::AtLeast(GET_MEMBER_NAME_CHECKED(URacingSimSettings, TelemetryStaleAfterSeconds), 0.0)
-			.WithReplacement(0.5)
+			.WithReplacement(URacingSimSettings::DefaultTelemetryStaleAfterSeconds)
 	};
 
 	return Ranges;
