@@ -169,6 +169,16 @@ Command syntax was read from engine source, not guessed:
 - Text inside `-ExecCmds` is split on `;`, so `"Automation RunFilter Smoke; Quit"`
   is parsed as two Automation subcommands.
 
+> **`RacingSim.Core.SettingsRangeMetadata` is load-bearing, not decorative — do not
+> skip it in CI.** `URacingSimSettings`' `ClampMin`/`ClampMax` ranges are enforced at
+> runtime from a hand-declared table in C++, *not* from the `UPROPERTY` metadata,
+> because `WITH_METADATA` is `WITH_EDITORONLY_DATA` (`CoreMiscDefines.h:31`) and is
+> therefore **0 in the packaged Game build** — the exact build a CI `-ini:` override
+> ships to. That test is the only thing asserting the table and the metadata still
+> agree, in both directions, including that a newly added clamped config property was
+> not forgotten. Skip it and the packaged-build validation guarantee degrades silently,
+> with the editor still behaving correctly. See `CORE-003` in `Docs/Tickets.md`.
+
 `Smoke` was chosen deliberately over `All`: it is the fast subset, and this machine
 is memory-constrained (BLOCKER-003). Widening the filter is a later decision, not a
 default.

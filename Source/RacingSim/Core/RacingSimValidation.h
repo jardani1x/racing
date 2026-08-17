@@ -52,19 +52,35 @@ class UObject;
  * updated. That last direction is the one that caused M-5 in the first place.
  *
  * ---------------------------------------------------------------------------
- * Policy: clamp, do not refuse to start
+ * Policy: correct, do not refuse to start
  * ---------------------------------------------------------------------------
  *
- * An out-of-range value is corrected into range and logged as a Warning naming
- * the property, the loaded value and the corrected value. It is not a fatal
- * error, for two reasons: a settings CDO has no "last known good" value to fall
- * back to (it *is* the defaults object), and refusing to boot a Pixel Streaming
- * worker over an ini typo converts a cosmetic misconfiguration into an outage.
+ * An out-of-range value is corrected and logged as a Warning naming the
+ * property, the loaded value and the corrected value. It is not a fatal error,
+ * for two reasons: a settings CDO has no "last known good" value to fall back to
+ * (it *is* the defaults object), and refusing to boot a Pixel Streaming worker
+ * over an ini typo converts a cosmetic misconfiguration into an outage.
  *
- * The clamp direction is chosen so that correction is never flattering: every
- * range in this project has its safe end at the minimum (0 Hz telemetry = off,
- * 0 physics policy = unpublishable), so a nonsense value degrades toward "this
- * build cannot publish a result" rather than toward a plausible-looking one.
+ * ---------------------------------------------------------------------------
+ * Why "clamp to the nearest bound" is NOT always the safe correction
+ * ---------------------------------------------------------------------------
+ *
+ * An earlier version of this file claimed "every range in this project has its
+ * safe end at the minimum, so a nonsense value degrades toward unpublishable".
+ * That was false, and the counter-example is in this very module's settings.
+ *
+ * URacingSimSettings::TelemetryStaleAfterSeconds has ClampMin = "0.0", but 0 is
+ * not "the least staleness" -- FRacingTelemetryFrame::IsStaleAt treats
+ * MaxAgeSeconds <= 0 as "staleness checking disabled, nothing is ever stale"
+ * (RacingTelemetry.cpp). So clamping a NaN or a negative to 0.0 would take an
+ * obviously broken config and turn it into a silently permissive one: the HUD
+ * would happily present a frozen speedometer from a dead producer as live, which
+ * is the exact failure that field exists to prevent.
+ *
+ * Hence FRacingPropertyRange::ReplacementValue. A property whose bound is not
+ * its safe value declares what to substitute instead, and gets its guard back
+ * armed rather than disarmed. Properties that do not declare one clamp to the
+ * nearest bound as before, which remains correct for them.
  */
 
 namespace RacingSim::Validation
@@ -80,6 +96,12 @@ namespace RacingSim::Validation
 		ClampedToMax,
 		/** Value was NaN or infinite and was replaced; see FRacingValidationIssue. */
 		ReplacedNonFinite,
+		/**
+		 * Value was out of range on a property that declares a ReplacementValue,
+		 * so it was replaced by that value rather than clamped to the bound it
+		 * violated. See the header comment on why clamping is not always safe.
+		 */
+		ReplacedOutOfRange,
 		/**
 		 * The range could not be applied at all -- the property does not exist,
 		 * or is not a plain numeric property. Always a programming error in the
@@ -101,6 +123,17 @@ namespace RacingSim::Validation
 	 * are slider hints, not invariants -- URacingSimSettings::TelemetryStaleAfterSeconds
 	 * carries UIMax = 5.0 with no ClampMax, and 10.0 seconds is a legal (if odd)
 	 * value. Treating a slider hint as a hard bound would silently clamp valid data.
+	 *
+	 * PRECISION LIMIT, and the reason FUInt64Property is rejected outright while
+	 * FInt64Property is not: a double represents every int32 exactly, but only
+	 * integers up to 2^53 exactly. A bound declared here for an int64 property
+	 * beyond 2^53 would be rounded on the way in, so the enforced bound could
+	 * differ from the declared one by a few units. No int64 UPROPERTY exists in
+	 * this codebase, so this is documented rather than guarded; a future one with
+	 * bounds that large needs a hand-written check instead. uint64 is rejected
+	 * because it is worse than imprecise -- FNumericProperty's integer accessors
+	 * are int64-based, so a value above INT64_MAX reads as negative and would be
+	 * "corrected" into garbage.
 	 */
 	struct FRacingPropertyRange
 	{
@@ -112,6 +145,29 @@ namespace RacingSim::Validation
 
 		bool bHasMax = false;
 		double Max = 0.0;
+
+		/**
+		 * Value substituted for ANY correction on this property -- out of range
+		 * at either end, or non-finite -- instead of the violated bound.
+		 *
+		 * Declare this when a bound is not the property's safe value. The case
+		 * that forced it into existence: TelemetryStaleAfterSeconds' ClampMin is
+		 * 0.0, and 0.0 means "disable staleness checking", so clamping a broken
+		 * value to the minimum disarms a HUD safety guard. See the header.
+		 *
+		 * Left unset, corrections clamp to the nearest bound, which is right for
+		 * every property whose minimum genuinely is its least-permissive value.
+		 */
+		bool bHasReplacement = false;
+		double ReplacementValue = 0.0;
+
+		/** Declare the safe substitute for any correction on this property. */
+		FRacingPropertyRange& WithReplacement(const double InReplacement)
+		{
+			bHasReplacement = true;
+			ReplacementValue = InReplacement;
+			return *this;
+		}
 
 		/** Mirrors meta = (ClampMin = "InMin", ClampMax = "InMax"). */
 		static FRacingPropertyRange Between(const FName InName, const double InMin, const double InMax)

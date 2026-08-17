@@ -46,7 +46,18 @@ TConstArrayView<RacingSim::Validation::FRacingPropertyRange> URacingSimSettings:
 		FRacingPropertyRange::Between(GET_MEMBER_NAME_CHECKED(URacingSimSettings, LapTimeFractionalDigits), 0.0, 3.0),
 		FRacingPropertyRange::AtLeast(GET_MEMBER_NAME_CHECKED(URacingSimSettings, PhysicsPolicyVersion), 0.0),
 		FRacingPropertyRange::Between(GET_MEMBER_NAME_CHECKED(URacingSimSettings, TelemetrySampleRateHz), 0.0, 240.0),
+
+		// The one property whose ClampMin is NOT its safe value. 0.0 does not
+		// mean "least staleness", it means "staleness checking disabled" --
+		// FRacingTelemetryFrame::IsStaleAt returns false for every frame when
+		// MaxAgeSeconds <= 0 (RacingTelemetry.cpp). Clamping a NaN or a negative
+		// to 0.0 would therefore take an obviously broken config and quietly
+		// disarm the guard that stops the HUD presenting a dead producer's frozen
+		// numbers as live. Corrections go to the class default instead, which
+		// keeps the guard armed. Must stay in step with the initialiser on
+		// TelemetryStaleAfterSeconds in RacingSimSettings.h.
 		FRacingPropertyRange::AtLeast(GET_MEMBER_NAME_CHECKED(URacingSimSettings, TelemetryStaleAfterSeconds), 0.0)
+			.WithReplacement(0.5)
 	};
 
 	return Ranges;

@@ -503,6 +503,20 @@ from engine source (`CoreMiscDefines.h:31`, `TargetRules.cs:1203`,
 with no `bBuildWithEditorOnlyData` override — but the metadata-absent path has not
 been *executed*, only reasoned about and compiled. See the counter-case below.
 
+### CORE-003 — review findings, pass 1
+
+Verdict: **changes required** — 1 HIGH, 5 MEDIUM, several LOW.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 | The non-finite/below-min replacement used `Range.Min` as "the safe end". For `TelemetryStaleAfterSeconds` (`ClampMin = 0.0`) that replaces a broken value with exactly the sentinel `FRacingTelemetryFrame::IsStaleAt` reads as "staleness checking disabled" — turning an obviously broken config into a silently permissive one, and falsifying the header's own "every range has its safe end at the minimum" claim | **Fixed** — added `FRacingPropertyRange::WithReplacement()`; `TelemetryStaleAfterSeconds` declares `0.5` (its class default) and any correction on it now uses that instead of a bound. New `ERangeAction::ReplacedOutOfRange`. The policy paragraph in `RacingSimValidation.h` was rewritten and now names this as the counter-example. The NaN test no longer asserts "finite" — it calls the real `IsStaleAt` and asserts a 100 s old frame still reads stale, plus a new negative-value case, which is the one a plain clamp gets wrong |
+| MEDIUM-1 | `FInt64Property` is accepted with double-typed bounds, losing precision above 2^53 — inconsistent with rejecting `FUInt64Property` | **Documented** (reviewer's suggested option) — precision limit and the asymmetry's reasoning recorded on `FRacingPropertyRange` in `RacingSimValidation.h`. No int64 `UPROPERTY` exists in the codebase |
+| MEDIUM-2 | `VerifyRangesMatchMetadata`'s direction-2 sweep filters on `CPF_Config`, so it checks nothing for a `UDataAsset` — undermining the very reuse CORE-003 recommends | **Documented as a blocking precondition** — see `C3-2` in "### RACE-002 — findings inherited from CORE-003". Not fixed here: parameterising the filter without a real DataAsset consumer to test it against would be speculative, and RACE-001 owns the first consumer |
+| MEDIUM-3 | The RACE-002 handoff lived only in CORE-003's own body — CORE-002 `MEDIUM-4` again | **Fixed** — added "### RACE-002 — findings inherited from CORE-003" (4 rows) and added `CORE-003` to RACE-002's `Depends on` column |
+| MEDIUM-4 | The range table itself was unvalidated: no `Min <= Max` check, and `ContainerPtrToValuePtr` addresses element 0 only, so `ArrayDim > 1` silently validated one element | **Fixed** — `IsRangeSelfConsistent()` rejects an inverted range and a replacement value outside its own range; `ResolveNumericProperty` rejects `ArrayDim > 1`. All three report as `Failed`/Error. Three new test cases |
+| MEDIUM-5 | Nothing told a future CI author that `SettingsRangeMetadata` is load-bearing | **Fixed** — call-out block added to `Docs/Environment.md` under "Run automation tests" |
+| LOW-1..LOW-7 | Float-bound re-logging noise, double-logging in `ValidateConfiguredRanges`, misleading `IsEnum` comment, `IsA` vs `CastField` style, whitespace-only stamp authority edge case, "no ini file written" test-comment overstatement, build-ID format compatibility note for RACE-003 | **Batched forward**, except the last, which is recorded as `C3-4` in the RACE-002 inherited-findings table because it changes a written result format |
+
 ### CORE-003 — counter-case: the strongest argument against this design
 
 The range table duplicates the `ClampMin`/`ClampMax` metadata, and duplication is the
@@ -644,7 +658,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | OPEN |
 | TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | OPEN |
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | OPEN |
-| RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001 | B | OPEN |
+| RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | OPEN |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
 
@@ -654,6 +668,20 @@ scenarios never produce a valid lap; the timer is monotonic and independent of
 render frame rate; reset can never award progress or duplicate a checkpoint.
 
 The circuit must be **original**. No real track name, layout, signage or venue.
+
+### RACE-002 — findings inherited from CORE-003
+
+Raised during `CORE-003` (the config/DataAsset range-validation framework) and
+recorded here rather than only in CORE-003's own body — the same mistake CORE-002's
+`MEDIUM-4` already committed this project to not repeating. `RACE-002` gains a
+`CORE-003` dependency in the table above because of the first row.
+
+| ID | Finding | What RACE-002 must do |
+| --- | --- | --- |
+| C3-1 | `URaceRulesetDataAsset::Validate()` (RACE-001) stays a hand-written gate; `CORE-003` deliberately did not reshape it, and did not touch the file because RACE-001 was in flight. But its `ClampMin`/`ClampMax` metadata has exactly the CORE-002 M-5 problem: it constrains the Details panel and nothing else | Declare a range table as `URacingSimSettings::GetValidatedPropertyRanges()` does, call `RacingSim::Validation::EnforceRanges` from `PostLoad()`, and have `Validate()` call it first and fail if `NumFailed() > 0`. Keep the two functions separate — `EnforceRanges` is *load repair*, `Validate` is a *gate*. Reasoning in "CORE-003 — decision: `URaceRulesetDataAsset::Validate()` stays separate" |
+| C3-2 | **`VerifyRangesMatchMetadata()`'s direction-2 sweep filters on `CPF_Config`**, so for a `UDataAsset` (whose properties are `EditAnywhere`, not `config`) it checks nothing. That is the direction that catches "a new clamped property was added and nobody updated the table" — i.e. the reuse recommended in C3-1 silently loses the guarantee that makes the duplication safe | Before reusing the framework on a DataAsset, either parameterise the property filter in `RacingSimValidation.cpp` (pass the required `EPropertyFlags`, defaulting to `CPF_Config`) or add an equivalent explicit coverage test for the asset. **Do not reuse the framework on a DataAsset without closing this** — the range table would be unguarded against drift |
+| C3-3 | A property's `ClampMin` is not always its safe value. `TelemetryStaleAfterSeconds` clamping to its minimum (0.0) *disables* staleness checking. `CORE-003` added `FRacingPropertyRange::WithReplacement()` for this | When declaring ranges for lap/sector tolerances, check each bound: if the extreme value means "off" or "unbounded" rather than "least", declare a `WithReplacement()` and assert the resulting behaviour, not just that the field is in range |
+| C3-4 | The derived build-ID format now embeds `+` on both schemes (`[A-Za-z0-9._+-]`). Results written by `RACE-003` must percent-encode a build ID before putting it in a URL query string, where `+` decodes to a space | Carry this into the results/metadata format at `RACE-003`; `RacingSim.Core.BuildId` asserts the character set |
 
 ---
 

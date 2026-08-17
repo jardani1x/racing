@@ -1,6 +1,7 @@
 // Copyright RacingSim. All Rights Reserved.
 
 #include "Core/RacingSimSettings.h"
+#include "Core/RacingTelemetry.h"
 #include "Core/RacingSimValidation.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/ConfigCacheIni.h"
@@ -249,6 +250,19 @@ bool FRacingSimRangeEnforcementTest::RunTest(const FString& Parameters)
 	URacingSimSettings* Settings = Override.Settings;
 	const TConstArrayView<FRacingPropertyRange> Ranges = URacingSimSettings::GetValidatedPropertyRanges();
 
+	// The staleness guard's actual job: an old frame must read as stale. This
+	// calls the real consumer (FRacingTelemetryFrame::IsStaleAt) with the real
+	// corrected setting, so it fails if a correction lands on a value that
+	// disables the check -- which is precisely what ClampMin = 0.0 would do.
+	auto TestStalenessGuardArmed = [this, Settings](const TCHAR* When)
+	{
+		FRacingTelemetryFrame Frame;
+		Frame.TimestampSeconds = 0.0;
+		TestTrue(
+			*FString::Printf(TEXT("Staleness guard is still armed %s (a 100 s old frame reads as stale)"), When),
+			Frame.IsStaleAt(100.0, Settings->TelemetryStaleAfterSeconds));
+	};
+
 	// -- In-range values are left completely alone ---------------------------
 	// A clamp pass that rewrites correct values is a clamp pass that will one day
 	// quietly change a tuned number.
@@ -314,6 +328,11 @@ bool FRacingSimRangeEnforcementTest::RunTest(const FString& Parameters)
 	// false, so `if (V < Min)` and `if (V > Max)` both decline to act and the NaN
 	// survives into the HUD's staleness arithmetic, where it makes every frame
 	// compare as not-stale.
+	//
+	// These assert the OUTCOME (is the staleness guard still armed?) rather than
+	// the mechanism (is the field finite?). Asserting only "finite" is what let an
+	// earlier version of this pass replace a NaN with 0.0 and call it corrected --
+	// 0.0 is finite, in range, and silently disables staleness checking entirely.
 	{
 		Settings->TelemetrySampleRateHz = 30.0f;
 		Settings->TelemetryStaleAfterSeconds = MakeIeee754Double(QuietNaNBits);
@@ -321,8 +340,11 @@ bool FRacingSimRangeEnforcementTest::RunTest(const FString& Parameters)
 
 		const FRacingValidationResult Result = EnforceRanges(Settings, Ranges);
 		TestFalse(TEXT("A NaN does not survive validation"), FMath::IsNaN(Settings->TelemetryStaleAfterSeconds));
-		TestEqual(TEXT("A NaN is replaced by the safe end of the range"), Settings->TelemetryStaleAfterSeconds, 0.0);
 		TestTrue(TEXT("...and the pass reports it"), Result.WasCorrected(TEXT("TelemetryStaleAfterSeconds")));
+		TestTrue(
+			TEXT("A NaN is NOT replaced by 0.0, which would disable staleness checking"),
+			Settings->TelemetryStaleAfterSeconds > 0.0);
+		TestStalenessGuardArmed(TEXT("after a NaN was corrected"));
 	}
 	{
 		Settings->TelemetryStaleAfterSeconds = MakeIeee754Double(PositiveInfinityBits);
@@ -331,6 +353,20 @@ bool FRacingSimRangeEnforcementTest::RunTest(const FString& Parameters)
 		const FRacingValidationResult Result = EnforceRanges(Settings, Ranges);
 		TestTrue(TEXT("An infinity does not survive validation"), FMath::IsFinite(Settings->TelemetryStaleAfterSeconds));
 		TestTrue(TEXT("...and the pass reports it"), Result.WasCorrected(TEXT("TelemetryStaleAfterSeconds")));
+		TestStalenessGuardArmed(TEXT("after an infinity was corrected"));
+	}
+
+	// The negative case, which is the one a plain clamp gets wrong. ClampMin is
+	// 0.0, so clamping would land exactly on the "disabled" sentinel.
+	{
+		Settings->TelemetryStaleAfterSeconds = -1.0;
+
+		const FRacingValidationResult Result = EnforceRanges(Settings, Ranges);
+		TestTrue(TEXT("A negative staleness threshold is corrected"), Result.WasCorrected(TEXT("TelemetryStaleAfterSeconds")));
+		TestTrue(
+			TEXT("A negative staleness threshold is NOT clamped to 0.0 (that would disable the guard)"),
+			Settings->TelemetryStaleAfterSeconds > 0.0);
+		TestStalenessGuardArmed(TEXT("after a negative value was corrected"));
 	}
 
 	// -- A property with only a minimum is not given a phantom maximum --------
@@ -375,6 +411,28 @@ bool FRacingSimRangeEnforcementTest::RunTest(const FString& Parameters)
 		};
 		const FRacingValidationResult Result = EnforceRanges(Settings, EnumRange);
 		TestEqual(TEXT("A range on an enum property is reported"), Result.NumFailed(), 1);
+	}
+	{
+		// The table is declared data too, and this module's premise is that a
+		// declared invariant must actually be one. An inverted range is
+		// unsatisfiable, so it must fail rather than clamp against itself.
+		Settings->LapTimeFractionalDigits = 2;
+		const FRacingPropertyRange Inverted[] = {
+			FRacingPropertyRange::Between(TEXT("LapTimeFractionalDigits"), 3.0, 0.0)
+		};
+		const FRacingValidationResult Result = EnforceRanges(Settings, Inverted);
+		TestEqual(TEXT("An inverted range (Min > Max) is reported"), Result.NumFailed(), 1);
+		TestEqual(TEXT("...and the value is left alone rather than clamped against a bad table"), Settings->LapTimeFractionalDigits, 2);
+	}
+	{
+		// A replacement outside the range it belongs to would reintroduce the very
+		// out-of-range value the pass exists to remove.
+		FRacingPropertyRange BadReplacement[] = {
+			FRacingPropertyRange::Between(TEXT("LapTimeFractionalDigits"), 0.0, 3.0)
+		};
+		BadReplacement[0].WithReplacement(99.0);
+		const FRacingValidationResult Result = EnforceRanges(Settings, BadReplacement);
+		TestEqual(TEXT("A replacement value outside its own range is reported"), Result.NumFailed(), 1);
 	}
 
 	return true;

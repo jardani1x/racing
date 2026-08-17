@@ -123,7 +123,60 @@ namespace RacingSim::Validation
 				return nullptr;
 			}
 
+			// A static array UPROPERTY (`int32 Foo[4]`) has ArrayDim > 1, and
+			// ContainerPtrToValuePtr addresses element 0 only. Validating one
+			// element and reporting success would be the same silent half-measure
+			// this whole module exists to remove, so refuse instead.
+			if (Numeric->ArrayDim > 1)
+			{
+				OutWhyNot = FString::Printf(
+					TEXT("%s::%s is a static array (ArrayDim = %d); this pass addresses element 0 only, so it would ")
+					TEXT("validate one element and silently ignore the rest."),
+					*Class->GetName(),
+					*Range.PropertyName.ToString(),
+					Numeric->ArrayDim);
+				return nullptr;
+			}
+
 			return Numeric;
+		}
+
+		/**
+		 * The range table is itself declared data, and this module's premise is
+		 * that a declared invariant must actually be one. That has to apply to the
+		 * table too: an inverted range (Min > Max) is unsatisfiable, and clamping
+		 * against it would push every value to one bound and then the other
+		 * depending on evaluation order.
+		 */
+		static bool IsRangeSelfConsistent(const FRacingPropertyRange& Range, const UClass* Class, FString& OutWhyNot)
+		{
+			if (Range.bHasMin && Range.bHasMax && Range.Min > Range.Max)
+			{
+				OutWhyNot = FString::Printf(
+					TEXT("%s::%s declares an inverted range: minimum %g is greater than maximum %g. No value can satisfy it."),
+					*Class->GetName(),
+					*Range.PropertyName.ToString(),
+					Range.Min,
+					Range.Max);
+				return false;
+			}
+
+			if (Range.bHasReplacement)
+			{
+				const bool bBelow = Range.bHasMin && Range.ReplacementValue < Range.Min;
+				const bool bAbove = Range.bHasMax && Range.ReplacementValue > Range.Max;
+				if (bBelow || bAbove)
+				{
+					OutWhyNot = FString::Printf(
+						TEXT("%s::%s declares a replacement value %g that is itself outside its own range."),
+						*Class->GetName(),
+						*Range.PropertyName.ToString(),
+						Range.ReplacementValue);
+					return false;
+				}
+			}
+
+			return true;
 		}
 	}
 
@@ -195,6 +248,12 @@ namespace RacingSim::Validation
 		for (const FRacingPropertyRange& Range : Ranges)
 		{
 			FString WhyNot;
+			if (!IsRangeSelfConsistent(Range, Class, WhyNot))
+			{
+				Result.Issues.Add(MakeFailure(Range.PropertyName, MoveTemp(WhyNot)));
+				continue;
+			}
+
 			FNumericProperty* Numeric = ResolveNumericProperty(Class, Range, WhyNot);
 			if (Numeric == nullptr)
 			{
@@ -214,19 +273,26 @@ namespace RacingSim::Validation
 				{
 					// NaN compares false against every bound, so it would pass a
 					// naive clamp untouched. There is no nearest legal value to a
-					// NaN, so the safe end of the range is used.
-					Corrected = Range.bHasMin ? Range.Min : (Range.bHasMax ? Range.Max : 0.0);
+					// NaN, so a declared replacement is used if there is one and
+					// the range's own safe end otherwise.
+					Corrected = Range.bHasReplacement
+						? Range.ReplacementValue
+						: (Range.bHasMin ? Range.Min : (Range.bHasMax ? Range.Max : 0.0));
 					Action = ERangeAction::ReplacedNonFinite;
 				}
 				else if (Range.bHasMin && Loaded < Range.Min)
 				{
-					Corrected = Range.Min;
-					Action = ERangeAction::ClampedToMin;
+					// A declared replacement wins over the bound: for a property
+					// like TelemetryStaleAfterSeconds the minimum is a "disabled"
+					// sentinel, not its least-permissive value, so clamping to it
+					// would disarm a safety guard. See RacingSimValidation.h.
+					Corrected = Range.bHasReplacement ? Range.ReplacementValue : Range.Min;
+					Action = Range.bHasReplacement ? ERangeAction::ReplacedOutOfRange : ERangeAction::ClampedToMin;
 				}
 				else if (Range.bHasMax && Loaded > Range.Max)
 				{
-					Corrected = Range.Max;
-					Action = ERangeAction::ClampedToMax;
+					Corrected = Range.bHasReplacement ? Range.ReplacementValue : Range.Max;
+					Action = Range.bHasReplacement ? ERangeAction::ReplacedOutOfRange : ERangeAction::ClampedToMax;
 				}
 
 				if (Action != ERangeAction::InRange)
@@ -262,8 +328,8 @@ namespace RacingSim::Validation
 				const int64 MinInt = CeilToInt64(Range.Min);
 				if (Loaded < MinInt)
 				{
-					Corrected = MinInt;
-					Action = ERangeAction::ClampedToMin;
+					Corrected = Range.bHasReplacement ? FloorToInt64(Range.ReplacementValue) : MinInt;
+					Action = Range.bHasReplacement ? ERangeAction::ReplacedOutOfRange : ERangeAction::ClampedToMin;
 				}
 			}
 			if (Action == ERangeAction::InRange && Range.bHasMax)
@@ -271,8 +337,8 @@ namespace RacingSim::Validation
 				const int64 MaxInt = FloorToInt64(Range.Max);
 				if (Loaded > MaxInt)
 				{
-					Corrected = MaxInt;
-					Action = ERangeAction::ClampedToMax;
+					Corrected = Range.bHasReplacement ? FloorToInt64(Range.ReplacementValue) : MaxInt;
+					Action = Range.bHasReplacement ? ERangeAction::ReplacedOutOfRange : ERangeAction::ClampedToMax;
 				}
 			}
 
@@ -349,6 +415,12 @@ namespace RacingSim::Validation
 		for (const FRacingPropertyRange& Range : Ranges)
 		{
 			FString WhyNot;
+			if (!IsRangeSelfConsistent(Range, Class, WhyNot))
+			{
+				Result.Issues.Add(MakeFailure(Range.PropertyName, MoveTemp(WhyNot)));
+				continue;
+			}
+
 			const FNumericProperty* Numeric = ResolveNumericProperty(Class, Range, WhyNot);
 			if (Numeric == nullptr)
 			{
