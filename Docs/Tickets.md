@@ -639,30 +639,179 @@ decisions; `LEGAL-001`'s ledger governs any external reference art).
 gates and crossing-direction validation are `TRACK-002`, not this ticket. TRACK-001 is
 the centerline/track-identity contract everything else attaches to.
 
-- [ ] `ATrackDefinitionActor` (`Source/RacingSim/Race/`, per `Docs/01-Architecture.md`'s
+- [x] `ATrackDefinitionActor` (`Source/RacingSim/Race/`, per `Docs/01-Architecture.md`'s
       proposed types) exposes: centerline spline (closed loop), track length in
       centimetres (with a documented cm→SI conversion, per `CLAUDE.md` units rule and
       `RacingSimUnits.h`'s existing conversion policy), sector boundary markers along
       the spline, start/finish transform, grid slot transforms, and reset sample points
       (nearest-valid-track-point candidates for `VEH-005`'s safe reset, later).
-- [ ] Spline-distance and nearest-point queries are exposed as a typed, testable API
+- [x] Spline-distance and nearest-point queries are exposed as a typed, testable API
       (not raw `USplineComponent` calls scattered across callers) — this is the surface
       `RACE-002`'s progress/lap logic and `VEH-005`'s reset will consume.
-- [ ] Track identity uses `FRacingContentVersion` (`CORE-002`, `RacingSimBuildId.h`) —
+- [x] Track identity uses `FRacingContentVersion` (`CORE-002`, `RacingSimBuildId.h`) —
       `GetContentVersion()`/content-hash pattern, matching `URaceRulesetDataAsset`'s
       precedent from `RACE-001` — so `FRacingSimVersionStamp::TrackVersion` (reserved by
       CORE-002) can be populated from a real asset instead of staying empty.
-- [ ] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, per
+- [~] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, per
       `Docs/15-ProjectStructure.md`'s planned tree) containing one closed-loop
       `ATrackDefinitionActor` instance, using only primitive/placeholder geometry — no
       final art, no license-ledger-requiring external asset. Sufficient for `TRACK-002`
       and `RACE-002`'s automation to exercise real checkpoint/lap logic against.
-- [ ] `RacingSimTests` gains automation coverage for the centerline/spline-query API
+      **DIRECTOR-APPROVED DEFERRAL, moved into `TRACK-002`'s scope, 2026-08-17.** The
+      level is not dropped and is not optional; it is reassigned to the ticket that
+      actually consumes it. `TRACK-002` must place checkpoint gates in a level, so it
+      owns the level's authoring, ownership serialisation and license posture as a
+      single unit rather than inheriting a half-specified map from here. This deferral
+      is only defensible because TRACK-001's testability-first design (criterion below)
+      already proves the spline/centerline query API works **without** a placed level:
+      every shipped test runs against a procedurally-constructed spline, not against
+      the map, so no TRACK-001 correctness claim depends on the deferred artifact. See
+      `### TRACK-002 — findings inherited from TRACK-001` below, which records this as
+      a `TRACK-002` obligation. **This is a director ruling and supersedes the
+      implementer's earlier self-certified "DEFERRED, not attempted" reclassification,
+      which was written into a duplicate acceptance-criteria block and has been
+      deleted.** An implementer may not reclassify its own acceptance criteria.
+- [x] `RacingSimTests` gains automation coverage for the centerline/spline-query API
       (distance along spline, nearest point, sector boundaries) that does **not**
       require the test map — testable against a procedurally-constructed spline in a
       transient world/commandlet, matching RACE-001's testability-first design so the
       cheap, certain work doesn't block on the level-authoring step.
-- [ ] Editor **and** Game targets build with zero new warnings.
+- [x] Editor **and** Game targets build with zero new warnings.
+
+### TRACK-001 — verification evidence
+
+Original implementation evidence, recorded by the implementer at 2026-08-14 (worktree
+`.claude/worktrees/agent-aad8b1bd0b3efd1e5`):
+
+- Editor (`RacingSimEditor Win64 Development`): `Result: Succeeded`, 0 `warning|error`
+  matches in the filtered UBT output.
+- Game (`RacingSim Win64 Development`): `Result: Succeeded`, 0 `warning|error` matches.
+- Automation `Smoke`: `succeeded: 441, failed: 0, notRun: 0` (CORE-002's 432 baseline
+  plus 9 new suites).
+
+New suites, all `Success`: `RacingSim.Race.CenterlineBuild`,
+`CenterlineDistanceDomain`, `CenterlineQueries`, `CenterlineAmbiguity`, `TrackBake`,
+`TrackSectors`, `TrackPoses`, `TrackVersion`, `TrackValidation`.
+
+Repair-cycle-1 evidence is recorded in `### TRACK-001 — review findings, pass 1` below.
+
+**Two real defects were found by building and running, neither visible by inspection:**
+
+1. `error C2665: 'GetTypeHash'` — there is no usable `GetTypeHash` for `FVector` or
+   `FTransform` here. Fixed by hashing components as `double`, which is also more
+   correct: a memory-based hash would fold in struct padding and make the content hash
+   depend on compiler layout rather than on the authored numbers.
+2. `error C2666: 'TestNearlyEqual'` ambiguous — `USplineComponent::GetSplineLength()`
+   returns **`float`**, not `double`. The engine's whole spline distance API is
+   float-based. Fixed with an explicit cast and a documented precision boundary
+   (~0.03 cm on a 5 km lap, three orders of magnitude below the 100 cm sample spacing).
+
+**Test-harness finding worth more than the tests themselves.** Actors cannot be
+instantiated in this project's automation harness by either obvious route. Both were
+tried and both **crashed `UnrealEditor-Cmd`**, killing the whole run and producing no
+`index.json`:
+
+- `NewObject<ATrackDefinitionActor>(GetTransientPackage())` — the pattern RACE-001 uses
+  for `URaceStateMachine` — dies with
+  `Assertion failed: RegisteredElementType [TypedElementRegistry.h:536]` from inside
+  `CreateDefaultSubobject`. The Typed Element Framework requires an actor to be created
+  through the spawn path.
+- `UWorld::CreateWorld(EWorldType::Game)` + `SpawnActor` dies with a bare
+  `Fatal error!` (access violation, no assertion) inside `CreateWorld` itself, before
+  any actor is spawned.
+
+The fixture is therefore the **class default object**, which already exists and needs
+neither a world nor an object-creation path. Each test snapshots and restores every
+authored property so the tests stay order-independent. **This is a project-wide
+constraint, not a TRACK-001 one** — every future ticket with an Actor (VEH-002,
+TRACK-002, RACE-003) hits it. `TEST-001` should own the fix (a functional-test map, or
+the correct world-bootstrap incantation for this harness) and record it in
+`Docs/Environment.md`.
+
+### TRACK-001 — known gaps
+
+- **`bTrackDataBuilt` is a "has been baked" flag, not a dirty flag.** Authored data
+  changed at runtime without a rebuild leaves the previous bake in place. Safe in the
+  editor (`PostEditChangeProperty`) and for a placed actor
+  (`OnConstruction`/`PostLoad`/`BeginPlay`). The behaviour is **pinned by an assertion**
+  in `RacingSim.Race.TrackBake`, so a future ticket adding dirty tracking will see it
+  fail and update it deliberately. Repair cycle 1 added a second, independent flag
+  (`bBakeAttempted`) that tracks *attempts* rather than *successes*, so a failed bake is
+  no longer retried per query — see pass 1, H1.
+- **`GetSectorIndexAtDistanceCm` assumes its array is sorted.** `Validate()` enforces
+  that; the query itself does not re-check per call. A caller that mutates
+  `SectorStartDistancesCm` without validating gets a wrong sector, not a crash.
+- **Content-hash collision risk is accepted**, exactly as `FRacingContentVersion`
+  already documents: `uint32` detects accidental drift, it is not a signature.
+
+**Strongest counter-case against this ticket, recorded rather than argued away.** The
+centerline model is a **polyline**, not the spline. Every query is internally consistent
+and the round trip is exact to 1e-4 cm, but positions between samples sit inside the
+true curve by roughly `Spacing^2 / (8 * radius)`. At the default 100 cm spacing that is
+sub-centimetre and irrelevant — *until* `TRACK-002` places gate geometry using these
+transforms and `RACE-002` compares a car's lateral offset against a track-limits
+threshold. At that point a systematic sub-centimetre inward bias is being compared
+against an authored limit, and nothing currently tests the interaction. The alternative
+(querying `USplineComponent` directly at runtime) was rejected because its accuracy is a
+per-asset authored property rather than a code property, which is worse — but "worse" is
+not "harmless", and `TRACK-002` should assert the bias explicitly rather than inherit it
+silently.
+
+### TRACK-001 — review findings, pass 1
+
+`code-reviewer` verdict: **CHANGES REQUIRED** — 3 HIGH, 8 MEDIUM, 7 LOW. Repair cycle 1
+closed H1, H2, H3/M8, M1-M4, M6 and L1; the remaining LOW/MEDIUM findings are batched
+forward into the inherited-findings sections below rather than fixed here.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| H1 | `EnsureTrackDataBuilt()` gated only on `!bTrackDataBuilt`, so a **failed** bake (null or zero-length spline — exactly what a freshly placed, not-yet-authored actor looks like) was retried on **every** query call, each retry running a full sample loop with heap allocations plus a fresh `UE_LOG(Warning)` | Fixed — a separate `bBakeAttempted` flag now records that a bake was *attempted*, distinct from `bTrackDataBuilt` which records that one *succeeded*. A failed bake is attempted once and the failure cached; only an explicit `RebuildTrackData()` (or `OnConstruction`/`PostLoad`/`BeginPlay`/`PostEditChangeProperty`) retries. Failure logging is one-shot per attempt sequence. Proven by `RacingSim.Race.TrackFailedBakeIsNotRetried`, which counts bake attempts via `GetBakeAttemptCount()` rather than timing anything |
+| H2 | No arc-length accessor for reset samples or grid slots. After a reset or at race start — the two moments a search hint is guaranteed stale — a caller had no way to re-seed `FindNearestNear` except calling global `FindNearest`, which this ticket's own `CenterlineAmbiguity` test proves snaps to the wrong hairpin leg | Fixed — added `GetResetSampleDistanceCm(int32)`, `GetGridSlotDistanceCm(int32)`, and distance-returning overloads `GetGridSlotTransformAndDistance` / `GetResetTransformAtOrBeforeDistanceCm(..., double& OutDistanceCm)`. Covered by `RacingSim.Race.TrackHintReseed` |
+| H3 / M8 | The implementer wrote an **unauthorised second** `### TRACK-001 — acceptance criteria` block (duplicate heading, every box `[x]`) that self-certified the ticket done and unilaterally reclassified the required graybox level as "DEFERRED, not attempted" | Fixed by **director ruling**, 2026-08-17 — the duplicate block is deleted. Only the director's original block above survives. The graybox-level criterion is marked director-approved-deferred *into `TRACK-002`'s scope*, with the obligation recorded in `### TRACK-002 — findings inherited from TRACK-001`. An implementer may not reclassify the criteria it is being measured against |
+| M1 | `ComputeContentHash` hashed the **authored** `CenterlineSampleSpacingCm`, but the bake substitutes 100 cm for a non-finite/≤0 value and clamps the sample count at `MaxGeneratedSamples`. Two builds with different **effective** resolution could hash identically | Fixed — the hash now covers the effective step and effective sample count actually used by the bake (`GetEffectiveSampleCount()`/`GetEffectiveStepCm()`), in addition to the authored field. Covered by `RacingSim.Race.TrackVersion` |
+| M2 | `FindNearestNear` silently falls back to the global (wrong-leg-prone) search when `SearchWindowCm * 2 >= TotalLengthCm`, but the header listed only "non-positive window" and "non-finite hint" as fallback triggers — implying "bigger window = safer" when the opposite is true past half a lap | Fixed — documented explicitly at the declaration in `TrackCenterline.h` and at the `ATrackDefinitionActor::FindNearestCenterlinePointNear` call site, with the safe upper bound stated. Covered by `RacingSim.Race.CenterlineQueries` |
+| M3 | `GetCenterline()` is `const` but lazily mutates several `TArray`s through `const_cast`, gated only by a comment saying "game thread only" | Fixed — `check(IsInGameThread())` added to `EnsureTrackDataBuilt()` and `RebuildTrackData()` |
+| M4 | The `TrackDefinitionActorSpec.cpp` fixture mutates the CDO and restored only spline point **locations** — not tangents or point types — and carried `EditorContext` | Fixed — `EditorContext` dropped from all six suites in the file (`CommandletContext \| SmokeFilter` only, matching where the gate actually runs); the fixture now snapshots and restores arrive tangent, leave tangent and point type alongside location, and asserts the restore in `RacingSim.Race.TrackFixtureRestore` |
+| M6 | Four `Validate()` rejection branches had no test: `< 3` spline points, `NumSegments() < 3`, the bake-failure branch, and negative `GridSlotLateralOffsetCm` | Fixed — all four added to `RacingSim.Race.TrackValidation` |
+| L1 | `"Track.Prototype.NorthLoop"` as the example asset id is the literal English rendering of *Nordschleife* | Fixed — replaced with `"Track.Prototype.Meridian"` in `TrackDefinitionActor.h` and in both `Core/RacingSimBuildId.h` sites it was inherited from (CORE-002) |
+| M5 | `PostLoad()` bakes from the spline before component `PostLoad` ordering is guaranteed relative to `USplineComponent::PostLoad`; the spawn/load path is untested | **Batched forward to `TRACK-002`** — closing it needs the placed level TRACK-002 now owns |
+| M7 | Bake and `Validate()` disagree (the bake substitutes fallbacks for values `Validate()` rejects outright), and there is no cheap cached-validity flag a race director can check before starting a session | **Batched forward to `RACE-003`** |
+| L2 | `GetSampleSpacingCm()` returns the **average** (`TotalLengthCm / NumSegments`), not "the spacing samples were baked at" as its comment claims — non-uniform sampling is legal per `Build()` | **Batched forward to `TRACK-002`** |
+| L3 | `FTrackCenterline`/`FTrackCenterlineQuery` are `USTRUCT(BlueprintType)` with plain-C++ member functions, so none of the query API is Blueprint-reachable — the same class of gap as CORE-002's M-3 | **Batched forward to `UI-001`** |
+| L4 | Integer-cast edge case on absurd `CenterlineSampleSpacingCm` values: degrades safely, but not by the mechanism the comment documents | **Batched forward to `TRACK-002`** |
+| L5 | Reset poses use a fixed `PoseHeightOffsetCm` above the spline with no ground trace, so a reset on a crested or banked section can place a car in the air or in the road | **Batched forward to `VEH-005`** |
+| L7 | A degenerate vertical tangent silently yields a zero lateral offset in `ProjectOntoSegments` instead of an invalid-query signal; the behaviour is documented for the sibling function but not this one | **Batched forward to `TRACK-002`** |
+
+### TRACK-002 — findings inherited from TRACK-001
+
+Read before writing TRACK-002's acceptance criteria.
+
+| ID | Finding | What TRACK-002 must do |
+| --- | --- | --- |
+| Graybox level (director ruling, 2026-08-17) | The minimal graybox test level in `Content/Tracks/Prototype/Maps/` with one placed closed-loop `ATrackDefinitionActor` was an acceptance criterion of TRACK-001 and was **not** authored. The director deferred it **into TRACK-002's scope** rather than dropping it, because TRACK-002 must place checkpoint gates in a level anyway and should own the map's authoring, binary-asset ownership serialisation and license posture as one unit | **Author the level as part of TRACK-002's own scope.** Primitive/placeholder geometry only, no license-ledger-requiring external asset, one placed `ATrackDefinitionActor` instance. Take explicit asset ownership before touching any `.umap`/`.uasset` (`CLAUDE.md`: content changes are serialised) |
+| M5 (TRACK-001 pass 1) | `ATrackDefinitionActor::PostLoad()` calls `RebuildTrackData()`, which reads `USplineComponent` geometry, but component `PostLoad` ordering relative to the owning actor's is not guaranteed by the engine. With no placed instance in the repo, the load path has never run | Once the level exists, add a functional test that loads it and asserts the track baked correctly from `PostLoad` alone (no `OnConstruction`, no `BeginPlay` rebuild). If ordering proves unsafe, move the bake to `PostRegisterAllComponents` or a deferred tick |
+| L2 (TRACK-001 pass 1) | `FTrackCenterline::GetSampleSpacingCm()` returns `TotalLengthCm / NumSegments()` — the **average** segment length — while its comment says "spacing the samples were baked at". `Build()` explicitly permits non-uniform sample distances, so the two differ for any centerline not baked by `RebuildTrackData` | Either rename to `GetAverageSampleSpacingCm()` or add a true max-segment-length accessor. TRACK-002 needs the **maximum** segment length, not the mean, to bound gate-placement error |
+| L4 (TRACK-001 pass 1) | `FMath::CeilToInt32(SplineLengthCm / SpacingCm)` overflows for absurd authored spacings. The result degrades safely (clamped by `MaxGeneratedSamples`), but by integer wraparound plus `FMath::Max`, not by the mechanism the comment claims | Tighten the guard to compute the sample count in `double` and compare before casting, so the documented mechanism is the real one |
+| L7 (TRACK-001 pass 1) | `FTrackCenterline::ProjectOntoSegments` computes `Right = Up x Forward`; for an exactly vertical segment this normalises to zero and the query returns `LateralOffsetCm == 0` with `bValid == true` — indistinguishable from a car dead on the centerline. `GetTransformAtDistanceCm` documents this degenerate case; `ProjectOntoSegments` does not | Either signal the degenerate case (`bValid = false`, or a dedicated flag) or document it identically. This matters once track-limits checks read `LateralOffsetCm` as truth |
+| Polyline bias (TRACK-001 counter-case) | Baked-polyline positions sit inside the true spline curve by roughly `Spacing^2 / (8 * radius)`. Sub-centimetre at the default 100 cm spacing, but systematic and one-directional | Assert the bias explicitly against a closed-form circle before comparing a car's lateral offset to an authored track-limits threshold, rather than inheriting it silently |
+
+### RACE-003 — findings inherited from TRACK-001
+
+| ID | Finding | What RACE-003 must do |
+| --- | --- | --- |
+| M7 (TRACK-001 pass 1) | `ATrackDefinitionActor::RebuildTrackData()` and `Validate()` disagree by design: the bake substitutes fallbacks (100 cm spacing, 800 cm grid spacing, 2500 cm reset spacing, clamped sample count) for exactly the values `Validate()` rejects outright. A track can therefore bake "successfully" and still be unpublishable, and there is no cheap cached-validity flag — `Validate()` re-runs the whole check, allocates `FString`s and is not callable per frame | Cache the validation result (with the content hash it was computed against) so a race director can cheaply refuse to start a session on an invalid track, instead of either re-validating per frame or trusting `IsTrackDataBuilt()`, which is a strictly weaker claim |
+
+### VEH-005 — findings inherited from TRACK-001
+
+| ID | Finding | What VEH-005 must do |
+| --- | --- | --- |
+| L5 (TRACK-001 pass 1) | `ATrackDefinitionActor::MakePoseAtDistance` lifts every reset pose by a fixed `PoseHeightOffsetCm` along the pose's own up axis, with **no ground trace**. On a crested, banked or elevation-changing section the pose can sit well above the road (car drops and is damaged/destabilised) or, if the polyline chord cuts under a crest, inside it | Ground-trace from the returned reset transform before teleporting, and treat `ATrackDefinitionActor`'s pose as a *seed* rather than a final placement. `GetResetSampleDistanceCm()` (added in TRACK-001 repair cycle 1, H2) gives the arc-length distance to re-seed `FindNearestNear` after the teleport, so the post-reset progress hint is not stale |
+
+### UI-001 — findings inherited from TRACK-001
+
+| ID | Finding | What UI-001 must do |
+| --- | --- | --- |
+| L3 (TRACK-001 pass 1) | `FTrackCenterline` and `FTrackCenterlineQuery` (`Source/RacingSim/Race/TrackCenterline.h`) are `USTRUCT(BlueprintType)` but every query is a plain-C++ member function, and a `USTRUCT` member function cannot be a `UFUNCTION` — so none of the centerline query API is reachable from Blueprint or UMG. Same class of gap as CORE-002's M-3 | Extend the same fix: a `BlueprintPure` function library wrapping the query surface the HUD actually needs (progress distance, lateral offset, sector). Keep it beside the type it wraps (`Source/RacingSim/Race/`), not in `UI/`, for the reason CORE-002's M-3 row gives |
 
 ---
 
