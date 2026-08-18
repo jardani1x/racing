@@ -129,6 +129,44 @@ duplication grows past two call sites.
 - Gauntlet or equivalent orchestration for packaged sessions;
 - soak/performance tests with recorded input.
 
+#### Rule: automation tests live only in `RacingSimTests`
+
+**Every automation-test-declaring macro — `IMPLEMENT_SIMPLE_AUTOMATION_TEST`,
+`IMPLEMENT_COMPLEX_AUTOMATION_TEST`, `DEFINE_SPEC`, `BEGIN_DEFINE_SPEC`,
+`IMPLEMENT_BDD_AUTOMATION_TEST`, `IMPLEMENT_NETWORKED_AUTOMATION_TEST`, their
+`_CUSTOM_`/`_PRIVATE` variants, and `DEFINE_LATENT_AUTOMATION_COMMAND*` — may appear
+only under `Source/RacingSimTests/`. Never under `Source/RacingSim/`.**
+
+Test-only content follows the same rule and lives under `Content/Tests/`
+(`/Game/Tests`), which `Config/DefaultGame.ini` lists in `DirectoriesToNeverCook`.
+
+**Why the module boundary is not enough.** `RacingSimTests` is `UncookedOnly`, so it is
+not built into a cooked Game or Client target. That guarantee is about *that module*, not
+about test code in general. `WITH_DEV_AUTOMATION_TESTS` is `1` in a **Development Game**
+target, so an `IMPLEMENT_SIMPLE_AUTOMATION_TEST` written inside `Source/RacingSim/`
+compiles straight into `RacingSim.exe` — and every check CORE-001 used would still pass,
+because they assert which *modules* were compiled and `RacingSim` is supposed to be one
+of them. (CORE-001 finding N-2.)
+
+**Enforcement.** Three layers, deliberately different in kind so they do not share a
+blind spot:
+
+| Layer | Where | Catches | Blind spot |
+|---|---|---|---|
+| Source scan, fails the build | `Source/RacingSim/RacingSim.Build.cs`, `EnforceNoAutomationTestsInRuntimeModule()` | any banned macro in any `.h/.cpp/.inl` under `Source/RacingSim/`, on **both** Editor and Game targets | a test registered without a macro; token pasting |
+| Registry check, fails a test | `RacingSim.Tests.AutomationTestPlacement` | any registered `RacingSim.*` test whose source file is not under `Source/RacingSimTests/`, including hand-rolled registrations | tests whose flags exclude them from the current application context |
+| Receipt + pak check | `RacingSim.Tests.NonShippingArtifacts`, `Scripts/Test/Check-NonShippingArtifacts.ps1` | the test **module** entering the Game target; test **content** entering the pak | code moved into the runtime module, which is layer 1's job |
+
+The source scan registers every file it reads in `ModuleRules.ExternalDependencies`, so
+editing any runtime-module file invalidates UBT's makefile and re-runs the scan. Without
+that, the check would only run when the module's file list changed, and adding a macro to
+an existing file would slip past — a check that silently stops checking.
+
+**If you need a test helper in the runtime module**, put the helper in
+`Source/RacingSim/` and the test that drives it in `Source/RacingSimTests/`. The helper
+must be code the shipping game would be willing to carry; if it would not be, it is a
+test and belongs in the test module.
+
 ## C++ / Blueprint split
 
 Use C++ for simulation, data validation, timekeeping, checkpoint order, race state, telemetry, browser-message validation, and automation. Use Blueprint for vehicle assembly, camera rigs, VFX, audio routing, environment assembly, art tuning, and UMG layout. Parameters live in typed DataAssets or config so art and handling work does not require recompilation.

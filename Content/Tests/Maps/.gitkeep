@@ -1,0 +1,4 @@
+Placeholder. Functional-test maps land here (TRACK-002, RACE-002, UI-004).
+Cooked package path /Game/Tests/Maps, excluded by DirectoriesToNeverCook in
+Config/DefaultGame.ini. Git does not track empty directories; this file keeps the
+path present so the exclusion has a visible subject.
