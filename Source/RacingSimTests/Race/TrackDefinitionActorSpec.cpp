@@ -118,6 +118,37 @@ namespace TrackDefinitionSpecPrivate
 	constexpr int32 SpecSplinePoints = 12;
 
 	/**
+	 * Write the spec's 100 m circle onto a track's spline.
+	 *
+	 * Shared by the fixture's constructor and by any mid-test case that wrecks the
+	 * geometry on purpose and needs the FIXTURE's baseline back. That distinction
+	 * matters and cost a red test to learn: FTrackSpecCircleFixture::RestoreSpline
+	 * restores the CDO's ORIGINAL spline, which is USplineComponent's two-point
+	 * default, not this circle. Using it as a mid-test "restore" leaves the track with
+	 * two spline points, so Validate() then fails for a completely different reason and
+	 * every later case in the suite cascades.
+	 */
+	void AuthorSpecCircle(ATrackDefinitionActor& Track)
+	{
+		USplineComponent* Spline = Track.GetCenterlineSpline();
+		if (!Spline)
+		{
+			return;
+		}
+
+		TArray<FVector> Points;
+		Points.Reserve(SpecSplinePoints);
+		for (int32 Index = 0; Index < SpecSplinePoints; ++Index)
+		{
+			const double Angle = 2.0 * UE_DOUBLE_PI * static_cast<double>(Index) / static_cast<double>(SpecSplinePoints);
+			Points.Add(FVector(SpecRadiusCm * FMath::Cos(Angle), SpecRadiusCm * FMath::Sin(Angle), 0.0));
+		}
+
+		Spline->SetClosedLoop(true, /*bUpdateSpline*/ false);
+		Spline->SetSplinePoints(Points, ESplineCoordinateSpace::Local, /*bUpdateSpline*/ true);
+	}
+
+	/**
 	 * Authors a closed circular track onto the ATrackDefinitionActor CDO and puts
 	 * every property it touched back afterwards.
 	 *
@@ -174,21 +205,7 @@ namespace TrackDefinitionSpecPrivate
 			}
 
 			Track->TrackId = FName(TEXT("Track.Test.Circle"));
-
-			if (Spline)
-			{
-				TArray<FVector> Points;
-				Points.Reserve(SpecSplinePoints);
-				for (int32 Index = 0; Index < SpecSplinePoints; ++Index)
-				{
-					const double Angle = 2.0 * UE_DOUBLE_PI * static_cast<double>(Index) / static_cast<double>(SpecSplinePoints);
-					Points.Add(FVector(SpecRadiusCm * FMath::Cos(Angle), SpecRadiusCm * FMath::Sin(Angle), 0.0));
-				}
-
-				Spline->SetClosedLoop(true, /*bUpdateSpline*/ false);
-				Spline->SetSplinePoints(Points, ESplineCoordinateSpace::Local, /*bUpdateSpline*/ true);
-			}
-
+			AuthorSpecCircle(*Track);
 			Track->RebuildTrackData();
 		}
 
@@ -1091,9 +1108,12 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 				Spline->SetSplinePoints(TwoPoints, ESplineCoordinateSpace::Local, /*bUpdateSpline*/ true);
 				Track->RebuildTrackData();
 			},
-			[Track, &Fixture]
+			[Track]
 			{
-				Fixture.RestoreSpline();
+				// The FIXTURE's circle, not Fixture.RestoreSpline() -- that restores the
+				// CDO's two-point default and would leave the suite failing the very
+				// branch this case just exercised.
+				AuthorSpecCircle(*Track);
 				Track->RebuildTrackData();
 			});
 	}
@@ -1125,9 +1145,9 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 				SetDegenerateZeroLengthSpline(*Track);
 				Track->RebuildTrackData();
 			},
-			[Track, &Fixture]
+			[Track]
 			{
-				Fixture.RestoreSpline();
+				AuthorSpecCircle(*Track);
 				Track->RebuildTrackData();
 			});
 
@@ -1139,7 +1159,7 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 		FString BakeReason;
 		TestFalse(TEXT("A zero-length spline does not validate"), Track->Validate(BakeReason));
 		TestTrue(TEXT("...and the reason names the bake"), BakeReason.Contains(TEXT("bake")));
-		Fixture.RestoreSpline();
+		AuthorSpecCircle(*Track);
 		Track->RebuildTrackData();
 	}
 
@@ -1267,7 +1287,7 @@ bool FTrackDefinitionFailedBakeTest::RunTest(const FString& Parameters)
 	// -- An explicit rebuild is still the way back ---------------------------
 	// Caching a failure must not be a one-way door: fixing the spline and rebuilding
 	// has to recover, or a track could never be authored in a live editor session.
-	Fixture.RestoreSpline();
+	AuthorSpecCircle(*Track);
 	const int32 AttemptsBeforeRecovery = Track->GetBakeAttemptCount();
 	TestTrue(TEXT("An explicit rebuild after fixing the spline succeeds"), Track->RebuildTrackData());
 	TestEqual(TEXT("...and it counted as exactly one more attempt"),
