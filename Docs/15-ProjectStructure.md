@@ -92,8 +92,8 @@ Source/
       RaceClockSpec.cpp                <- RACE-001
       RaceStateMachineSpec.cpp         <- RACE-001
     Tests/                        <- TEST-001: tests about the test infrastructure
-      AutomationTestPlacementSpec.cpp  <- no RacingSim.* test outside this module
-      NonShippingArtifactSpec.cpp      <- .target receipts + DirectoriesToNeverCook
+      AutomationTestPlacementSpec.cpp  <- no registered test defined under Source/RacingSim/
+      NonShippingArtifactSpec.cpp      <- Game link inputs (.rsp) + DirectoriesToNeverCook
     Vehicle/
     UI/
     Streaming/
@@ -158,8 +158,18 @@ Prove discoverability with a `RunFilter` log line, never with `RunTests <name>`.
 | Layer | Mechanism | Fails as |
 |---|---|---|
 | Source scan | `EnforceNoAutomationTestsInRuntimeModule()` in `Source/RacingSim/RacingSim.Build.cs` — scans every `.h/.cpp/.inl` under `Source/RacingSim/` for automation-test-declaring macros, after stripping comments | `BuildException`, on **both** Editor and Game targets |
-| Registry check | `RacingSim.Tests.AutomationTestPlacement` — walks `FAutomationTestFramework::GetValidTestNames` and asserts every `RacingSim.*` test's `__FILE__` is under `Source/RacingSimTests/` | automation test failure |
-| Artifact check | `RacingSim.Tests.NonShippingArtifacts` and `Scripts/Test/Check-NonShippingArtifacts.ps1` — `.target` receipts and `DirectoriesToNeverCook`, plus pak/binary byte search in the script | test failure, and script exit 1 |
+| Registry check | `RacingSim.Tests.AutomationTestPlacement` — walks `FAutomationTestFramework::GetValidTestNames` and asserts **no registered test, under any name**, has a `__FILE__` under `Source/RacingSim/`; separately, that every `RacingSim.*` test's `__FILE__` is under `Source/RacingSimTests/`. Filtered by source location rather than test name, since a rogue test can be registered under any name (finding `T-4`) | automation test failure |
+| Artifact check | `RacingSim.Tests.NonShippingArtifacts` and `Scripts/Test/Check-NonShippingArtifacts.ps1` — asserts `RacingSimTests` is **not among the modules linked into `RacingSim.exe`**, read from the Game target's linker response file `Intermediate/Build/Win64/x64/RacingSim/Development/RacingSim.exe.rsp`; the Editor `.target` receipt is the positive control; plus `DirectoriesToNeverCook`, and pak/binary byte search in the script | test failure, and script exit 1 |
+
+> **The Game `.target` receipt cannot support this claim, and no longer does.** A
+> Development Game target is monolithic, so its receipt lists build products, not
+> modules: measured on this tree it contains **0** occurrences of `RacingSimTests` —
+> and also **0** of `InputCore`, `CoreUObject` and `SlateCore`, all of which are
+> certainly linked in. The original check read that 0 as proof of absence; it was
+> measuring monolithic-vs-modular linkage and would have read 0 with the test module
+> compiled in. Finding `T-1`. The linker response file names every module actually
+> linked (1122 object inputs, ~500 modules), so it can distinguish the two states —
+> demonstrated by a negative-control probe recorded in `Docs/Tickets.md`.
 
 The source scan adds every file it reads to `ModuleRules.ExternalDependencies`
 (`ModuleRules.cs:1437`, consumed at `UEBuildTarget.cs:3460`), so editing any runtime-module

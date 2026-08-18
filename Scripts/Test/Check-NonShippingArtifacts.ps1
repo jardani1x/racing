@@ -16,10 +16,15 @@
 
     This script is that check. Three modes, run independently or together:
 
-      Receipt  Reads the UnrealBuildTool .target receipts and asserts RacingSimTests
-               is in the Editor target's module list and absent from the Game
-               target's. This is UBT stating what it actually compiled, which is
-               stronger evidence than searching the binary for a string.
+      Receipt  Asserts RacingSimTests is built for the Editor target and is NOT
+               linked into the Game executable.
+
+               The Game half reads the LINKER RESPONSE FILE,
+               Intermediate/Build/Win64/x64/RacingSim/Development/RacingSim.exe.rsp,
+               not the .target receipt. See the long comment on
+               Test-TargetReceipts for why the receipt cannot answer this
+               question for a monolithic target -- it was the HIGH finding
+               (T-1) against the first version of this script.
 
       Config   Asserts Config/DefaultGame.ini still declares the
                DirectoriesToNeverCook entries that keep test content out of a cook.
@@ -108,120 +113,168 @@ function Write-Result {
 # Receipt check
 # -----------------------------------------------------------------------------
 #
-# A .target file is JSON that UBT writes after a successful build, listing the
-# modules that went into the binary. Parsing it beats grepping the .exe: the binary
-# search depends on how the compiler happened to encode a string (CORE-001 had to
-# search both ASCII and UTF-16 to get a true answer), whereas the receipt is UBT's
-# own statement of what it compiled.
+# ============================================================================
+# T-1: why the Game half reads the linker response file, not the .target
+# ============================================================================
 #
-# The Editor assertion is the positive control and is not optional decoration. If
-# both receipts came back with zero occurrences -- because the JSON shape changed,
-# or the module list moved to another key -- the Game assertion alone would pass and
-# the check would be silently dead.
+# The first version of this check asserted "the string RacingSimTests appears 0
+# times in Binaries/Win64/RacingSim.target" and presented that as proof the test
+# module was not linked into the Game executable. It is not proof of anything.
+#
+# A .target receipt lists BUILD PRODUCTS -- the files UBT produced -- not modules.
+# For a modular target (the Editor) each module is its own DLL, so module names do
+# appear, as UnrealEditor-<Module>.dll. A Development GAME target is MONOLITHIC:
+# every module is compiled into the single RacingSim.exe, so NO module appears as a
+# build product and NO module name appears in the receipt at all. Measured on this
+# repository, in the known-good state:
+#
+#     Binaries/Win64/RacingSim.target       RacingSimTests  0 occurrences
+#                                           InputCore       0
+#                                           CoreUObject     0
+#                                           SlateCore       0
+#
+# InputCore, CoreUObject and SlateCore are unquestionably linked into that exe. The
+# receipt reads 0 for them anyway. So "RacingSimTests: 0" was measuring
+# monolithic-vs-modular linkage, not module membership, and would still read 0 if
+# RacingSimTests really were compiled in. The check could not fail on its subject:
+# it caught neither of the two regressions CORE-001 named (adding RacingSimTests to
+# RacingSim.Target.cs ExtraModuleNames, or setting bBuildRequiresCookedDataOverride
+# = false on the Game target).
+#
+# The linker response file does answer the question. UBT writes every link input to
+#     Intermediate/Build/Win64/x64/RacingSim/Development/RacingSim.exe.rsp
+# and for a monolithic target that is one .obj per translation unit per module,
+# grouped under a per-module directory:
+#
+#     ".../Intermediate/Build/Win64/x64/UnrealGame/Development/InputCore/Module.InputCore.cpp.obj"
+#     ".../Intermediate/Build/Win64/x64/UnrealGame/Development/RacingSim/RacingSimLog.cpp.obj"
+#
+# Measured on this repository: 1122 .obj inputs, 1122 of which match
+# /Development/<Module>/<file>.obj, 0 containing a backslash -- so the directory
+# immediately above the object file is the module name, with no ambiguity. That
+# yields ~500 module names including RacingSim, Core, Engine, InputCore,
+# CoreUObject, SlateCore, EnhancedInput and DeveloperSettings, and NOT
+# RacingSimTests. If the test module were linked in, its objects would appear under
+# .../Development/RacingSimTests/ and the assertion below fails.
+#
+# The .lib inputs (111) are third-party static libraries -- BLAKE3.lib,
+# OpenEXR-3_4.lib, Secur32.lib -- not UBT modules, so parsing .obj paths is
+# exhaustive for module membership. A raw substring search over the whole file is
+# asserted as well, so a module arriving in some other form is still caught.
+#
+# The Editor receipt check below is unchanged and is still the positive control:
+# it proves RacingSimTests is a real module that really is built somewhere, so
+# "absent from the Game link" means absent rather than nonexistent.
 function Test-TargetReceipts {
     $binaries = Join-Path $ProjectRoot 'Binaries\Win64'
-    $gameReceipt   = Join-Path $binaries 'RacingSim.target'
     $editorReceipt = Join-Path $binaries 'RacingSimEditor.target'
 
-    foreach ($receipt in @($gameReceipt, $editorReceipt)) {
-        if (-not (Test-Path -LiteralPath $receipt)) {
-            Write-Result -Status 'FAIL' -Check 'Receipt: input present' `
-                -Detail ("Missing {0}. Build the target first -- an absent receipt is not a pass." -f $receipt)
-            return
-        }
-    }
+    # The Game-side source of truth. Path is target/platform/architecture/config
+    # specific; this is the one the documented build command produces.
+    $gameLinkRsp = Join-Path $ProjectRoot 'Intermediate\Build\Win64\x64\RacingSim\Development\RacingSim.exe.rsp'
 
-    # ---------------------------------------------------------------------
-    # Receipt schema, established by reading the files rather than assumed.
-    #
-    # A UE 5.8.1 .target has no "Modules" key. The first version of this script
-    # looked for one, found nothing, and reported an empty module list for both
-    # receipts -- at which point the *Game* assertion ("RacingSimTests is not in
-    # this list") would have passed on an empty list, which is a false pass.
-    #
-    # It did not become a false pass, because the Editor positive control failed
-    # first and said so. That is the whole argument for keeping controls: the bug
-    # was in the checker, the checker was wrong in the safe direction only because
-    # something asserted a known-true fact. Do not remove them.
-    #
-    # The real schema is:
-    #   TargetName, Platform, Configuration, BuildSettingsVersion,
-    #   TargetBuildEnvironment, TargetType, IsTestTarget, Architecture, Project,
-    #   Launch, [LaunchCmd], Version, BuildProducts, RuntimeDependencies,
-    #   BuildPlugins, AdditionalProperties
-    #
-    # Module membership shows up in BuildProducts as per-module DLL/PDB paths for a
-    # modular (Editor) target:
-    #   { "Path": "$(ProjectDir)/Binaries/Win64/UnrealEditor-RacingSimTests.dll",
-    #     "Type": "DynamicLibrary" }
-    #
-    # A Development *Game* target is monolithic, so its modules do not appear as
-    # separate build products at all -- which is exactly why the correct assertion
-    # for the Game receipt is "the string RacingSimTests appears nowhere in it",
-    # and why that assertion needs an independent control proving the file was read.
-    # ---------------------------------------------------------------------
-
-    function Get-ReceiptBuildProductPaths {
-        param([string] $Path)
-        $json = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-        if ($json.PSObject.Properties.Name -notcontains 'BuildProducts') { return @() }
-        return @($json.BuildProducts | ForEach-Object { $_.Path })
-    }
-
-    $editorProducts = Get-ReceiptBuildProductPaths -Path $editorReceipt
-    $gameProducts   = Get-ReceiptBuildProductPaths -Path $gameReceipt
-
-    $gameText   = Get-Content -LiteralPath $gameReceipt -Raw
-    $editorText = Get-Content -LiteralPath $editorReceipt -Raw
-    $gameHits   = ([regex]::Matches($gameText,   'RacingSimTests')).Count
-    $editorHits = ([regex]::Matches($editorText, 'RacingSimTests')).Count
-
-    # Control A: the receipts parsed and are non-trivial.
-    if ($editorProducts.Count -gt 0 -and $gameProducts.Count -gt 0) {
-        Write-Result -Status 'PASS' -Check 'Receipt: both receipts parsed (control)' `
-            -Detail ("Editor {0} build products, Game {1}" -f $editorProducts.Count, $gameProducts.Count)
-    } else {
-        Write-Result -Status 'FAIL' -Check 'Receipt: both receipts parsed (control)' `
-            -Detail ("Editor {0} build products, Game {1}. A zero here makes every assertion below meaningless." -f $editorProducts.Count, $gameProducts.Count)
+    # -------------------------------------------------------------------------
+    # Editor receipt -- positive control.
+    # -------------------------------------------------------------------------
+    if (-not (Test-Path -LiteralPath $editorReceipt)) {
+        Write-Result -Status 'FAIL' -Check 'Receipt: Editor receipt present (control)' `
+            -Detail ("Missing {0}. Build RacingSimEditor Win64 Development first -- an absent receipt is not a pass." -f $editorReceipt)
         return
     }
 
-    # Control B: the test module really is built for the editor. If this fails, the
-    # Game assertion below is not evidence of anything -- it would also pass if the
-    # module had simply stopped existing.
+    $editorJson = Get-Content -LiteralPath $editorReceipt -Raw | ConvertFrom-Json
+    $editorProducts = @()
+    if ($editorJson.PSObject.Properties.Name -contains 'BuildProducts') {
+        $editorProducts = @($editorJson.BuildProducts | ForEach-Object { $_.Path })
+    }
+
+    if ($editorProducts.Count -gt 0) {
+        Write-Result -Status 'PASS' -Check 'Receipt: Editor receipt parsed (control)' `
+            -Detail ("{0} build products" -f $editorProducts.Count)
+    } else {
+        Write-Result -Status 'FAIL' -Check 'Receipt: Editor receipt parsed (control)' `
+            -Detail 'Zero build products parsed; the control below would be meaningless.'
+        return
+    }
+
     $editorHasTestModule = @($editorProducts | Where-Object { $_ -match 'RacingSimTests' }).Count -gt 0
     if ($editorHasTestModule) {
         Write-Result -Status 'PASS' -Check 'Receipt: RacingSimTests IS a build product of RacingSimEditor.target (control)' `
-            -Detail ("{0} raw occurrence(s) of the string in the Editor receipt" -f $editorHits)
+            -Detail 'The test module exists and is really built -- so its absence from the Game link is meaningful.'
     } else {
         Write-Result -Status 'FAIL' -Check 'Receipt: RacingSimTests IS a build product of RacingSimEditor.target (control)' `
-            -Detail 'The test module is not built for the editor, so the Game-target assertion proves nothing.'
+            -Detail 'The test module is not built for the editor, so the Game-link assertion proves nothing.'
     }
 
-    # Control C: the Game receipt is the Game target's, and mentions the runtime
-    # module. Proves the file was read and that a "RacingSim*" string can be found
-    # in it at all -- so a null result for RacingSimTests means absence.
-    $gameMentionsRuntime = $gameText -match '"TargetName"\s*:\s*"RacingSim"' -and
-                           @($gameProducts | Where-Object { $_ -match 'RacingSim\.exe' }).Count -gt 0
-    if ($gameMentionsRuntime) {
-        Write-Result -Status 'PASS' -Check 'Receipt: RacingSim.target is the Game target and names RacingSim.exe (control)' `
-            -Detail ("TargetType {0}" -f (($gameText | Select-String -Pattern '"TargetType"\s*:\s*"([^"]+)"').Matches[0].Groups[1].Value))
+    # -------------------------------------------------------------------------
+    # Game link inputs -- the assertion this ticket is actually about.
+    # -------------------------------------------------------------------------
+    if (-not (Test-Path -LiteralPath $gameLinkRsp)) {
+        Write-Result -Status 'FAIL' -Check 'Link: Game linker response file present' `
+            -Detail ("Missing {0}. Build 'RacingSim Win64 Development' first -- an absent response file is not a pass." -f $gameLinkRsp)
+        return
+    }
+
+    $rspText = Get-Content -LiteralPath $gameLinkRsp -Raw
+
+    # Module name = the directory immediately containing each linked object file.
+    $objMatches = [regex]::Matches($rspText, '/Development/(?<mod>[A-Za-z0-9_]+)/[^/"]+\.obj')
+    $linkedModules = @($objMatches | ForEach-Object { $_.Groups['mod'].Value } | Sort-Object -Unique)
+
+    # Control D: the response file really was parsed into a module list. Without
+    # this, a path change or a schema change yields an empty list and the assertion
+    # below passes vacuously -- the exact failure mode T-1 was raised about, and the
+    # same one CORE-001 hit with the "Modules" key that does not exist.
+    if ($linkedModules.Count -gt 0) {
+        Write-Result -Status 'PASS' -Check 'Link: response file parsed into a module list (control)' `
+            -Detail ("{0} object inputs -> {1} distinct modules linked into RacingSim.exe" -f $objMatches.Count, $linkedModules.Count)
     } else {
-        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSim.target is the Game target and names RacingSim.exe (control)' `
-            -Detail 'Could not confirm the Game receipt was read; absences below are unproven.'
+        Write-Result -Status 'FAIL' -Check 'Link: response file parsed into a module list (control)' `
+            -Detail ("Parsed 0 modules from {0}. Every assertion below would be vacuous." -f $gameLinkRsp)
+        return
     }
 
-    # The assertion the ticket is actually about. Both forms, because CORE-001
-    # recorded the raw occurrence count by hand and this is the automation of it.
-    if ($gameHits -eq 0) {
-        Write-Result -Status 'PASS' -Check 'Receipt: RacingSimTests is NOT in RacingSim.target' `
-            -Detail ("0 occurrences of 'RacingSimTests' in the Game receipt ({0} build products scanned)" -f $gameProducts.Count)
+    # Control E: known-linked modules are present. This is the control the .target
+    # receipt could never provide -- it read 0 for all of these. If this passes and
+    # RacingSimTests is absent, the absence is a real measurement.
+    $expectedModules = @('RacingSim', 'Core', 'CoreUObject', 'Engine', 'InputCore')
+    $missingExpected = @($expectedModules | Where-Object { $linkedModules -notcontains $_ })
+    if ($missingExpected.Count -eq 0) {
+        Write-Result -Status 'PASS' -Check 'Link: known-linked modules are named in the response file (control)' `
+            -Detail ("Found all of: {0}" -f ($expectedModules -join ', '))
     } else {
-        Write-Result -Status 'FAIL' -Check 'Receipt: RacingSimTests is NOT in RacingSim.target' `
-            -Detail ("{0} occurrence(s). The UncookedOnly test module reached the Game target. Check RacingSim.Target.cs ExtraModuleNames, and any bBuildRequiresCookedDataOverride on the Game target -- ModuleDescriptor.cs:792 keys UncookedOnly exclusion off bBuildRequiresCookedData, not off TargetType." -f $gameHits)
+        Write-Result -Status 'FAIL' -Check 'Link: known-linked modules are named in the response file (control)' `
+            -Detail ("Missing {0}. The parser is not reading module names; absences prove nothing." -f ($missingExpected -join ', '))
+        return
     }
 
-    Write-Host ("       CORE-001 recorded these by hand: RacingSim.target {0} occurrence(s), RacingSimEditor.target {1}. Measured now: {0} and {1}." -f $gameHits, $editorHits)
+    # Control F: negative control for the matcher itself.
+    if ($linkedModules -contains 'RacingSimNotARealModule') {
+        Write-Result -Status 'FAIL' -Check 'Link: matcher is sound (negative control)' `
+            -Detail 'A module that does not exist was reported as linked.'
+    } else {
+        Write-Result -Status 'PASS' -Check 'Link: matcher is sound (negative control)'
+    }
+
+    # THE assertion.
+    $testModuleLinked = $linkedModules -contains 'RacingSimTests'
+    $rawHits = ([regex]::Matches($rspText, 'RacingSimTests')).Count
+
+    if (-not $testModuleLinked -and $rawHits -eq 0) {
+        Write-Result -Status 'PASS' -Check 'Link: RacingSimTests is NOT linked into RacingSim.exe' `
+            -Detail ("Absent from {0} linked modules, and 0 raw occurrences anywhere in the response file." -f $linkedModules.Count)
+    } else {
+        Write-Result -Status 'FAIL' -Check 'Link: RacingSimTests is NOT linked into RacingSim.exe' `
+            -Detail ("Linked as a module: {0}; raw occurrences in the response file: {1}. The UncookedOnly test module reached the Game executable. Check RacingSim.Target.cs ExtraModuleNames, and any bBuildRequiresCookedDataOverride on the Game target -- ModuleDescriptor.cs:792 keys UncookedOnly exclusion off bBuildRequiresCookedData, not off TargetType." -f $testModuleLinked, $rawHits)
+    }
+
+    # Recorded for continuity with CORE-001, and explicitly labelled as NOT evidence
+    # so nobody reinstates it as the assertion. See the T-1 comment above.
+    $gameReceipt = Join-Path $binaries 'RacingSim.target'
+    if (Test-Path -LiteralPath $gameReceipt) {
+        $gameReceiptHits = ([regex]::Matches((Get-Content -LiteralPath $gameReceipt -Raw), 'RacingSimTests')).Count
+        Write-Host ("       FYI, not an assertion: 'RacingSimTests' occurs {0} time(s) in RacingSim.target. A monolithic Game receipt names no modules at all (InputCore/CoreUObject/SlateCore also read 0), so this number cannot distinguish linked from not-linked. It is printed only because CORE-001 recorded it by hand." -f $gameReceiptHits)
+    }
 }
 
 # -----------------------------------------------------------------------------
