@@ -425,7 +425,7 @@ bool FTrackDefinitionBakeTest::RunTest(const FString& Parameters)
 	// Sample spacing: the bake divides the lap into whole segments at or below the
 	// authored spacing, never above it.
 	TestTrue(TEXT("Baked spacing does not exceed the authored spacing"),
-		Track->GetCenterline().GetSampleSpacingCm() <= Track->CenterlineSampleSpacingCm + 1.0e-6);
+		Track->GetCenterline().GetAverageSegmentLengthCm() <= Track->CenterlineSampleSpacingCm + 1.0e-6);
 	TestEqual(TEXT("Closed bake has one segment per sample"),
 		Track->GetCenterline().NumSegments(), Track->GetCenterline().NumSamples());
 
@@ -795,7 +795,12 @@ bool FTrackDefinitionVersionTest::RunTest(const FString& Parameters)
 		const FRacingContentVersion Version = Track->GetContentVersion();
 		TestEqual(TEXT("AssetId is the TrackId"), Version.AssetId, Track->TrackId);
 		TestEqual(TEXT("SchemaVersion is the class constant"), Version.SchemaVersion, ATrackDefinitionActor::TrackSchemaVersion);
-		TestEqual(TEXT("Schema version 1 for TRACK-001"), ATrackDefinitionActor::TrackSchemaVersion, 1);
+
+		// Bumped from 1 to 2 by TRACK-002, which added ordered checkpoint gates and their
+		// legal crossing directions. Pinned to a literal on purpose: the whole value of a
+		// hand-bumped schema version is that adding an authored field without bumping it
+		// fails a test instead of silently making two incomparable results comparable.
+		TestEqual(TEXT("Schema version 2 for TRACK-002"), ATrackDefinitionActor::TrackSchemaVersion, 2);
 		TestTrue(TEXT("A populated track version is publishable"), Version.IsPopulated());
 		TestTrue(TEXT("ToString includes the track id"), Version.ToString().Contains(TEXT("Track.Test.Circle")));
 
