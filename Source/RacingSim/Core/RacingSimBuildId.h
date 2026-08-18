@@ -50,7 +50,7 @@ struct RACINGSIM_API FRacingContentVersion
 {
 	GENERATED_BODY()
 
-	/** Stable identifier of the asset, e.g. "Track.Prototype.NorthLoop". NAME_None means "not populated". */
+	/** Stable identifier of the asset, e.g. "Track.Prototype.Meridian". NAME_None means "not populated". */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Racing|Version")
 	FName AssetId;
 
@@ -80,7 +80,7 @@ struct RACINGSIM_API FRacingContentVersion
 		return !AssetId.IsNone() && SchemaVersion > 0;
 	}
 
-	/** "Track.Prototype.NorthLoop@3#1a2b3c4d" */
+	/** "Track.Prototype.Meridian@3#1a2b3c4d" */
 	FString ToString() const;
 
 	bool operator==(const FRacingContentVersion& Other) const
