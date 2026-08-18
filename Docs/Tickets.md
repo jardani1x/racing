@@ -795,14 +795,30 @@ the build scan is the one a future author is most likely to find annoying and we
 
 #### Remaining risks and rollback
 
-- Rollback is `git revert` of the range `40508ac..c5d0960` on this branch; no engine
+- Rollback is `git revert` of the range `40508ac..5105f95` on this branch (corrected
+  2026-08-18, pass 2 `P2-3` — previously stated `40508ac..c5d0960`, which predates and
+  would leave behind the two repair-cycle commits `34f46ce`/`5105f95`); no engine
   source, no `.uasset`, no shared config outside `Config/DefaultGame.ini` was touched.
 - The `Build.cs` scan reads every runtime-module source file on each makefile
   regeneration. Measured cost is inside the 2.34 s failure path above, i.e. negligible at
   today's ~20 files. If the module grows to thousands, re-measure rather than assume.
-- The comment stripper in the scan does not understand string literals. A banned macro
-  name inside a string literal followed by `(` would false-positive. No plausible code
-  contains that, and the error direction is safe (false positive, never false negative).
+- **Corrected 2026-08-18, pass 2 `P2-2`.** This previously read "The comment stripper in
+  the scan does not understand string literals. A banned macro name inside a string
+  literal followed by `(` would false-positive." That was fixed at `T-2` (repair commit
+  `34f46ce`) — the stripper is now a literal-aware left-to-right scanner that correctly
+  handles string/char/raw-string literals — and this line was left stale, contradicting
+  the N-2 enforcement section above which already states the fix. No open risk remains
+  here.
+- **Follow-up owed, pass 2 `P2-1` (MEDIUM, not blocking).** The `.rsp`-based receipt
+  check (`T-1`'s fix) has no freshness guard: if `RacingSimTests` is added to
+  `RacingSim.Target.cs` and only the documented gate (`Automation RunFilter Smoke`) is
+  run — which does not rebuild the Game target — the on-disk `.rsp` is stale and the
+  check reports a confident, wrong pass. Absence of the `.rsp` degrades to a visible
+  warning (`T-5`); *staleness* does not. Recorded as an obligation on the ticket that
+  next touches this check (`TRACK-002`/`RACE-002`, alongside the `/Game/Tests` pak
+  obligation already assigned there): compare the `.rsp`'s `LastWriteTime` against
+  `Source/RacingSim.Target.cs` and `Source/RacingSim/RacingSim.Build.cs`, and warn or
+  fail if the receipt predates its inputs.
 
 ---
 
