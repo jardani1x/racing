@@ -245,7 +245,7 @@ bool FTrackCenterlineBuildTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Default-constructed centerline is invalid"), Empty.IsValid());
 		TestNearlyEqual(TEXT("Unbuilt length is zero"), Empty.GetLengthCm(), 0.0, 0.0);
 		TestEqual(TEXT("Unbuilt segment count is zero"), Empty.NumSegments(), 0);
-		TestNearlyEqual(TEXT("Unbuilt spacing is zero"), Empty.GetSampleSpacingCm(), 0.0, 0.0);
+		TestNearlyEqual(TEXT("Unbuilt spacing is zero"), Empty.GetAverageSegmentLengthCm(), 0.0, 0.0);
 		TestEqual(TEXT("Unbuilt location query is the origin"), Empty.GetLocationAtDistanceCm(500.0), FVector::ZeroVector);
 		TestFalse(TEXT("Unbuilt nearest-point query is invalid"), Empty.FindNearest(FVector(1.0, 2.0, 3.0)).bValid);
 		TestFalse(TEXT("Unbuilt hinted query is invalid"), Empty.FindNearestNear(FVector(1.0, 2.0, 3.0), 0.0, 100.0).bValid);
@@ -290,7 +290,7 @@ bool FTrackCenterlineDistanceDomainTest::RunTest(const FString& Parameters)
 
 	// -- Sample spacing ------------------------------------------------------
 	TestNearlyEqual(TEXT("Spacing is length over segment count"),
-		Centerline.GetSampleSpacingCm(), LengthCm / static_cast<double>(TrackSpecCircleSamples), TolCm);
+		Centerline.GetAverageSegmentLengthCm(), LengthCm / static_cast<double>(TrackSpecCircleSamples), TolCm);
 
 	// -- Wrapping ------------------------------------------------------------
 	TestNearlyEqual(TEXT("Wrap 0"), Centerline.WrapDistanceCm(0.0), 0.0, TolCm);
