@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Core/RacingSimBuildId.h"
 #include "Race/TrackCenterline.h"
+#include "Race/TrackCheckpointGate.h"
 #include "TrackDefinitionActor.generated.h"
 
 class USplineComponent;
@@ -25,18 +26,24 @@ class USplineComponent;
  *   [x] grid and start poses
  *   [x] safe reset poses sampled along the legal route
  *   [x] total length and version hash
- *   [ ] ordered checkpoint IDs                     -> TRACK-002
- *   [ ] start/finish plane and valid crossing dir  -> TRACK-002
- *   [ ] track width / boundary splines             -> TRACK-002 or later
+ *   [x] ordered checkpoint IDs                     -> TRACK-002
+ *   [x] start/finish plane and valid crossing dir  -> TRACK-002
+ *   [ ] track width / boundary splines             -> later
  *   [ ] surface metadata and track-limit zones     -> later
  *
- * THIS CLASS CANNOT AUTHORISE A LAP AND MUST NEVER BE MADE ABLE TO. CLAUDE.md
- * requires ordered checkpoint gates plus a valid crossing direction, and
- * Docs/03-TrackRaceUI.md rule 6 says continuous spline distance "never replaces
- * ordered checkpoint validation". Everything here is progress, ranking and
- * placement. TRACK-002 adds the gates that authorise; RACE-002 adds the rules that
- * validate. A future edit that adds a "crossed the line" query to this file is a
- * design error, not a convenience.
+ * THIS CLASS STILL CANNOT AUTHORISE A LAP, AND MUST NEVER BE MADE ABLE TO.
+ * TRACK-002 added the ordered gates and the crossing-direction test, which is half
+ * of what CLAUDE.md requires -- "ordered checkpoint gates PLUS a valid crossing
+ * direction". The other half is ORDER ENFORCEMENT: tracking which gate each car is
+ * expected to take next, invalidating a lap on a skipped or out-of-order gate, and
+ * counting the lap at the finish line. That state is per-car, not per-track, and it
+ * belongs to RACE-002.
+ *
+ * So: this class can now tell you that a car crossed gate 3 forwards, legally, 40%
+ * of the way through the tick. It still cannot tell you whether that completed a
+ * lap, and Docs/03-TrackRaceUI.md rule 6's "continuous spline distance never
+ * replaces ordered checkpoint validation" is unchanged. A future edit that adds a
+ * lap counter, a timer, or an ERaceState reference to this file is a design error.
  *
  * ===========================================================================
  * The start/finish origin is the centerline's distance zero, by definition
@@ -89,12 +96,16 @@ public:
 	 *
 	 * 1 = TRACK-001: centerline spline, sector boundaries, generated grid, generated
 	 *     reset samples. No checkpoints.
+	 * 2 = TRACK-002: ordered checkpoint gates (authored or generated), per-gate legal
+	 *     crossing direction, and MinCornerRadiusCm. A version-1 result and a version-2
+	 *     result are not comparable even on identical geometry, because the gates decide
+	 *     which laps count at all.
 	 *
 	 * Any ticket that adds an authored field MUST bump this AND add the field to
 	 * ComputeContentHash(), or two genuinely different tracks will claim to be the
 	 * same one on a leaderboard.
 	 */
-	static constexpr int32 TrackSchemaVersion = 1;
+	static constexpr int32 TrackSchemaVersion = 2;
 
 	// =======================================================================
 	// Authored data
@@ -139,6 +150,69 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track",
 		meta = (ForceUnits = "cm"))
 	TArray<double> SectorStartDistancesCm;
+
+	// -- Checkpoint gates (TRACK-002) ---------------------------------------
+
+	/**
+	 * Ordered checkpoint gates, ascending in arc length, entry 0 at exactly 0.
+	 *
+	 * Docs/03-TrackRaceUI.md lists "ordered checkpoint IDs" and "start/finish plane and
+	 * valid crossing direction" among the things this actor owns, so they live here
+	 * rather than in a side asset: a gate set that can be swapped independently of the
+	 * centerline it is measured against is a gate set that can silently stop matching it.
+	 *
+	 * LEAVE THIS EMPTY TO GET GENERATED GATES. See NumGeneratedCheckpointGates. Both
+	 * paths are covered by ComputeContentHash(), so a generated set and an authored set
+	 * that happen to coincide are still distinguishable on a result.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints")
+	TArray<FRacingCheckpointGateSpec> CheckpointGateSpecs;
+
+	/**
+	 * How many evenly spaced gates to generate when CheckpointGateSpecs is empty.
+	 * Gate 0 is always the start/finish gate at distance 0.
+	 *
+	 * Generated rather than required-to-be-authored for the same reason the grid is
+	 * generated: a graybox track must be usable the moment its spline exists, and a
+	 * generated gate is guaranteed to stand square across the legal route facing the
+	 * direction that increases arc length. Hand-authoring is still available and takes
+	 * precedence; this is the floor, not the ceiling.
+	 *
+	 * Four (start/finish plus three) is the smallest count that makes a shortcut across
+	 * the middle of a circuit detectable, which is the point of having gates at all.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1", UIMin = "1", UIMax = "32"))
+	int32 NumGeneratedCheckpointGates = 4;
+
+	/** Half-width, cm, given to every generated gate. Should comfortably exceed the racing surface's half-width. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1.0", ForceUnits = "cm"))
+	double GeneratedGateHalfWidthCm = 900.0;
+
+	/** Half-height, cm, given to every generated gate. Finite so a car launched over the gate is not a clean crossing. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1.0", ForceUnits = "cm"))
+	double GeneratedGateHalfHeightCm = 500.0;
+
+	/**
+	 * Tightest corner radius the authored centerline contains, cm. Default 1500 cm (15 m).
+	 *
+	 * NOT COSMETIC, AND NOT A GUESS TO BE LEFT AT ITS DEFAULT. This is the number that
+	 * converts the baked centerline's MAXIMUM segment length into a real distance: the
+	 * sagitta, i.e. how far inside the true authored curve a baked position can sit
+	 * (FTrackCenterline::GetSagittaBoundCm). Every gate's half-width must exceed that
+	 * bound, so understating the radius here is the one input that can let a gate be
+	 * baked narrower than the model's own systematic error.
+	 *
+	 * The bias is one-directional -- always inward, never outward -- so it does not
+	 * average away over a lap. TRACK-001 recorded that as its strongest counter-case and
+	 * required TRACK-002 to assert it rather than inherit it; this field plus
+	 * RacingSim.Race.CenterlinePolylineBias is that assertion.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1.0", UIMin = "500.0", ForceUnits = "cm"))
+	double MinCornerRadiusCm = 1500.0;
 
 	// -- Grid ---------------------------------------------------------------
 	// Generated from the centerline rather than authored per slot: a generated slot
@@ -230,6 +304,70 @@ public:
 	/** Arc length of a sector, in centimetres. The last sector's length runs back to the start/finish origin. */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
 	double GetSectorLengthCm(int32 SectorIndex) const;
+
+	// -- Checkpoint gates (TRACK-002) ---------------------------------------
+
+	/**
+	 * The baked, ordered gate set. This is the surface RACE-002 consumes.
+	 *
+	 * Returned by const reference rather than by value: FRacingCheckpointGateSet holds a
+	 * TArray, and CLAUDE.md forbids per-frame allocation. A caller evaluating crossings
+	 * every tick must bind this once, not copy it.
+	 */
+	const FRacingCheckpointGateSet& GetCheckpointGates() const;
+
+	/** Number of baked checkpoint gates. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	int32 GetNumCheckpointGates() const;
+
+	/**
+	 * A gate by index. Returns false and leaves OutGate default-constructed when the
+	 * index is out of range, rather than returning a plausible-looking gate at the
+	 * origin that a caller would then test crossings against.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	bool GetCheckpointGate(int32 GateIndex, FRacingCheckpointGate& OutGate) const;
+
+	/** Index of a gate by its stable id, or INDEX_NONE. Not for per-frame use; it is a linear scan. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	int32 FindCheckpointGateIndexById(FName GateId) const;
+
+	/** Arc-length distance of a gate, cm, or InvalidDistanceCm when out of range. Same sentinel rule as the grid/reset accessors. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	double GetCheckpointGateDistanceCm(int32 GateIndex) const;
+
+	/** World pose of a gate: X along the direction of travel, Y right, Z the gate's own up. Identity when out of range. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	FTransform GetCheckpointGateTransform(int32 GateIndex) const;
+
+	/**
+	 * Test one motion segment against one gate, and report WHICH WAY it was crossed.
+	 *
+	 * This is TRACK-002's central query and the crossing-direction half of
+	 * `.claude/rules/race-tests.md`'s "checkpoint order plus crossing direction
+	 * authorizes laps". A reverse crossing comes back as
+	 * ERacingGateCrossing::Reverse with bMatchesLegalDirection == false -- it is
+	 * REPORTED, not silently swallowed, so RACE-002 can invalidate the lap and say why.
+	 *
+	 * FromWorldCm/ToWorldCm are the vehicle's previous and current positions. They need
+	 * not be adjacent frames: the test is a segment/plane intersection, so a 300 km/h
+	 * pass or a 400 ms hitch cannot tunnel through the gate.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	FRacingGateCrossingResult EvaluateGateCrossing(int32 GateIndex, const FVector& FromWorldCm, const FVector& ToWorldCm) const;
+
+	/**
+	 * The gate this motion segment met EARLIEST, across every gate on the track.
+	 *
+	 * For the case a single evaluation step crosses more than one gate -- a hitch, a
+	 * teleport, or two gates through a chicane. Ordering by where along the motion each
+	 * plane was met is the order they physically happened in; ordering by gate index
+	 * would not be.
+	 *
+	 * @return the gate index, or INDEX_NONE when nothing crossed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	int32 FindFirstGateCrossing(const FVector& FromWorldCm, const FVector& ToWorldCm, FRacingGateCrossingResult& OutResult) const;
 
 	/** Number of generated grid slots actually available. Matches NumGridSlots once the track is built. */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
@@ -495,6 +633,21 @@ private:
 	UPROPERTY(Transient)
 	FTrackCenterline BakedCenterline;
 
+	/** Derived. Ordered checkpoint gates baked from CheckpointGateSpecs (or generated). Never authored directly. */
+	UPROPERTY(Transient)
+	FRacingCheckpointGateSet BakedCheckpointGates;
+
+	/**
+	 * Derived. Why the last gate bake failed, empty when it succeeded.
+	 *
+	 * Kept so Validate() can report the REAL reason -- "gate 2 is inside one centerline
+	 * segment of gate 1" -- instead of the downstream symptom "the track has no gates",
+	 * which is the same class of misdirection TRACK-001's bake-failure branch was
+	 * corrected for.
+	 */
+	UPROPERTY(Transient)
+	FString CheckpointGateBakeError;
+
 	/** Derived. World-space grid poses, index 0 = pole. */
 	UPROPERTY(Transient)
 	TArray<FTransform> GridSlotTransforms;
@@ -565,6 +718,20 @@ private:
 
 	/** Generate GridSlotTransforms from the baked centerline. Requires a valid centerline. */
 	void RebuildGridSlots();
+
+	/**
+	 * Bake BakedCheckpointGates from CheckpointGateSpecs, or from the generator when
+	 * that array is empty. Requires a valid centerline.
+	 *
+	 * Records CheckpointGateBakeError instead of returning a bool, because a gate bake
+	 * can fail on a track whose CENTERLINE is perfectly good, and failing the whole
+	 * centerline bake for a mis-authored gate would take progress and ranking down with
+	 * it. Validate() is where a bad gate set stops a session.
+	 */
+	void RebuildCheckpointGates();
+
+	/** Fill OutSpecs with evenly spaced generated gates, gate 0 at distance 0. Used when CheckpointGateSpecs is empty. */
+	void MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateSpec>& OutSpecs) const;
 
 	/** Generate ResetSampleTransforms/Distances from the baked centerline. Requires a valid centerline. */
 	void RebuildResetSamples();
