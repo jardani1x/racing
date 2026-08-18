@@ -1102,7 +1102,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | **DONE** 2026-08-18 — `code-reviewer` approved across two passes (1 repair cycle, plus two disputed findings independently verified against actual UE 5.8 engine source and upheld); `test-engineer` independently confirmed both targets build clean from forced real recompilation and 452/452 automation Smoke tests pass (run twice, no flakiness). Merged to `main` at `5d44744`. Graybox test level deferred into `TRACK-002`'s scope by director ruling. Findings tracked forward into `TRACK-002`, `RACE-003`, `VEH-005`, `UI-001`, `TEST-001` |
-| TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | OPEN |
+| TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | IN PROGRESS (implementation dispatched) |
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | OPEN |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
