@@ -24,21 +24,46 @@
  *     This is the positive control for (2): without it, a parser that always returned
  *     an empty module list would make (2) pass forever.
  *
- *  2. RacingSim.target (Game) does not list RacingSimTests. Fails if someone adds the
- *     test module to RacingSim.Target.cs, or sets bBuildRequiresCookedDataOverride =
- *     false on the Game target. CORE-001's reviewer named those two edits precisely and
- *     noted that today "no build fails and no test fails" when they happen. After this,
- *     one does.
+ *  2. RacingSimTests is not among the modules linked into RacingSim.exe, read from the
+ *     Game target's LINKER RESPONSE FILE. Fails if someone adds the test module to
+ *     RacingSim.Target.cs, or sets bBuildRequiresCookedDataOverride = false on the Game
+ *     target. CORE-001's reviewer named those two edits precisely and noted that today
+ *     "no build fails and no test fails" when they happen. After this, one does.
  *
  *  3. DirectoriesToNeverCook still contains the test-content paths. Fails if a later
  *     ticket rewrites Config/DefaultGame.ini and drops the packaging section.
  *
- * Deliberate asymmetry: a missing *Editor* receipt is an error, because this test only
- * runs from a built editor, so the receipt must exist. A missing *Game* receipt is a
- * warning, because building the Game target is not a precondition for running the
- * editor's automation suite, and turning "you have not built the Game target on this
- * machine yet" into a red test would train people to ignore it. The script covers the
- * package-time path and fails hard there.
+ * ---------------------------------------------------------------------------
+ * Why (2) reads a .rsp and not Binaries/Win64/RacingSim.target (finding T-1)
+ * ---------------------------------------------------------------------------
+ *
+ * The first version of (2) asserted that the string "RacingSimTests" appears 0 times in
+ * the Game .target receipt. That assertion could not fail on its subject, and the claim
+ * that it caught the two edits above was false.
+ *
+ * A .target receipt lists build PRODUCTS, not modules. A Development Game target is
+ * monolithic: every module is compiled into one RacingSim.exe, so no module appears as
+ * a build product and no module name appears in the receipt. Measured on this
+ * repository in the known-good state, RacingSim.target contains 0 occurrences of
+ * "RacingSimTests" -- and also 0 of "InputCore", 0 of "CoreUObject" and 0 of
+ * "SlateCore", all of which are certainly linked into that exe. The old number
+ * described monolithic-vs-modular linkage, not module membership, and would have read 0
+ * just the same with the test module compiled in.
+ *
+ * UBT writes every link input to
+ *   Intermediate/Build/Win64/x64/RacingSim/Development/RacingSim.exe.rsp
+ * as one .obj per translation unit, under a per-module directory:
+ *   ".../Development/InputCore/Module.InputCore.cpp.obj"
+ * Measured here: 1122 .obj inputs, all 1122 matching /Development/<Module>/<file>.obj,
+ * yielding ~500 module names -- including RacingSim, Core, Engine, InputCore and
+ * CoreUObject, and excluding RacingSimTests. That file can distinguish linked from
+ * not-linked; the receipt cannot.
+ *
+ * Both halves degrade to a warning when their input is absent, rather than failing.
+ * Neither building the Game target nor retaining intermediates is a precondition for
+ * running the editor's automation suite, and turning "you have not built that here yet"
+ * into a red test trains people to ignore red tests. Scripts/Test/Check-NonShipping
+ * Artifacts.ps1 covers the package-time path and fails hard on a missing input.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FRacingSimNonShippingArtifactTest,
@@ -59,6 +84,87 @@ namespace RacingSimNonShippingArtifactSpec
 				TEXT("Win64"),
 				FString::Printf(TEXT("%s.target"), TargetName)));
 	}
+
+	/**
+	 * Absolute path to the linker response file for the Win64 Development Game target.
+	 * This is what the documented build command in Docs/Environment.md produces.
+	 */
+	static FString GameLinkResponsePath()
+	{
+		return FPaths::ConvertRelativePathToFull(
+			FPaths::Combine(
+				FPaths::ProjectDir(),
+				TEXT("Intermediate"), TEXT("Build"), TEXT("Win64"), TEXT("x64"),
+				TEXT("RacingSim"), TEXT("Development"),
+				TEXT("RacingSim.exe.rsp")));
+	}
+
+	/**
+	 * Distinct module names linked into a monolithic target, taken from the response
+	 * file. Each object input looks like
+	 *   ".../Intermediate/Build/Win64/x64/UnrealGame/Development/InputCore/Module.InputCore.cpp.obj"
+	 * so the module is the directory immediately above the object file. Verified on
+	 * this repository: all 1122 .obj inputs match that shape and none contain a
+	 * backslash.
+	 */
+	static TSet<FString> ParseLinkedModules(const FString& ResponseText)
+	{
+		static const FString Marker(TEXT("/Development/"));
+
+		TSet<FString> Modules;
+
+		int32 SearchStart = 0;
+		int32 MarkerIndex = INDEX_NONE;
+
+		while ((MarkerIndex = ResponseText.Find(
+					Marker, ESearchCase::IgnoreCase, ESearchDir::FromStart, SearchStart)) != INDEX_NONE)
+		{
+			const int32 ModuleStart = MarkerIndex + Marker.Len();
+			SearchStart = ModuleStart;
+
+			int32 ModuleEnd = INDEX_NONE;
+			for (int32 Index = ModuleStart; Index < ResponseText.Len(); ++Index)
+			{
+				const TCHAR Char = ResponseText[Index];
+				if (Char == TEXT('/'))
+				{
+					ModuleEnd = Index;
+					break;
+				}
+				// A module directory name is a bare identifier. Anything else means
+				// this "/Development/" was not part of an object path.
+				if (Char != TEXT('_') && !FChar::IsAlnum(Char))
+				{
+					break;
+				}
+			}
+
+			if (ModuleEnd == INDEX_NONE || ModuleEnd <= ModuleStart)
+			{
+				continue;
+			}
+
+			// Only count it if what follows is an object file, i.e. this really is a
+			// per-module link input and not some other path that happens to contain
+			// "/Development/".
+			const int32 FileStart = ModuleEnd + 1;
+			int32 FileEnd = FileStart;
+			while (FileEnd < ResponseText.Len()
+				&& ResponseText[FileEnd] != TEXT('/')
+				&& ResponseText[FileEnd] != TEXT('"'))
+			{
+				++FileEnd;
+			}
+
+			const FString FileName = ResponseText.Mid(FileStart, FileEnd - FileStart);
+			if (FileName.EndsWith(TEXT(".obj"), ESearchCase::IgnoreCase))
+			{
+				Modules.Add(ResponseText.Mid(ModuleStart, ModuleEnd - ModuleStart));
+			}
+		}
+
+		return Modules;
+	}
 }
 
 bool FRacingSimNonShippingArtifactTest::RunTest(const FString& Parameters)
@@ -69,25 +175,19 @@ bool FRacingSimNonShippingArtifactTest::RunTest(const FString& Parameters)
 	static const TCHAR* RuntimeModuleName = TEXT("RacingSim");
 
 	// -----------------------------------------------------------------------
-	// 1 + 2. .target receipts.
+	// 1. Editor .target receipt -- positive control.
 	// -----------------------------------------------------------------------
 	//
-	// Substring search on the raw JSON rather than a parse. The receipt names modules
-	// in more than one place (the Modules map, and Additional/BuildProducts entries),
-	// and the question here is the coarse one -- does UBT mention this module at all
-	// for this target. A parse would be more precise and more brittle; the PowerShell
-	// script does the parse, and prints both numbers, so the two disagree loudly if the
-	// format ever changes.
+	// Substring search on the raw JSON rather than a parse. The Editor target is
+	// modular, so each module really does appear as its own build product, and the
+	// question here is the coarse one: is RacingSimTests a real module that really is
+	// built somewhere. The PowerShell script does the structured parse, so the two
+	// disagree loudly if the format ever changes.
 
 	const FString EditorReceipt = ReceiptPath(TEXT("RacingSimEditor"));
-	const FString GameReceipt = ReceiptPath(TEXT("RacingSim"));
 
 	FString EditorReceiptText;
-	const bool bEditorReceiptRead = FFileHelper::LoadFileToString(EditorReceiptText, *EditorReceipt);
-
-	if (TestTrue(
-			FString::Printf(TEXT("Editor .target receipt is readable: %s"), *EditorReceipt),
-			bEditorReceiptRead))
+	if (FFileHelper::LoadFileToString(EditorReceiptText, *EditorReceipt))
 	{
 		// Positive control. If this fails, assertion (2) proves nothing.
 		TestTrue(
@@ -99,34 +199,88 @@ bool FRacingSimNonShippingArtifactTest::RunTest(const FString& Parameters)
 			TEXT("RacingSimEditor.target lists RacingSim (control)"),
 			EditorReceiptText.Contains(RuntimeModuleName, ESearchCase::CaseSensitive));
 	}
-
-	FString GameReceiptText;
-	if (FFileHelper::LoadFileToString(GameReceiptText, *GameReceipt))
+	else
 	{
-		// Control first: prove the Game receipt was actually read and is non-trivial,
-		// so "RacingSimTests not found" means absence rather than an empty string.
+		// T-5: degrade rather than hard-fail. A missing Editor receipt is an
+		// environmental condition, not a defect in the thing under test -- a fresh
+		// checkout, a different platform layout, or an installed-engine/prebuilt
+		// scenario where the editor binaries were not produced by this tree. The
+		// Game-side half below is independent of this and still runs. The script
+		// fails hard on the same input, which is the right behaviour there because
+		// it is run deliberately, at package time.
+		AddWarning(FString::Printf(
+			TEXT("Editor .target receipt not present at %s, so the control half of the ")
+			TEXT("non-shipping check did not run. Build 'RacingSimEditor Win64 ")
+			TEXT("Development', or run Scripts/Test/Check-NonShippingArtifacts.ps1 ")
+			TEXT("-Mode Receipt, which fails hard on a missing receipt."),
+			*EditorReceipt));
+	}
+
+	// -----------------------------------------------------------------------
+	// 2. Game link inputs -- the assertion the ticket is about.
+	// -----------------------------------------------------------------------
+	//
+	// Read from the linker response file, NOT the Game .target receipt. See the long
+	// comment on this class (finding T-1) for why the receipt cannot answer this.
+
+	const FString GameLinkRsp = GameLinkResponsePath();
+
+	FString GameLinkText;
+	if (FFileHelper::LoadFileToString(GameLinkText, *GameLinkRsp))
+	{
+		const TSet<FString> LinkedModules = ParseLinkedModules(GameLinkText);
+
+		// Control: the response file parsed into a module list at all. Without this a
+		// path or schema change yields an empty set and the assertion below passes
+		// vacuously -- which is precisely the defect T-1 was raised about.
 		TestTrue(
-			TEXT("RacingSim.target lists RacingSim (control)"),
-			GameReceiptText.Contains(RuntimeModuleName, ESearchCase::CaseSensitive));
+			FString::Printf(
+				TEXT("Game linker response file parsed into a module list (%d modules)"),
+				LinkedModules.Num()),
+			LinkedModules.Num() > 0);
+
+		// Control: modules known to be linked into the monolithic exe are named. This
+		// is the control the .target receipt could never supply -- it reads 0 for all
+		// of these. With this passing, RacingSimTests's absence is a real measurement.
+		for (const TCHAR* Expected : { TEXT("RacingSim"), TEXT("Core"), TEXT("CoreUObject"),
+									   TEXT("Engine"), TEXT("InputCore") })
+		{
+			TestTrue(
+				FString::Printf(
+					TEXT("Known-linked module '%s' is named in the Game link inputs (control)"),
+					Expected),
+				LinkedModules.Contains(Expected));
+		}
+
+		// Negative control for the matcher.
+		TestFalse(
+			TEXT("A module that does not exist is not reported as linked (matcher is sound)"),
+			LinkedModules.Contains(TEXT("RacingSimNotARealModule")));
+
+		// THE assertion, in both forms: parsed module membership, and a raw substring
+		// search so a module arriving in some other link form is still caught.
+		TestFalse(
+			TEXT("RacingSimTests is NOT linked into RacingSim.exe -- the UncookedOnly test "
+				 "module was not compiled into the Game target"),
+			LinkedModules.Contains(TestModuleName));
 
 		TestFalse(
-			TEXT("RacingSim.target (Game) does NOT list RacingSimTests -- the UncookedOnly "
-				 "test module was not compiled into the Game target"),
-			GameReceiptText.Contains(TestModuleName, ESearchCase::CaseSensitive));
+			TEXT("'RacingSimTests' does not appear anywhere in the Game linker response file"),
+			GameLinkText.Contains(TestModuleName, ESearchCase::CaseSensitive));
 
 		UE_LOG(LogRacingTests, Log,
-			TEXT("NonShippingArtifacts: checked Game receipt %s (%d chars)."),
-			*GameReceipt, GameReceiptText.Len());
+			TEXT("NonShippingArtifacts: %d modules linked into RacingSim.exe per %s."),
+			LinkedModules.Num(), *GameLinkRsp);
 	}
 	else
 	{
 		// Not an error. See the class comment for why this is deliberately a warning.
 		AddWarning(FString::Printf(
-			TEXT("Game .target receipt not present at %s, so the Game-target half of the ")
-			TEXT("non-shipping check did not run. Build 'RacingSim Win64 Development', or ")
-			TEXT("run Scripts/Test/Check-NonShippingArtifacts.ps1 -Mode Receipt, which fails ")
-			TEXT("hard on a missing receipt."),
-			*GameReceipt));
+			TEXT("Game linker response file not present at %s, so the Game-target half of ")
+			TEXT("the non-shipping check did not run. Build 'RacingSim Win64 Development', ")
+			TEXT("or run Scripts/Test/Check-NonShippingArtifacts.ps1 -Mode Receipt, which ")
+			TEXT("fails hard on a missing input."),
+			*GameLinkRsp));
 	}
 
 	// -----------------------------------------------------------------------

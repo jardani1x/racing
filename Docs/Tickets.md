@@ -218,6 +218,26 @@ closure is not.
 | N-2 | "test code physically cannot ship" is true only of code **in that module**. `WITH_DEV_AUTOMATION_TESTS` is 1 in a Development Game target, so an `IMPLEMENT_SIMPLE_AUTOMATION_TEST` written inside `Source/RacingSim/` compiles into the shipped exe and the CORE-001 gate would not see it. Add a rule that automation tests live only in `RacingSimTests` | `TEST-001` |
 | N-3 | "splitting into modules later is a mechanical change" is true **only until the first `UObject` exists**. UObject paths are `/Script/<Module>.<Class>`, so moving a UClass breaks every Blueprint, DataAsset and map reference without authored `CoreRedirects`. Record that cost and make the granularity decision final before the first UObject ships | `CORE-002` |
 | N-4 | Adopt the `.target` receipt check as the primary non-shipping gate; keep the string search as corroboration. Also cover **test content** — `Content/Tests/Maps/` cooks into the pak, which neither current check inspects. Needs `DirectoriesToNeverCook` plus a pak-side check | `TEST-001` |
+
+> **Correction to N-4, made at `TEST-001` repair cycle 1 (finding `T-1`).** The finding's
+> own prescription — "adopt the `.target` receipt check as the primary non-shipping
+> gate" — **cannot work for the Game target, and the first implementation of `TEST-001`
+> inherited that error.** A Development Game target is monolithic, so its `.target`
+> receipt lists build products, not modules. Measured on this tree,
+> `Binaries/Win64/RacingSim.target` contains **0** occurrences of `RacingSimTests` — and
+> **0** of `InputCore`, `CoreUObject` and `SlateCore`, which are all certainly linked
+> into that executable. The receipt reads 0 for every module, so it cannot distinguish
+> "not linked" from "this file never names modules", and it would still have read 0 with
+> `RacingSimTests` compiled in. It therefore caught **neither** of the two regressions
+> CORE-001 named (adding the module to `RacingSim.Target.cs`, or setting
+> `bBuildRequiresCookedDataOverride = false`).
+>
+> The gate now reads the Game target's **linker response file**,
+> `Intermediate/Build/Win64/x64/RacingSim/Development/RacingSim.exe.rsp`, which names
+> every module actually linked into the monolithic executable (1122 object inputs, ~500
+> distinct modules). The Editor `.target` receipt is retained as the positive control —
+> that half was never broken, because the Editor target is modular. Proven by a
+> negative-control probe below.
 | N-6 | `Docs/15-ProjectStructure.md` test-module tree omits `Core/`, which the implementation added | `CORE-002` |
 | N-7 | `.gitignore` — the `Samples/` comment block visually captures unrelated `Archive/` and `StagedBuilds/` entries | `CORE-002` |
 | NEW-1 | **Fixed immediately, not deferred.** The B-1 anchoring left `*.obj` unanchored one line above `*.lib`/`*.pdb`. `.obj` is both an MSVC object file and Wavefront OBJ, so `Source/Art/**/*.obj` and `Content/Raw/**/*.obj` were silently dropped — an original source mesh that never commits is an asset whose provenance cannot be demonstrated, while the author's clone looks fine. Anchored to `Intermediate/**` and `Binaries/**`; verified trackable at three source paths and still ignored at three build paths | closed in `CORE-001` |
@@ -540,9 +560,11 @@ reads in `ModuleRules.ExternalDependencies` (`ModuleRules.cs:1437`, consumed at
 check. Without it the check would run once and then silently stop checking — exactly the
 decay `CORE-001`'s reviewer predicted for the hand-typed receipt check.
 
-Reported line numbers are approximate (`around line N`) because comments are stripped
-before matching and block-comment stripping is not line-preserving. The file name is the
-actionable part.
+Reported line numbers were approximate (`around line N`) in the version these two probes
+ran against, because block-comment stripping was not line-preserving. **Repair cycle 1
+(`T-2`) replaced the stripper**, and the replacement preserves both length and newlines,
+so the message is now an exact `(line N)`. The probe transcripts above are kept verbatim
+as the record of what was run at the time.
 
 **Probe 3 — found by accident, and the most useful result here.** The first version of
 the receipt check looked for a `Modules` key in the `.target` JSON. **UE 5.8.1 `.target`
@@ -560,7 +582,151 @@ and the reason none of them should be tidied away as redundant. It is also the s
 as the false Gate G "zero matches" claim corrected in `Docs/Environment.md`: a search that
 is narrower than the sentence describing it reads as a clean result.
 
+---
+
+### TEST-001 — repair cycle 1, review findings T-1..T-9, 2026-08-18
+
+Branch `worktree-agent-a2fd151063067095a`, cut from `0576ec4`. **Not merged, not pushed.**
+
+**Worktree note, again a sandbox constraint.** The brief named worktree
+`agent-a489f0e1e76ec91e0` at `0576ec4`. The harness isolated this agent to
+`agent-a2fd151063067095a`, which was sitting at `9208586` and refuses git operations
+against another worktree. `0576ec4` was reachable in the shared object store, so the
+branch was fast-forwarded onto it and the repair work sits on top. Same code, different
+branch name.
+
+| Finding | Severity | Action |
+|---|---|---|
+| `T-1`/`T-1a`/`T-1b` | HIGH | Game-side data source switched from the `.target` receipt to the linker response file; false claims corrected; negative control run (below) |
+| `T-2` | MEDIUM | Regex comment stripper replaced with a position-preserving scanner |
+| `T-4` | MEDIUM | Placement spec filters by source path, not test name |
+| `T-5` | MEDIUM | Editor-receipt half degrades to a warning like the Game half |
+| `T-6` | LOW | `LogRacingTests` now really is asserted separately |
+| `T-9` | LOW | `CORE-002 finding N-1` → `CORE-001 finding N-1, fixed at CORE-002` |
+| `T-3`, `T-7`, `T-8` | — | Accepted as-is per the review |
+
+#### T-1: why the old check could not fail, measured
+
+`Binaries/Win64/RacingSim.target`, in the **known-good** state, occurrence counts:
+
+```text
+RacingSimTests  0        InputCore    0
+CoreUObject     0        SlateCore    0
+```
+
+`InputCore`, `CoreUObject` and `SlateCore` are certainly linked into `RacingSim.exe`. A
+monolithic Game receipt lists build products, not modules, so it reads 0 for *every*
+module. The old assertion was measuring monolithic-vs-modular linkage and would have read
+0 with the test module compiled in.
+
+`Intermediate/Build/Win64/x64/RacingSim/Development/RacingSim.exe.rsp` does name them:
+1122 `.obj` inputs, **all 1122** matching `/Development/<Module>/<file>.obj`, 0 containing
+a backslash, yielding 446 distinct modules. The 111 `.lib` inputs are third-party
+(`BLAKE3.lib`, `OpenEXR-3_4.lib`, `Secur32.lib`), not UBT modules, so parsing `.obj`
+paths is exhaustive for module membership.
+
+#### T-1b: negative control — the fixed check driven to a real failure
+
+`Source/RacingSim.Target.cs` temporarily gained `ExtraModuleNames.Add("RacingSimTests")`,
+then `RacingSim Win64 Development` was rebuilt.
+
+**The build itself succeeded with zero warnings** — `Result: Succeeded`, 141.97 s, 0
+`warning|error` matches. That is CORE-001's reviewer's "no build fails and no test fails"
+reproduced exactly, and it is why a check is needed at all.
+
+Script, `-Mode Receipt` (**exit 1**):
+
+```text
+[PASS] Link: response file parsed into a module list (control)
+       1133 object inputs -> 447 distinct modules linked into RacingSim.exe
+[PASS] Link: known-linked modules are named in the response file (control)
+       Found all of: RacingSim, Core, CoreUObject, Engine, InputCore
+[PASS] Link: matcher is sound (negative control)
+[FAIL] Link: RacingSimTests is NOT linked into RacingSim.exe
+       Linked as a module: True; raw occurrences in the response file: 12. The
+       UncookedOnly test module reached the Game executable. Check RacingSim.Target.cs
+       ExtraModuleNames, and any bBuildRequiresCookedDataOverride on the Game target --
+       ModuleDescriptor.cs:792 keys UncookedOnly exclusion off bBuildRequiresCookedData,
+       not off TargetType.
+       FYI, not an assertion: 'RacingSimTests' occurs 0 time(s) in RacingSim.target.
+
+Summary: 5 passed, 1 failed, 0 skipped
+RESULT: FAILED
+```
+
+**The single most important line is the `FYI`.** The regression is present — the test
+module *is* linked into the executable — and the old check's data source *still reads 0*.
+That is the direct demonstration that the `.target` receipt could never have caught this,
+and that the `.rsp` does.
+
+The documented automation gate catches it too, which matters because the script is not a
+required step and `Automation RunFilter Smoke` is. Same probe, Smoke filter,
+`reportCreatedOn 2026.08.18-02.06.06`: **succeeded 444, failed 1, notRun 0**:
+
+```text
+RacingSim.Tests.NonShippingArtifacts                 Fail
+  [Error] Expected 'RacingSimTests is NOT linked into RacingSim.exe -- the UncookedOnly
+          test module was not compiled into the Game target' to be false.
+  [Error] Expected ''RacingSimTests' does not appear anywhere in the Game linker
+          response file' to be false.
+```
+
+Exactly one test failed; the other 18 `RacingSim.*` tests and all engine suites stayed
+green, so the check is specific and not merely noisy.
+
+**Reverted and rebuilt clean.** `Source/RacingSim.Target.cs` is byte-identical to its
+committed state (`git diff` empty). `RacingSim Win64 Development` — `Result: Succeeded`,
+43.42 s, 0 `warning|error` matches. Script back to **6 passed, 0 failed, exit 0**, module
+count back from 447 to 446:
+
+```text
+[PASS] Link: response file parsed into a module list (control)
+       1122 object inputs -> 446 distinct modules linked into RacingSim.exe
+[PASS] Link: RacingSimTests is NOT linked into RacingSim.exe
+       Absent from 446 linked modules, and 0 raw occurrences anywhere in the response file.
+```
+
+#### T-2: the false-negative the old stripper allowed, demonstrated
+
+The old header comment claimed "a false negative is not reachable this way, and that is
+the direction that matters". Running the *old* expressions (`/\*.*?\*/` Singleline, block
+comments stripped before line comments) over this input:
+
+```cpp
+// TODO: the /* form is deprecated, use // instead
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShippedByAccident, "Rogue.Test", Flags)
+bool FShippedByAccident::RunTest(const FString& P) { return true; }
+
+/* an ordinary later block comment */
+void RealCode() {}
+```
+
+strips to — note the macro is **gone** while `RealCode()` survives:
+
+```text
+ 
+#include "Misc/AutomationTest.h"
+
+ 
+void RealCode() {}
+--- banned macro detected: False
+```
+
+A `/*` inside a `//` comment opened a match that ran to the next `*/` anywhere later in
+the file. One line of prose disables the gate, which makes it a plausible accident rather
+than only a deliberate bypass. The replacement is a single left-to-right scanner that
+models what the C++ lexer does, also understands string/char/raw-string literals (removing
+the old false-*positive* caveat), and preserves length and newlines so reported line
+numbers are exact.
+
 #### Check results
+
+> **Superseded by repair cycle 1 for the Receipt block.** The `Receipt:` lines below are
+> the *original* implementation's output and are retained only as the record of what was
+> reported at `0576ec4`. The `Receipt: RacingSimTests is NOT in RacingSim.target` line is
+> the assertion `T-1` found to be structurally incapable of failing — see the repair-cycle
+> section above for the replacement and its negative control. The `Config:`, `Pak:` and
+> `Binary:` lines are unaffected by `T-1`.
 
 `Scripts/Test/Check-NonShippingArtifacts.ps1 -Mode All` (receipt + config) and
 `-Mode Pak` against the package above:
