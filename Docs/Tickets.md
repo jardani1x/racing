@@ -1460,6 +1460,81 @@ Read before writing TRACK-002's acceptance criteria.
 | L7 (TRACK-001 pass 1) | `FTrackCenterline::ProjectOntoSegments` computes `Right = Up x Forward`; for an exactly vertical segment this normalises to zero and the query returns `LateralOffsetCm == 0` with `bValid == true` — indistinguishable from a car dead on the centerline. `GetTransformAtDistanceCm` documents this degenerate case; `ProjectOntoSegments` does not | Either signal the degenerate case (`bValid = false`, or a dedicated flag) or document it identically. This matters once track-limits checks read `LateralOffsetCm` as truth |
 | Polyline bias (TRACK-001 counter-case) | Baked-polyline positions sit inside the true spline curve by roughly `Spacing^2 / (8 * radius)`. Sub-centimetre at the default 100 cm spacing, but systematic and one-directional | Assert the bias explicitly against a closed-form circle before comparing a car's lateral offset to an authored track-limits threshold, rather than inheriting it silently |
 
+### TRACK-002 — acceptance criteria, opened 2026-08-18
+
+Scope per this row: `Ordered checkpoint gates and crossing direction`. Owner
+`race-systems-engineer`. Gate B. Depends on `TRACK-001` (DONE). Read "### TRACK-002 —
+findings inherited from TRACK-001" immediately above **first** — six concrete
+obligations, not just a checkpoint system to build in the abstract.
+
+**Deliberately lap-agnostic**, mirroring RACE-001/TRACK-001's split: lap counting,
+sector timing, and validity/progress state are `RACE-002`, a later, separate ticket
+that depends on this one. TRACK-002 defines what a checkpoint gate *is* and whether a
+given crossing satisfies it — it must not count laps, own a timer, or reference
+`ERaceState`.
+
+- [ ] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
+      `UTrackCheckpointSet` — director's naming call, implementer may propose) built on
+      `TRACK-001`'s typed centerline/query API (`ATrackDefinitionActor`,
+      `FTrackCenterline`), never raw `USplineComponent` calls. Each gate has a position
+      (arc-length distance along the centerline, consistent with `GetGridSlotDistanceCm`/
+      `GetResetSampleDistanceCm`'s precedent), a width/extent, and a legal crossing
+      direction.
+- [ ] Crossing-direction validation: given a gate and a crossing (e.g. two consecutive
+      world positions, or a signed velocity), determine forward vs. reverse and report
+      which — a reverse crossing must be distinguishable from a forward one, not merely
+      rejected silently. `.claude/rules/race-tests.md`: "Checkpoint order plus crossing
+      direction authorizes laps; spline distance alone never does" — this ticket owns
+      the crossing-direction half of that rule; `RACE-002` owns the ordering half (it
+      consumes this ticket's per-gate direction result to build lap validity).
+- [ ] Gate-placement geometry uses the **maximum** segment length, not
+      `GetSampleSpacingCm()`'s average (`TRACK-001` `L2`), to bound placement error — add
+      a true max-segment-length accessor to `FTrackCenterline` (or rename the existing
+      one and add the real one; director's call which).
+- [ ] The polyline-vs-true-spline bias (`TRACK-001` counter-case, immediately above) is
+      asserted explicitly against a closed-form circle fixture, not inherited silently —
+      needed before any gate-crossing tolerance is chosen, since the bias is systematic
+      and one-directional.
+- [ ] `TRACK-001` `L4` closed: `FMath::CeilToInt32(SplineLengthCm / SpacingCm)`'s
+      sample-count guard computes in `double` and compares before casting, so the
+      documented overflow-safety mechanism is the real one.
+- [ ] `TRACK-001` `L7` closed: `FTrackCenterline::ProjectOntoSegments`'s degenerate
+      vertical-tangent case (`Right = Up x Forward` normalises to zero) either signals
+      invalidity (`bValid = false` or a dedicated flag) or is documented identically to
+      `GetTransformAtDistanceCm`'s handling of the same case — this ticket's own gate
+      geometry is the first real consumer of `LateralOffsetCm` as ground truth.
+- [ ] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, director-approved
+      deferral from `TRACK-001`) containing one closed-loop `ATrackDefinitionActor`
+      instance and the checkpoint gates this ticket defines, using only
+      primitive/placeholder geometry — no final art, no license-ledger-requiring
+      external asset. Explicit asset ownership taken before touching any
+      `.umap`/`.uasset` (`CLAUDE.md`: content changes are serialised). Sufficient for
+      `RACE-002`'s automation to exercise real checkpoint/lap logic against.
+- [ ] `TRACK-001` `M5` closed: once the level exists, a functional test loads it and
+      asserts the track baked correctly from `PostLoad()` alone (no `OnConstruction`, no
+      `BeginPlay` rebuild) — the spawn/load path has never run because no placed
+      instance existed before this ticket.
+- [ ] `RacingSimTests` gains automation coverage for crossing-direction validation
+      (forward, reverse, tangential/grazing, high-speed single-tick crossing) that does
+      **not** require the level — testable against a procedurally-constructed gate set
+      in a transient world/commandlet, matching `TRACK-001`'s testability-first design.
+      `.claude/rules/race-tests.md`: "Test reverse crossings, skipped gates, double
+      overlaps, spins at gates, high-speed crossings, reset/teleport, and restart" — the
+      skipped-gate/ordering and reset/restart cases are `RACE-002`'s to test against
+      this ticket's contract, but reverse/double/spin/high-speed crossing-direction
+      detection is this ticket's own.
+- [ ] Editor **and** Game targets build with zero new warnings.
+
+**Known risk, not yet resolved.** `TEST-001`'s findings-inherited table records that no
+project ticket has yet provided a working non-CDO actor-instantiation path for
+automation (`NewObject<AActor>` and `UWorld::CreateWorld` both crash in this harness) —
+`TEST-001` did not fix this; it was outside that ticket's N-2/N-4 scope. This ticket's
+own functional-test-map criterion (`M5`, above) may resolve it naturally by providing a
+real loaded level with a real placed actor instead of a CDO-mutating fixture — if so,
+record that as the fix `TEST-001`'s finding was waiting for. If the functional-test
+infrastructure itself hits the same wall, escalate rather than reintroducing a
+CDO-mutating fixture for checkpoint-gate tests.
+
 ### RACE-003 — findings inherited from TRACK-001
 
 | ID | Finding | What RACE-003 must do |
