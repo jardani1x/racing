@@ -165,7 +165,21 @@ void ATrackDefinitionActor::PostEditChangeProperty(FPropertyChangedEvent& Proper
 
 void ATrackDefinitionActor::EnsureTrackDataBuilt() const
 {
-	if (!bTrackDataBuilt)
+	// M3: the const_cast below mutates six containers and five scalars. That is only
+	// sound because this class is game-thread-only, and "game thread only" was
+	// previously asserted by a comment. Assert it in code instead -- a background task
+	// calling any query would otherwise corrupt the arrays a racing car is reading.
+	check(IsInGameThread());
+
+	// H1: gate on ATTEMPTED, not on SUCCEEDED.
+	//
+	// Gating on bTrackDataBuilt meant a FAILED bake was retried by every single query.
+	// A freshly placed actor with an unauthored spline fails to bake, and that is its
+	// normal state for as long as it takes someone to draw a circuit; each retry ran
+	// the full sample loop with two heap allocations and emitted another warning. One
+	// attempt, then cache the outcome. RebuildTrackData() is the only retry path, and
+	// it is called exactly where the spline data can actually have changed.
+	if (!bBakeAttempted)
 	{
 		const_cast<ATrackDefinitionActor*>(this)->RebuildTrackData();
 	}
@@ -179,15 +193,41 @@ bool ATrackDefinitionActor::RebuildTrackData()
 {
 	using namespace TrackDefinitionPrivate;
 
+	// M3: see EnsureTrackDataBuilt. This mutates every derived container on the actor.
+	check(IsInGameThread());
+
+	// H1: record the ATTEMPT before anything can fail, so a failed bake latches and
+	// EnsureTrackDataBuilt() stops re-entering here on every query.
+	bBakeAttempted = true;
+	++BakeAttemptCount;
+
 	bTrackDataBuilt = false;
 	BakedCenterline.Reset();
 	GridSlotTransforms.Reset();
+	GridSlotDistancesCm.Reset();
 	ResetSampleTransforms.Reset();
 	ResetSampleDistancesCm.Reset();
+	EffectiveSampleCount = 0;
+	EffectiveStepCm = 0.0;
+
+	// H1: one-shot failure logging. Attempts are now bounded by the lifecycle hooks
+	// rather than by query volume, but an explicit rebuild loop (a construction script
+	// re-running, a tool re-authoring) would still emit one warning per call. Log the
+	// first failure and stay quiet until something succeeds, so the reason is visible
+	// exactly once and the log stays readable.
+	auto LogBakeFailure = [this](const FString& Message)
+	{
+		if (!bBakeFailureLogged)
+		{
+			bBakeFailureLogged = true;
+			UE_LOG(LogRacingRace, Warning, TEXT("%s (further bake failures for this track are suppressed "
+				"until a bake succeeds)"), *Message);
+		}
+	};
 
 	if (!CenterlineSpline)
 	{
-		UE_LOG(LogRacingRace, Warning, TEXT("Track '%s' has no centerline spline component."), *TrackId.ToString());
+		LogBakeFailure(FString::Printf(TEXT("Track '%s' has no centerline spline component."), *TrackId.ToString()));
 		return false;
 	}
 
@@ -202,8 +242,8 @@ bool ATrackDefinitionActor::RebuildTrackData()
 	const double SplineLengthCm = static_cast<double>(CenterlineSpline->GetSplineLength());
 	if (!FMath::IsFinite(SplineLengthCm) || SplineLengthCm <= 0.0)
 	{
-		UE_LOG(LogRacingRace, Warning, TEXT("Track '%s' centerline has no usable length (%f cm)."),
-			*TrackId.ToString(), SplineLengthCm);
+		LogBakeFailure(FString::Printf(TEXT("Track '%s' centerline has no usable length (%f cm)."),
+			*TrackId.ToString(), SplineLengthCm));
 		return false;
 	}
 
@@ -212,7 +252,8 @@ bool ATrackDefinitionActor::RebuildTrackData()
 	{
 		UE_LOG(LogRacingRace, Warning,
 			TEXT("Track '%s' CenterlineSampleSpacingCm is %f; falling back to 100 cm for this bake. "
-				 "Fix the authored value -- the content hash records what was authored, not what was used."),
+				 "Fix the authored value -- Validate() rejects it outright, and the content hash "
+				 "records BOTH the authored value and the effective one."),
 			*TrackId.ToString(), SpacingCm);
 		SpacingCm = 100.0;
 	}
@@ -224,7 +265,8 @@ bool ATrackDefinitionActor::RebuildTrackData()
 	if (NumSamples > MaxGeneratedSamples)
 	{
 		UE_LOG(LogRacingRace, Warning,
-			TEXT("Track '%s' would bake %d samples at %f cm spacing; clamping to %d. Accuracy is reduced."),
+			TEXT("Track '%s' would bake %d samples at %f cm spacing; clamping to %d. Accuracy is reduced, "
+				 "and the content hash records the clamped count so the degraded bake is visible on a result."),
 			*TrackId.ToString(), NumSamples, SpacingCm, MaxGeneratedSamples);
 		NumSamples = MaxGeneratedSamples;
 	}
@@ -259,14 +301,24 @@ bool ATrackDefinitionActor::RebuildTrackData()
 	FString BuildError;
 	if (!BakedCenterline.Build(Locations, DistancesCm, SplineLengthCm, bClosed, BuildError))
 	{
-		UE_LOG(LogRacingRace, Warning, TEXT("Track '%s' centerline bake failed: %s"), *TrackId.ToString(), *BuildError);
+		LogBakeFailure(FString::Printf(TEXT("Track '%s' centerline bake failed: %s"), *TrackId.ToString(), *BuildError));
 		return false;
 	}
+
+	// M1: record what the bake ACTUALLY used, not what was authored. ComputeContentHash
+	// covers these, because a fallback spacing or a clamped sample count shifts every
+	// progress value on the track while leaving the authored field untouched.
+	EffectiveSampleCount = NumSamples;
+	EffectiveStepCm = StepCm;
 
 	RebuildGridSlots();
 	RebuildResetSamples();
 
 	bTrackDataBuilt = true;
+
+	// A success re-arms the one-shot failure log, so a track that breaks again after
+	// being fixed reports it instead of staying silent forever.
+	bBakeFailureLogged = false;
 	return true;
 }
 
@@ -287,6 +339,7 @@ void ATrackDefinitionActor::RebuildGridSlots()
 {
 	const int32 SlotCount = FMath::Max(0, NumGridSlots);
 	GridSlotTransforms.Reserve(SlotCount);
+	GridSlotDistancesCm.Reserve(SlotCount);
 
 	const double SpacingCm = (FMath::IsFinite(GridSlotSpacingCm) && GridSlotSpacingCm > 0.0) ? GridSlotSpacingCm : 800.0;
 	const double SetbackCm = (FMath::IsFinite(GridPoleSetbackCm) && GridPoleSetbackCm >= 0.0) ? GridPoleSetbackCm : 0.0;
@@ -304,6 +357,11 @@ void ATrackDefinitionActor::RebuildGridSlots()
 		const double LateralOffsetCm = (Slot % 2 == 0) ? -LateralCm : LateralCm;
 
 		GridSlotTransforms.Add(MakePoseAtDistance(DistanceCm, LateralOffsetCm));
+
+		// H2: kept alongside the transform rather than recovered later. Recovering it
+		// means a global FindNearest, which is the search CenterlineAmbiguity proves
+		// picks the wrong hairpin leg -- and race start is exactly when no hint exists.
+		GridSlotDistancesCm.Add(DistanceCm);
 	}
 }
 
@@ -425,6 +483,26 @@ FTransform ATrackDefinitionActor::GetGridSlotTransform(const int32 SlotIndex) co
 	return GridSlotTransforms.IsValidIndex(SlotIndex) ? GridSlotTransforms[SlotIndex] : FTransform::Identity;
 }
 
+double ATrackDefinitionActor::GetGridSlotDistanceCm(const int32 SlotIndex) const
+{
+	EnsureTrackDataBuilt();
+	return GridSlotDistancesCm.IsValidIndex(SlotIndex) ? GridSlotDistancesCm[SlotIndex] : InvalidDistanceCm;
+}
+
+FTransform ATrackDefinitionActor::GetGridSlotPose(const int32 SlotIndex, double& OutDistanceCm) const
+{
+	EnsureTrackDataBuilt();
+
+	if (!GridSlotTransforms.IsValidIndex(SlotIndex) || !GridSlotDistancesCm.IsValidIndex(SlotIndex))
+	{
+		OutDistanceCm = InvalidDistanceCm;
+		return FTransform::Identity;
+	}
+
+	OutDistanceCm = GridSlotDistancesCm[SlotIndex];
+	return GridSlotTransforms[SlotIndex];
+}
+
 int32 ATrackDefinitionActor::GetNumResetSamples() const
 {
 	EnsureTrackDataBuilt();
@@ -437,9 +515,25 @@ FTransform ATrackDefinitionActor::GetResetSampleTransform(const int32 SampleInde
 	return ResetSampleTransforms.IsValidIndex(SampleIndex) ? ResetSampleTransforms[SampleIndex] : FTransform::Identity;
 }
 
+double ATrackDefinitionActor::GetResetSampleDistanceCm(const int32 SampleIndex) const
+{
+	EnsureTrackDataBuilt();
+	return ResetSampleDistancesCm.IsValidIndex(SampleIndex) ? ResetSampleDistancesCm[SampleIndex] : InvalidDistanceCm;
+}
+
 FTransform ATrackDefinitionActor::GetResetTransformAtOrBeforeDistanceCm(const double DistanceCm, int32& OutIndex) const
 {
+	double UnusedDistanceCm = InvalidDistanceCm;
+	return GetResetPoseAtOrBeforeDistanceCm(DistanceCm, OutIndex, UnusedDistanceCm);
+}
+
+FTransform ATrackDefinitionActor::GetResetPoseAtOrBeforeDistanceCm(
+	const double DistanceCm,
+	int32& OutIndex,
+	double& OutDistanceCm) const
+{
 	OutIndex = INDEX_NONE;
+	OutDistanceCm = InvalidDistanceCm;
 
 	const FTrackCenterline& Centerline = GetCenterline();
 	if (!Centerline.IsValid() || ResetSampleTransforms.Num() == 0)
@@ -458,6 +552,11 @@ FTransform ATrackDefinitionActor::GetResetTransformAtOrBeforeDistanceCm(const do
 	}
 
 	OutIndex = Index;
+
+	// H2: the arc length of the pose we are about to teleport a car to. The caller's
+	// own progress hint is stale by definition after a reset -- this is what it must
+	// re-seed FindNearestCenterlinePointNear with.
+	OutDistanceCm = ResetSampleDistancesCm.IsValidIndex(Index) ? ResetSampleDistancesCm[Index] : InvalidDistanceCm;
 	return ResetSampleTransforms[Index];
 }
 
@@ -471,6 +570,18 @@ FTrackCenterlineQuery ATrackDefinitionActor::FindNearestCenterlinePointNear(
 	const double HintDistanceCm,
 	const double SearchWindowCm) const
 {
+	// M2: THREE fallback triggers, and the third is the counter-intuitive one.
+	//
+	// FindNearestNear degrades to the global search when the hint is non-finite, when
+	// the window is non-positive, AND when SearchWindowCm * 2 >= GetTrackLengthCm().
+	// The third case is easy to reach by trying to be careful: a caller that widens the
+	// window "to be safe" past half a lap silently gets back the wrong-leg-prone global
+	// search this overload exists to avoid, with no warning and no visible symptom
+	// until a car's progress teleports across a hairpin.
+	//
+	// Not clamped here on purpose. Silently shrinking an over-wide window would hide a
+	// caller's sizing bug behind behaviour it never asked for; the documented contract
+	// is that the caller owns the window, so the caller must own getting it right.
 	return GetCenterline().FindNearestNear(WorldLocationCm, HintDistanceCm, SearchWindowCm);
 }
 
@@ -497,7 +608,24 @@ uint32 ATrackDefinitionActor::ComputeContentHash() const
 	using namespace TrackDefinitionPrivate;
 
 	uint32 Hash = GetTypeHash(TrackId);
+
+	// M1: the AUTHORED resolution is not enough on its own.
+	//
+	// The bake substitutes 100 cm when CenterlineSampleSpacingCm is non-finite or
+	// non-positive, and clamps the sample count at MaxGeneratedSamples. Both paths
+	// change the effective resolution -- and therefore every progress value on the
+	// track -- while leaving the authored field byte-identical, so hashing only the
+	// authored field let two genuinely incomparable runs claim the same content hash.
+	//
+	// Both are hashed, not just the effective pair: the authored field is what a person
+	// edited, the effective pair is what the machine actually ran, and a difference in
+	// either makes two results incomparable. Requires the bake to have run, hence the
+	// EnsureTrackDataBuilt() -- which after H1 costs at most one attempt.
+	EnsureTrackDataBuilt();
+
 	Hash = HashDouble(Hash, CenterlineSampleSpacingCm);
+	Hash = HashCombine(Hash, GetTypeHash(EffectiveSampleCount));
+	Hash = HashDouble(Hash, EffectiveStepCm);
 
 	// The actor's own transform places the whole circuit, so two otherwise identical
 	// tracks at different world origins are different content -- everything baked

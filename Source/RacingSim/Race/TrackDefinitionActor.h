@@ -101,7 +101,7 @@ public:
 	// =======================================================================
 
 	/**
-	 * Stable identifier written into every result, e.g. "Track.Prototype.NorthLoop".
+	 * Stable identifier written into every result, e.g. "Track.Prototype.Meridian".
 	 *
 	 * A name rather than the level path, for the reason URaceRulesetDataAsset
 	 * records: a content move must not invalidate historical results. NAME_None is
@@ -239,6 +239,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
 	FTransform GetGridSlotTransform(int32 SlotIndex) const;
 
+	/**
+	 * Arc-length distance of a grid slot along the centerline, in centimetres, or
+	 * InvalidDistanceCm for an out-of-range index.
+	 *
+	 * THIS EXISTS BECAUSE A TRANSFORM ALONE IS NOT ENOUGH AT RACE START. A caller that
+	 * only has the transform must recover the distance by calling
+	 * FindNearestCenterlinePoint (the GLOBAL search), and this ticket's own
+	 * RacingSim.Race.CenterlineAmbiguity test demonstrates the global search snapping
+	 * to the wrong leg of a hairpin. Race start is precisely the moment no valid
+	 * search hint exists yet, so the ambiguity is not hypothetical: the field is
+	 * stationary on a grid that may sit on a section doubling back on itself.
+	 *
+	 * Use this to seed FindNearestCenterlinePointNear's hint for each car's first
+	 * query of the session. See also GetResetSampleDistanceCm for the reset case.
+	 *
+	 * A negative sentinel rather than 0.0, because 0.0 is a legal arc length (the
+	 * start/finish line) and an out-of-range index must not be mistakable for pole.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track")
+	double GetGridSlotDistanceCm(int32 SlotIndex) const;
+
+	/**
+	 * Grid slot pose and its arc-length distance in one call, so a caller physically
+	 * cannot take the transform and forget the hint.
+	 *
+	 * @param SlotIndex     grid slot; 0 is pole.
+	 * @param OutDistanceCm arc length of the slot along the centerline, InvalidDistanceCm when out of range.
+	 * @return the pose, or identity when out of range.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track")
+	FTransform GetGridSlotPose(int32 SlotIndex, double& OutDistanceCm) const;
+
 	/** Number of generated safe reset poses. */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
 	int32 GetNumResetSamples() const;
@@ -246,6 +278,20 @@ public:
 	/** World transform of a reset pose by index. Returns identity for an out-of-range index. */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
 	FTransform GetResetSampleTransform(int32 SampleIndex) const;
+
+	/**
+	 * Arc-length distance of a reset pose along the centerline, in centimetres, or
+	 * InvalidDistanceCm for an out-of-range index.
+	 *
+	 * SAME REASON AS GetGridSlotDistanceCm, and the more urgent of the two. After a
+	 * reset or a teleport the car's previous progress hint is by definition stale --
+	 * that is what a reset means -- so VEH-005/RACE-002 must re-seed
+	 * FindNearestCenterlinePointNear from the pose it just teleported to. Without this
+	 * accessor the only way back to a distance is the global search, which is exactly
+	 * the search CenterlineAmbiguity proves picks the wrong hairpin leg.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track")
+	double GetResetSampleDistanceCm(int32 SampleIndex) const;
 
 	/**
 	 * The most recent safe reset pose at or before an arc-length distance --
@@ -265,6 +311,24 @@ public:
 	FTransform GetResetTransformAtOrBeforeDistanceCm(double DistanceCm, int32& OutIndex) const;
 
 	/**
+	 * As GetResetTransformAtOrBeforeDistanceCm, but also returns the chosen sample's
+	 * arc-length distance.
+	 *
+	 * PREFER THIS OVERLOAD AT EVERY RESET SITE. The distance is the search hint the
+	 * caller needs for its next FindNearestCenterlinePointNear call, and a reset is
+	 * the one moment the caller's existing hint is guaranteed wrong. Recovering it
+	 * with the global FindNearestCenterlinePoint instead is the failure
+	 * RacingSim.Race.CenterlineAmbiguity demonstrates.
+	 *
+	 * @param DistanceCm    arc length to search back from; wrapped first.
+	 * @param OutIndex      index of the chosen sample, INDEX_NONE when none exists.
+	 * @param OutDistanceCm arc length of the chosen sample, InvalidDistanceCm when none exists.
+	 * @return the pose, or identity when the track has no reset samples.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track")
+	FTransform GetResetPoseAtOrBeforeDistanceCm(double DistanceCm, int32& OutIndex, double& OutDistanceCm) const;
+
+	/**
 	 * Project a world location onto the centerline, searching the whole track.
 	 *
 	 * PROGRESS ONLY. The returned distance ranks cars; it does not and cannot count
@@ -280,6 +344,19 @@ public:
 	 * global search snaps to the wrong side of a hairpin or the wrong one of two
 	 * parallel straights, and the symptom is a car's progress teleporting half a
 	 * lap. See FTrackCenterline::FindNearestNear.
+	 *
+	 * A BIGGER WINDOW IS NOT A SAFER WINDOW. There are THREE fallback triggers, not
+	 * two, and the third is counter-intuitive: as well as a non-finite hint and a
+	 * non-positive window, a window with `SearchWindowCm * 2 >= GetTrackLengthCm()`
+	 * ALSO degrades to the global search -- a window that wide cannot exclude
+	 * anything, so there is nothing left to disambiguate. Passing a deliberately
+	 * generous window therefore silently reinstates the exact wrong-leg snapping this
+	 * function exists to prevent. Keep SearchWindowCm well under half the lap; size it
+	 * from tick rate times top speed plus margin, not from caution.
+	 *
+	 * Callers with no hint at all should seed from GetGridSlotDistanceCm (race start)
+	 * or GetResetPoseAtOrBeforeDistanceCm (after a reset) rather than widening the
+	 * window until the hint stops mattering.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
 	FTrackCenterlineQuery FindNearestCenterlinePointNear(const FVector& WorldLocationCm, double HintDistanceCm, double SearchWindowCm) const;
@@ -339,9 +416,12 @@ public:
 	 * Re-bake the centerline, grid and reset poses from the authored data.
 	 *
 	 * Called from OnConstruction, PostLoad, BeginPlay and (in editor) on any
-	 * property change, and lazily by the first query if none of those has run --
+	 * property change, and lazily ONCE by the first query if none of those has run --
 	 * so a NewObject'd instance in a test behaves like a placed one. Game thread
-	 * only; it is not safe to call while another thread is querying.
+	 * only, enforced by check(IsInGameThread()); it is not safe to call while another
+	 * thread is querying.
+	 *
+	 * This is also the ONLY way to retry a bake that failed -- see bBakeAttempted.
 	 *
 	 * @return true when the resulting centerline is usable.
 	 */
@@ -350,6 +430,48 @@ public:
 
 	/** True once RebuildTrackData() has produced a usable centerline. */
 	bool IsTrackDataBuilt() const { return bTrackDataBuilt && BakedCenterline.IsValid(); }
+
+	/**
+	 * True once a bake has been ATTEMPTED, whether or not it succeeded.
+	 *
+	 * Distinct from IsTrackDataBuilt() on purpose; the difference is the whole point.
+	 * See bBakeAttempted.
+	 */
+	bool HasBakeBeenAttempted() const { return bBakeAttempted; }
+
+	/**
+	 * How many times RebuildTrackData() has run on this instance.
+	 *
+	 * Exists for automation: RacingSim.Race.TrackFailedBakeIsNotRetried asserts that N
+	 * queries after a FAILED bake produce exactly one attempt. Counting attempts is the
+	 * only honest way to assert that -- timing the queries would measure the machine,
+	 * and this project's automation gate shares a build host with other agents.
+	 */
+	int32 GetBakeAttemptCount() const { return BakeAttemptCount; }
+
+	/**
+	 * Number of centerline samples the last bake actually produced, and the step it
+	 * actually used, in centimetres.
+	 *
+	 * These are the EFFECTIVE values, which are not always the authored ones: the bake
+	 * substitutes 100 cm for a non-finite or non-positive CenterlineSampleSpacingCm and
+	 * clamps the sample count at an internal ceiling. ComputeContentHash() covers these
+	 * as well as the authored field, because two runs baked at different effective
+	 * resolutions are not comparable even when the authored field matches.
+	 *
+	 * Zero when no bake has succeeded.
+	 */
+	int32 GetEffectiveSampleCount() const { return EffectiveSampleCount; }
+	double GetEffectiveStepCm() const { return EffectiveStepCm; }
+
+	/**
+	 * Returned by the arc-length accessors for an out-of-range index.
+	 *
+	 * Negative, because every real arc length is in [0, TrackLength) and 0.0 is the
+	 * start/finish line -- returning 0.0 for "no such slot" would be indistinguishable
+	 * from "this slot is exactly on the line".
+	 */
+	static constexpr double InvalidDistanceCm = -1.0;
 
 	//~ Begin AActor interface
 	virtual void OnConstruction(const FTransform& Transform) override;
@@ -377,6 +499,10 @@ private:
 	UPROPERTY(Transient)
 	TArray<FTransform> GridSlotTransforms;
 
+	/** Derived. Arc-length distance of each entry in GridSlotTransforms. Parallel array, same indices. */
+	UPROPERTY(Transient)
+	TArray<double> GridSlotDistancesCm;
+
 	/** Derived. World-space reset poses, ascending in arc length, [0] at distance 0. */
 	UPROPERTY(Transient)
 	TArray<FTransform> ResetSampleTransforms;
@@ -385,16 +511,55 @@ private:
 	UPROPERTY(Transient)
 	TArray<double> ResetSampleDistancesCm;
 
+	/** True when the last bake SUCCEEDED. */
 	UPROPERTY(Transient)
 	bool bTrackDataBuilt = false;
 
 	/**
-	 * Build on first use if nothing else has.
+	 * True once a bake has been ATTEMPTED, regardless of outcome.
+	 *
+	 * SEPARATE FROM bTrackDataBuilt BECAUSE A FAILED BAKE MUST NOT BE RETRIED PER
+	 * QUERY. A freshly placed, not-yet-authored actor has an empty spline, so its bake
+	 * fails -- and that is the normal state of the actor for as long as it takes
+	 * someone to draw a circuit. Gating the lazy build on "did it succeed" meant every
+	 * single call to GetCenterline() (and therefore GetTrackLengthCm,
+	 * GetSectorIndexAtDistanceCm, GetRaceProgressCm, FindNearestCenterlinePoint, ...)
+	 * re-ran the whole sample loop with its heap allocations and emitted a fresh
+	 * warning. At 60 Hz per car that is a log flood and a per-frame allocation storm on
+	 * exactly the CLAUDE.md rules this project calls out.
+	 *
+	 * Attempt once, cache the outcome. The only ways to retry are the explicit
+	 * lifecycle hooks (OnConstruction/PostLoad/BeginPlay/PostEditChangeProperty) and a
+	 * direct RebuildTrackData() call -- i.e. the moments the underlying spline data can
+	 * actually have changed.
+	 */
+	UPROPERTY(Transient)
+	bool bBakeAttempted = false;
+
+	/** One-shot guard so a repeatedly failing rebuild logs its reason once, not once per call. */
+	UPROPERTY(Transient)
+	bool bBakeFailureLogged = false;
+
+	/** Number of times RebuildTrackData() has run. Automation reads this; nothing else should. */
+	UPROPERTY(Transient)
+	int32 BakeAttemptCount = 0;
+
+	/** Sample count the last SUCCESSFUL bake produced. Hashed; see ComputeContentHash. */
+	UPROPERTY(Transient)
+	int32 EffectiveSampleCount = 0;
+
+	/** Step, cm, the last SUCCESSFUL bake used. Not necessarily CenterlineSampleSpacingCm. */
+	UPROPERTY(Transient)
+	double EffectiveStepCm = 0.0;
+
+	/**
+	 * Build on first use if nothing else has, and NEVER more than once for a given
+	 * spline state -- a failed bake is cached as a failure, not retried per query.
 	 *
 	 * const_cast rather than mutable members: the derived data is genuinely derived,
-	 * so rebuilding it does not change what this actor MEANS, and marking six
+	 * so rebuilding it does not change what this actor MEANS, and marking eleven
 	 * members mutable would weaken const on all of them individually. Game thread
-	 * only, like RebuildTrackData itself.
+	 * only, enforced by check(IsInGameThread()) rather than by comment.
 	 */
 	void EnsureTrackDataBuilt() const;
 

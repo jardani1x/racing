@@ -267,9 +267,26 @@ struct RACINGSIM_API FTrackCenterline
 	 *
 	 * The window must be large enough to cover the distance the car can travel
 	 * between queries with margin; the caller owns that choice because it depends
-	 * on tick rate and top speed. A non-positive window, or a non-finite hint,
-	 * falls back to the global search rather than returning nothing -- losing
-	 * precision is recoverable, returning "off track" is not.
+	 * on tick rate and top speed.
+	 *
+	 * THERE ARE THREE FALLBACK TRIGGERS, NOT TWO, and the third is the one that
+	 * catches people out. This function degrades to the global search when:
+	 *
+	 *   1. HintDistanceCm is non-finite;
+	 *   2. SearchWindowCm is non-finite or non-positive;
+	 *   3. SearchWindowCm * 2 >= GetLengthCm() -- i.e. the window spans at least the
+	 *      whole lap and therefore excludes nothing.
+	 *
+	 * Case 3 means A BIGGER WINDOW IS NOT A SAFER WINDOW. Widening the window out of
+	 * caution does not buy robustness; past half a lap it silently reinstates exactly
+	 * the wrong-leg snapping described above, because there is nothing left for the
+	 * hint to disambiguate. The safe range is 0 < SearchWindowCm < GetLengthCm() / 2,
+	 * and in practice it should be far smaller than that ceiling.
+	 *
+	 * All three cases fall back rather than returning nothing: losing precision is
+	 * recoverable, returning "off track" is not. The fallback is silent by design --
+	 * it is on the per-car-per-frame path, so it cannot log -- which is precisely why
+	 * it is documented this loudly instead.
 	 */
 	FTrackCenterlineQuery FindNearestNear(const FVector& WorldLocationCm, double HintDistanceCm, double SearchWindowCm) const;
 
