@@ -160,16 +160,6 @@ public class RacingSim : ModuleRules
 			@"\b(" + string.Join("|", Macros) + @")\s*\(",
 			RegexOptions.Compiled);
 
-		// Comment stripping, in this order: block comments first, then line comments.
-		// Without it, the documentation comments this project writes -- which name the
-		// banned macros on purpose, to explain the rule -- would fail the build.
-		// Crude by design: it does not understand string literals or raw strings. The
-		// failure mode is a false positive on a macro name inside a string literal
-		// followed by '(', which no plausible code contains. A false *negative* is not
-		// reachable this way, and that is the direction that matters.
-		Regex BlockComment = new Regex(@"/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
-		Regex LineComment = new Regex(@"//[^\r\n]*", RegexOptions.Compiled);
-
 		string[] Extensions = { "*.h", "*.hpp", "*.inl", "*.cpp", "*.c" };
 		List<string> Violations = new List<string>();
 
@@ -181,15 +171,14 @@ public class RacingSim : ModuleRules
 				ExternalDependencies.Add(SourceFile);
 
 				string Text = File.ReadAllText(SourceFile, Encoding.UTF8);
-				string Stripped = LineComment.Replace(BlockComment.Replace(Text, " "), " ");
+				string Stripped = BlankCommentsAndLiterals(Text);
 
 				Match Found = MacroPattern.Match(Stripped);
 				if (Found.Success)
 				{
-					// Report the line number from the stripped text's prefix, which is
-					// line-count-preserving for line comments but not for block
-					// comments. Close enough to locate the file; the file name is the
-					// actionable part.
+					// BlankCommentsAndLiterals preserves length and newlines, so an
+					// index into the stripped text is the same index in the original
+					// and the line number is exact rather than approximate.
 					int Line = 1;
 					for (int Index = 0; Index < Found.Index; ++Index)
 					{
@@ -200,7 +189,7 @@ public class RacingSim : ModuleRules
 					}
 
 					Violations.Add(string.Format(
-						"  {0} (around line {1}): {2}",
+						"  {0} (line {1}): {2}",
 						SourceFile, Line, Found.Groups[1].Value));
 				}
 			}
@@ -217,5 +206,199 @@ public class RacingSim : ModuleRules
 				"Move these to Source/RacingSimTests/:\n" +
 				string.Join("\n", Violations));
 		}
+	}
+
+	/**
+	 * Blanks the *contents* of comments, string literals and character literals,
+	 * replacing each consumed character with a space and leaving newlines in place.
+	 *
+	 * ---------------------------------------------------------------------------
+	 * Why this is a scanner and not two regexes (TEST-001 repair cycle 1, T-2)
+	 * ---------------------------------------------------------------------------
+	 *
+	 * The previous implementation was:
+	 *
+	 *     BlockComment = new Regex(@"/\*.*?\*\/", RegexOptions.Singleline);
+	 *     LineComment  = new Regex(@"//[^\r\n]*");
+	 *     Stripped = LineComment.Replace(BlockComment.Replace(Text, " "), " ");
+	 *
+	 * and carried a comment claiming "a false negative is not reachable this way, and
+	 * that is the direction that matters". That claim was wrong, and a false negative
+	 * is the direction that matters, so it is worth being precise about how it failed.
+	 *
+	 * Block comments were stripped FIRST and the pattern is Singleline, so `.` matches
+	 * newlines. Any `/*` appearing where C++ does not treat it as opening a comment --
+	 * inside a `//` line comment, or inside a string literal -- still opened a match
+	 * for the regex, which then ran to the next `*\/` ANYWHERE LATER IN THE FILE and
+	 * blanked everything in between. Real code in that span was silently discarded
+	 * before the macro search ever saw it. Concretely, this passed the old scan:
+	 *
+	 *     // TODO: the /* form is deprecated
+	 *     IMPLEMENT_SIMPLE_AUTOMATION_TEST(FShipped, "X", Flags)
+	 *     /* any later block comment closes the runaway match *\/
+	 *
+	 * That is a banned macro compiled into the runtime module with a green build --
+	 * exactly the regression N-2 exists to prevent, hidden by the check meant to catch
+	 * it. A one-line comment is enough to disable the gate, which also makes it a
+	 * plausible accident rather than only a deliberate bypass.
+	 *
+	 * A single left-to-right pass fixes it because it models what the C++ lexer
+	 * actually does: whichever of `//`, `/*`, `"` or `'` is encountered first in
+	 * ordinary code wins, and the others are inert until it closes. Handling string
+	 * literals in the same pass removes the old false-positive caveat too -- a macro
+	 * name inside a string literal is no longer a match.
+	 *
+	 * Length and line structure are preserved so that a match index in the returned
+	 * text is a valid index into the original, which is what makes the reported line
+	 * number exact instead of "around line N".
+	 *
+	 * Remaining limits, stated rather than implied: preprocessor conditionals are not
+	 * evaluated, so a macro inside `#if 0` is still reported (false positive, safe
+	 * direction), and trigraphs are not handled (removed in C++17).
+	 */
+	private static string BlankCommentsAndLiterals(string Text)
+	{
+		char[] Out = Text.ToCharArray();
+		int Length = Text.Length;
+
+		// Blank one character in place, keeping newlines so line numbers stay exact.
+		System.Action<int> Blank = Index =>
+		{
+			if (Out[Index] != '\n' && Out[Index] != '\r')
+			{
+				Out[Index] = ' ';
+			}
+		};
+
+		int i = 0;
+		while (i < Length)
+		{
+			char C = Text[i];
+
+			// Line comment: // to end of line, honouring backslash line-continuation.
+			if (C == '/' && i + 1 < Length && Text[i + 1] == '/')
+			{
+				while (i < Length && Text[i] != '\n')
+				{
+					if (Text[i] == '\\')
+					{
+						// A backslash immediately before the line break continues the
+						// comment onto the next line. Consume through that break.
+						int j = i + 1;
+						while (j < Length && Text[j] == '\r')
+						{
+							++j;
+						}
+						if (j < Length && Text[j] == '\n')
+						{
+							while (i <= j)
+							{
+								Blank(i);
+								++i;
+							}
+							continue;
+						}
+					}
+					Blank(i);
+					++i;
+				}
+				continue;
+			}
+
+			// Block comment: /* ... */. Does not nest in C++.
+			if (C == '/' && i + 1 < Length && Text[i + 1] == '*')
+			{
+				Blank(i); ++i;
+				Blank(i); ++i;
+				while (i < Length)
+				{
+					if (Text[i] == '*' && i + 1 < Length && Text[i + 1] == '/')
+					{
+						Blank(i); ++i;
+						Blank(i); ++i;
+						break;
+					}
+					Blank(i);
+					++i;
+				}
+				continue;
+			}
+
+			// Raw string literal: R"delim( ... )delim". Handled explicitly because
+			// escapes do not apply inside one and it may span lines legally.
+			if (C == 'R' && i + 1 < Length && Text[i + 1] == '"')
+			{
+				int DelimStart = i + 2;
+				int DelimEnd = DelimStart;
+				// The delimiter is at most 16 characters and cannot contain '(' or '"'.
+				while (DelimEnd < Length
+					&& Text[DelimEnd] != '('
+					&& Text[DelimEnd] != '"'
+					&& DelimEnd - DelimStart <= 16)
+				{
+					++DelimEnd;
+				}
+				if (DelimEnd < Length && Text[DelimEnd] == '(')
+				{
+					string Terminator = ")" + Text.Substring(DelimStart, DelimEnd - DelimStart) + "\"";
+					int End = Text.IndexOf(Terminator, DelimEnd, System.StringComparison.Ordinal);
+					int Stop = (End < 0) ? Length : End + Terminator.Length;
+					while (i < Stop)
+					{
+						Blank(i);
+						++i;
+					}
+					continue;
+				}
+				// Not actually a raw string; fall through and treat 'R' as code.
+			}
+
+			// String or character literal.
+			if (C == '"' || C == '\'')
+			{
+				// A single quote directly after an alphanumeric is a C++14 digit
+				// separator (1'000'000), not a character literal. Misreading it would
+				// blank real code to the end of the line.
+				if (C == '\'' && i > 0)
+				{
+					char Prev = Text[i - 1];
+					if (char.IsLetterOrDigit(Prev) || Prev == '_')
+					{
+						++i;
+						continue;
+					}
+				}
+
+				char Quote = C;
+				Blank(i); ++i;
+				while (i < Length)
+				{
+					if (Text[i] == '\\' && i + 1 < Length)
+					{
+						Blank(i); ++i;
+						Blank(i); ++i;
+						continue;
+					}
+					if (Text[i] == Quote)
+					{
+						Blank(i); ++i;
+						break;
+					}
+					// An unterminated literal must not swallow the rest of the file --
+					// that is the same runaway failure this method exists to remove.
+					if (Text[i] == '\n')
+					{
+						break;
+					}
+					Blank(i);
+					++i;
+				}
+				continue;
+			}
+
+			++i;
+		}
+
+		return new string(Out);
 	}
 }

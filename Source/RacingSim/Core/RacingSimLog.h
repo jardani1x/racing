@@ -18,7 +18,7 @@
  * Verbose or VeryVerbose, not Log, so that it can be compiled out.
  *
  * ---------------------------------------------------------------------------
- * Compile-time stripping: how it actually works (CORE-002, finding N-1)
+ * Compile-time stripping: how it actually works (CORE-001 finding N-1, fixed at CORE-002)
  * ---------------------------------------------------------------------------
  *
  * The previous version of this comment claimed the strip was controlled by the

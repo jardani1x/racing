@@ -146,7 +146,8 @@ bool FRacingSimLogSuppressionTest::RunTest(const FString& Parameters)
 	// 3. The compile-time verbosity policy in RacingSimLog.h is what it claims.
 	// ---------------------------------------------------------------------------
 	//
-	// CORE-002 finding N-1 was a comment that described the wrong macro parameter, and
+	// CORE-001 finding N-1 (assigned to and fixed at CORE-002, Docs/Tickets.md:217) was a
+	// comment that described the wrong macro parameter, and
 	// the categories silently compiled in everything as a result. Assert the policy
 	// rather than trusting the comment: Development keeps VeryVerbose; Shipping/Test
 	// strip to Log. Only the first branch is reachable from an automation test, since
@@ -158,10 +159,22 @@ bool FRacingSimLogSuppressionTest::RunTest(const FString& Parameters)
 	const ELogVerbosity::Type ExpectedCompileTimeVerbosity = ELogVerbosity::VeryVerbose;
 #endif
 
+	// LogRacingTests is declared in this module (RacingSimTestsLog.h), which is
+	// UncookedOnly and therefore never built into a Shipping/Test configuration. It is
+	// declared `All` unconditionally rather than through
+	// RACINGSIM_LOG_COMPILE_TIME_VERBOSITY, so it is exempt from the runtime policy
+	// asserted below -- but exempt is not the same as unchecked. Assert its own policy
+	// here, so that dropping it from the loop cannot mean "nothing is asserted about it".
+	TestEqual(
+		TEXT("Compile-time verbosity policy for 'LogRacingTests' (test module: always All/"
+			 "VeryVerbose, since RacingSimTests never builds Shipping or Test)"),
+		static_cast<int32>(LogRacingTests.GetCompileTimeVerbosity()),
+		static_cast<int32>(ELogVerbosity::VeryVerbose));
+
 	for (const FLogCategoryBase* Category : Categories)
 	{
-		// LogRacingTests is declared in this module and is allowed to differ from the
-		// runtime policy; assert it separately rather than silently exempting it.
+		// Asserted immediately above against the test module's own policy, so skip it
+		// here rather than holding it to the runtime module's policy.
 		if (Category == &LogRacingTests)
 		{
 			continue;
