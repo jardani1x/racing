@@ -484,6 +484,13 @@ captured output, not the shared `%LOCALAPPDATA%\UnrealBuildTool\Log.txt`, which 
 overwritten by concurrent builds from other worktrees on this machine and is not
 reliable evidence when other tickets are being worked in parallel).
 
+**Pass-2 repair re-verification, 2026-08-17.** After `f35bd83` (closing `code-reviewer`
+pass-2 findings M2-1, M2-2, M2-5, M2-7, M2-8), both targets rebuilt clean and the Smoke
+filter re-run: **`succeeded: 445, failed: 0, notRun: 0`**, `reportCreatedOn
+2026.08.17-06.50.13`, all 9 `RacingSim.Core.*` and all 10 `RacingSim.Race.*` suites
+`Success`, `0` warnings/`0` errors each, including `RacingSim.Core.RangeEnforcement`.
+This is the run current as of the ticket's final commit.
+
 **The first Smoke run failed, and that is the most useful evidence here.**
 `succeeded: 434, failed: 1` at `reportCreatedOn 2026.08.14-07.03.12`.
 `RacingSim.Core.SettingsIniOverrideClamp` reported the clamp working correctly —

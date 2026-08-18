@@ -262,9 +262,9 @@ namespace RacingSim::Validation
 	 *
 	 * Non-finite and out-of-range handling: NaN and +/-Inf compare false against
 	 * every bound, so they would slip through a naive clamp. A declared
-	 * ReplacementValue (see WithReplacement()) wins first if the range has one,
-	 * then the nearest bound (Min for non-finite/below-min, Max for above-max),
-	 * then 0.0 if neither bound is declared. A non-finite value carries no
+	 * ReplacementValue (see WithReplacement()) wins first if the range has one.
+	 * Otherwise: below-min or non-finite uses Min when the range has one, else
+	 * Max, else 0.0; above-max uses Max. A non-finite value carries no
 	 * information, so there is no "nearest legal value" to move it to; a
 	 * replacement or the range's own safe end is used. Reported as
 	 * ReplacedNonFinite for the non-finite case, ReplacedOutOfRange when a
