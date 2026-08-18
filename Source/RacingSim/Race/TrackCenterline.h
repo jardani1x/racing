@@ -116,6 +116,31 @@ struct RACINGSIM_API FTrackCenterlineQuery
 	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Race|Track")
 	double DistanceToCenterlineCm = 0.0;
+
+	/**
+	 * TRACK-002, closing TRACK-001 L7. False when the sideways axis could not be
+	 * derived, so LateralOffsetCm is meaningless (it is forced to 0.0) even though
+	 * bValid is true and every other field is usable.
+	 *
+	 * THE DEGENERATE CASE IS AN EXACTLY VERTICAL SEGMENT. The sideways axis is
+	 * Right = Up x Forward; for a segment parallel to world up that cross product is
+	 * the zero vector and normalising it yields nothing. Before this flag existed the
+	 * query reported LateralOffsetCm == 0 with bValid == true, which is
+	 * INDISTINGUISHABLE FROM A CAR DEAD ON THE CENTERLINE -- the single most
+	 * favourable answer a track-limits check can receive. A vertical centerline
+	 * segment is not something a circuit should contain, but "should not" is not
+	 * "cannot", and the failure was silent and safe-looking in exactly the wrong
+	 * direction.
+	 *
+	 * bValid is deliberately NOT cleared for this case. DistanceAlongCm, Location,
+	 * Forward and DistanceToCenterlineCm are all still correct on a vertical segment,
+	 * and progress/ranking (Docs/03-TrackRaceUI.md rule 7) must keep working; it is
+	 * only the SIGNED SIDEWAYS component that has no definition. Any caller reading
+	 * LateralOffsetCm as truth -- track limits, gate extents -- must check this flag.
+	 * GetTransformAtDistanceCm() documents the same degeneracy for the same reason.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Race|Track")
+	bool bLateralOffsetValid = false;
 };
 
 /**
@@ -186,8 +211,71 @@ struct RACINGSIM_API FTrackCenterline
 	/** Total arc length in kilometres, for display and for the 3-5 km target in Docs/03-TrackRaceUI.md. */
 	double GetLengthKilometres() const { return RacingSim::Units::CmToKilometres(TotalLengthCm); }
 
-	/** Spacing the samples were baked at, cm. Recorded because it bounds every query's accuracy. */
-	double GetSampleSpacingCm() const;
+	/**
+	 * MEAN segment length, cm: TotalLengthCm / NumSegments().
+	 *
+	 * RENAMED FROM GetSampleSpacingCm() BY TRACK-002 (closing TRACK-001 L2). The old
+	 * name and its comment both claimed this was "the spacing the samples were baked
+	 * at", which is only true when the samples happen to be uniform. Build() explicitly
+	 * permits non-uniform sample distances, and BuildFromPolyline() produces them for
+	 * any polyline with unequal edges, so the mean and the spacing are different numbers
+	 * for anything not baked by ATrackDefinitionActor::RebuildTrackData().
+	 *
+	 * This is a reporting/telemetry figure. DO NOT SIZE GEOMETRY WITH IT. A mean cannot
+	 * bound a worst case -- use GetMaxSegmentLengthCm().
+	 */
+	double GetAverageSegmentLengthCm() const;
+
+	/**
+	 * LONGEST segment, cm. O(1): computed once during Build() and cached.
+	 *
+	 * THIS IS THE ONE THAT BOUNDS ERROR, and it is why TRACK-002 needed a new accessor
+	 * rather than a renamed one. Every geometric property of the baked model degrades
+	 * with the WORST segment, not the average:
+	 *
+	 *   - a position returned between two samples sits inside the true curve by at most
+	 *     the segment's sagitta (see GetSagittaBoundCm);
+	 *   - the direction of travel is piecewise constant per segment, so the tangent can
+	 *     be wrong by up to the angle the longest segment subtends;
+	 *   - a checkpoint gate placed at an arc distance inherits both.
+	 *
+	 * A centerline with one 5000 cm segment and four hundred 100 cm ones has a mean near
+	 * 112 cm and a worst case of 5000 cm. Sizing a gate from the mean would understate
+	 * the error by a factor of forty on the one segment where it matters.
+	 *
+	 * Zero when the centerline is unbuilt.
+	 */
+	double GetMaxSegmentLengthCm() const { return MaxSegmentLengthCm; }
+
+	/**
+	 * Upper bound, cm, on how far INSIDE the true curve a baked polyline position can
+	 * sit, given the tightest corner radius the authored curve contains.
+	 *
+	 * TRACK-002 exists partly to stop this bias being inherited silently (TRACK-001's
+	 * recorded counter-case). The baked model is an inscribed polyline: every sample is
+	 * exactly on the curve, and every point between two samples is on the chord, which
+	 * lies inside the arc. The deviation is the sagitta of the chord,
+	 *
+	 *     sagitta = R * (1 - cos(theta / 2)),  theta = SegmentLength / R
+	 *
+	 * and this returns that quantity evaluated at GetMaxSegmentLengthCm(), which is the
+	 * worst segment on the track. The familiar `L^2 / (8R)` is its small-angle form and
+	 * UNDER-estimates for coarse sampling, so the exact expression is used here -- an
+	 * error bound that is itself approximate in the optimistic direction is not a bound.
+	 *
+	 * THE BIAS IS ONE-DIRECTIONAL, which is what makes it worth bounding rather than
+	 * treating as noise. It never pushes a position outward, so it does not average away
+	 * over a lap: a car compared against a track-limits threshold or a gate half-width is
+	 * systematically credited with being that much closer to the inside of every corner.
+	 *
+	 * @param MinCurveRadiusCm  tightest radius the true curve contains, cm. Must be
+	 *                          finite and positive; a non-positive or non-finite value
+	 *                          returns 0.0 rather than an infinity, because a bound that
+	 *                          is NaN would silently pass every comparison it is used in.
+	 * @return the bound in cm, clamped to at most GetMaxSegmentLengthCm() * 0.5 (the
+	 *         geometric ceiling: a chord's sagitta cannot exceed half its own length).
+	 */
+	double GetSagittaBoundCm(double MinCurveRadiusCm) const;
 
 	// -- Distance-domain helpers -------------------------------------------
 
@@ -302,6 +390,18 @@ private:
 	/** Authoritative total arc length, cm. For a closed loop, > SampleDistancesCm.Last(). */
 	UPROPERTY()
 	double TotalLengthCm = 0.0;
+
+	/**
+	 * Longest segment produced by the last successful Build(), cm.
+	 *
+	 * Cached rather than computed per call because GetMaxSegmentLengthCm() is read by
+	 * gate placement and by validation, and a linear scan of every segment on a 5 km
+	 * circuit is 5000 iterations that a caller has no reason to expect from an accessor.
+	 * Derived purely from the two arrays above and TotalLengthCm, so it can never
+	 * disagree with them: Build() is the only writer and Reset() the only clearer.
+	 */
+	UPROPERTY()
+	double MaxSegmentLengthCm = 0.0;
 
 	UPROPERTY()
 	bool bClosedLoop = false;
