@@ -693,7 +693,44 @@ New suites, all `Success`: `RacingSim.Race.CenterlineBuild`,
 `CenterlineDistanceDomain`, `CenterlineQueries`, `CenterlineAmbiguity`, `TrackBake`,
 `TrackSectors`, `TrackPoses`, `TrackVersion`, `TrackValidation`.
 
-Repair-cycle-1 evidence is recorded in `### TRACK-001 — review findings, pass 1` below.
+**Repair cycle 1 evidence, 2026-08-18.** Run from worktree
+`.claude/worktrees/agent-a2388f8dc9169fc61` (see the worktree note at the end of this
+section). Build results were read from each command's **own captured stdout**, not from
+`%LOCALAPPDATA%\UnrealBuildTool\Log.txt`, which is shared machine-wide and was being
+overwritten by other agents' concurrent builds during this cycle.
+
+- Editor (`RacingSimEditor Win64 Development`): `Result: Succeeded`,
+  `BUILD_BAT_EXITCODE=0`, 31 actions, 0 `warning`/`error` lines in the command's own
+  output. Incremental re-build after the test fix: `Result: Succeeded`, 4 actions.
+- Game (`RacingSim Win64 Development`): `Result: Succeeded`, `BUILD_BAT_EXITCODE=0`,
+  24 actions, 0 `warning`/`error` lines. Re-run after the final revision: `Result:
+  Succeeded`, 0 actions (runtime sources unchanged; only `RacingSimTests` moved, and
+  the Game target excludes that module per CORE-001).
+- Automation `Smoke`: `Saved/Automation/Report/index.json` —
+  **`succeeded: 452, failed: 0, notRun: 0`**, `reportCreatedOn 2026.08.18-01.55.23`,
+  process exit code 0. Counts read from `index.json`, never from the exit code.
+
+That is 441 at the end of implementation plus this cycle's 3 new suites, plus 8 from
+other tickets that landed on this branch's base. All 22 `RacingSim.*` suites report
+`Success`, including the three added here: `RacingSim.Race.TrackFailedBakeIsNotRetried`,
+`RacingSim.Race.TrackHintReseed`, `RacingSim.Race.TrackFixtureRestore`.
+
+**One real defect was found by running, not by inspection.** The first Smoke run of this
+cycle returned `succeeded: 452, failed: 1`. `RacingSim.Race.TrackValidation` failed
+because the new M6 cases used the fixture's `RestoreSpline()` as their mid-test restore
+— but that restores the *CDO's original* spline (`USplineComponent`'s two-point
+default), not the fixture's 12-point circle. Every later case then failed on "fewer than
+3 spline points" for the wrong reason. Fixed at `27ac97f` by extracting
+`AuthorSpecCircle()`; `RestoreSpline()` is left to its actual job. The distinction is
+now documented in the helper, because it is not visible at the call site.
+
+> **Worktree note.** This repair cycle was directed at worktree
+> `agent-a2415c035e0b2a559`, but the executing agent was hard-isolated by the harness to
+> `agent-a2388f8dc9169fc61` and its git operations against the other worktree were
+> refused. The six TRACK-001 source files were therefore brought across and verified
+> **byte-identical to `b4988b0`** by comparing `git hash-object` output against
+> `git ls-tree` for that commit before any edit was made. The repair commits are
+> `110ee3b`, `971265f`, `27ac97f` on branch `worktree-agent-a2388f8dc9169fc61`.
 
 **Two real defects were found by building and running, neither visible by inspection:**
 
@@ -771,8 +808,8 @@ forward into the inherited-findings sections below rather than fixed here.
 | M1 | `ComputeContentHash` hashed the **authored** `CenterlineSampleSpacingCm`, but the bake substitutes 100 cm for a non-finite/≤0 value and clamps the sample count at `MaxGeneratedSamples`. Two builds with different **effective** resolution could hash identically | Fixed — the hash now covers the effective step and effective sample count actually used by the bake (`GetEffectiveSampleCount()`/`GetEffectiveStepCm()`), in addition to the authored field. Covered by `RacingSim.Race.TrackVersion` |
 | M2 | `FindNearestNear` silently falls back to the global (wrong-leg-prone) search when `SearchWindowCm * 2 >= TotalLengthCm`, but the header listed only "non-positive window" and "non-finite hint" as fallback triggers — implying "bigger window = safer" when the opposite is true past half a lap | Fixed — documented explicitly at the declaration in `TrackCenterline.h` and at the `ATrackDefinitionActor::FindNearestCenterlinePointNear` call site, with the safe upper bound stated. Covered by `RacingSim.Race.CenterlineQueries` |
 | M3 | `GetCenterline()` is `const` but lazily mutates several `TArray`s through `const_cast`, gated only by a comment saying "game thread only" | Fixed — `check(IsInGameThread())` added to `EnsureTrackDataBuilt()` and `RebuildTrackData()` |
-| M4 | The `TrackDefinitionActorSpec.cpp` fixture mutates the CDO and restored only spline point **locations** — not tangents or point types — and carried `EditorContext` | Fixed — `EditorContext` dropped from all six suites in the file (`CommandletContext \| SmokeFilter` only, matching where the gate actually runs); the fixture now snapshots and restores arrive tangent, leave tangent and point type alongside location, and asserts the restore in `RacingSim.Race.TrackFixtureRestore` |
-| M6 | Four `Validate()` rejection branches had no test: `< 3` spline points, `NumSegments() < 3`, the bake-failure branch, and negative `GridSlotLateralOffsetCm` | Fixed — all four added to `RacingSim.Race.TrackValidation` |
+| M4 | The `TrackDefinitionActorSpec.cpp` fixture mutates the CDO and restored only spline point **locations** — not tangents or point types — and carried `EditorContext` | **Half fixed, half disputed with evidence.** The data-loss half is fixed: the fixture now snapshots and restores arrive tangent, leave tangent and point type alongside location, and `RacingSim.Race.TrackFixtureRestore` verifies it from an independent witness. The `EditorContext` half is **declined**, because complying would silently delete this file's coverage. `Engine/Source/Runtime/Core/Private/Misc/AutomationTest.cpp:800-870` (`GetValidTestNames`) computes `bRunningEditor = GIsEditor && !IsRunningCommandlet()` and admits a suite only when `!CurTestApplicationFlags \|\| (CurTestApplicationFlags & ApplicationSupportFlags)`. This project's only recorded gate (`UnrealEditor-Cmd.exe ... -ExecCmds="Automation RunFilter Smoke"`, `Docs/Environment.md`) passes no `-run=`, so `IsRunningCommandlet()` is false and `ApplicationSupportFlags` is `EditorContext` **alone** — a `CommandletContext`-only suite would AND to zero and never be collected. It would not fail, it would cease to exist, and the gate would keep reporting green. `Docs/Environment.md` already records that exact failure mode as a CORE-001 blocker: "A test the documented gate cannot see is not coverage." Confirmed empirically: with `EditorContext` retained, all three new suites appear in the run. The residual risk — mutating a CDO at all — is batched forward to `TEST-001`, which owns the harness fix; the correct end state is "do not mutate the CDO", not "hide the suite from the only gate that runs it". Rationale is recorded in the spec file header so the next reviewer does not re-raise it blind |
+| M6 | Four `Validate()` rejection branches had no test: `< 3` spline points, `NumSegments() < 3`, the bake-failure branch, and negative `GridSlotLateralOffsetCm` | Fixed for three; the fourth is proven **unreachable** rather than faked. `< 3` spline points, negative *and* non-finite `GridSlotLateralOffsetCm`, and the bake-failure branch (with an assertion that the reason names the bake, not a downstream symptom) are all now in `RacingSim.Race.TrackValidation`. `NumSegments() < 3` cannot be reached: `Validate()` rejects an open loop several branches earlier, `RebuildTrackData` floors a closed-loop bake at `MinSamples = 3`, and `FTrackCenterline::NumSegments() == NumSamples()` for a closed loop — so the guard is defence in depth against a future bake path. The test asserts the boundary instead: at an absurdly coarse spacing (ten laps) the bake still produces exactly 3 samples/3 segments and the guard does not fire. Writing a rejection test would have required faking the condition through a back door, which proves nothing about the shipped code |
 | L1 | `"Track.Prototype.NorthLoop"` as the example asset id is the literal English rendering of *Nordschleife* | Fixed — replaced with `"Track.Prototype.Meridian"` in `TrackDefinitionActor.h` and in both `Core/RacingSimBuildId.h` sites it was inherited from (CORE-002) |
 | M5 | `PostLoad()` bakes from the spline before component `PostLoad` ordering is guaranteed relative to `USplineComponent::PostLoad`; the spawn/load path is untested | **Batched forward to `TRACK-002`** — closing it needs the placed level TRACK-002 now owns |
 | M7 | Bake and `Validate()` disagree (the bake substitutes fallbacks for values `Validate()` rejects outright), and there is no cheap cached-validity flag a race director can check before starting a session | **Batched forward to `RACE-003`** |
@@ -781,6 +818,13 @@ forward into the inherited-findings sections below rather than fixed here.
 | L4 | Integer-cast edge case on absurd `CenterlineSampleSpacingCm` values: degrades safely, but not by the mechanism the comment documents | **Batched forward to `TRACK-002`** |
 | L5 | Reset poses use a fixed `PoseHeightOffsetCm` above the spline with no ground trace, so a reset on a crested or banked section can place a car in the air or in the road | **Batched forward to `VEH-005`** |
 | L7 | A degenerate vertical tangent silently yields a zero lateral offset in `ProjectOntoSegments` instead of an invalid-query signal; the behaviour is documented for the sibling function but not this one | **Batched forward to `TRACK-002`** |
+
+### TEST-001 — findings inherited from TRACK-001
+
+| ID | Finding | What TEST-001 must do |
+| --- | --- | --- |
+| M4 residual (TRACK-001 pass 1) | `TrackDefinitionActorSpec.cpp` mutates the `ATrackDefinitionActor` **class default object**, process-wide, because neither obvious way to instantiate an actor works in this harness: `NewObject<AActor>(GetTransientPackage())` dies in `CreateDefaultSubobject` on `Assertion failed: RegisteredElementType [TypedElementRegistry.h:536]`, and `UWorld::CreateWorld(EWorldType::Game)` dies with a bare access violation inside `CreateWorld`. The restore is now exhaustive and verified by `RacingSim.Race.TrackFixtureRestore`, but the right answer is not to mutate the CDO at all | Provide a working actor-instantiation path for automation (a functional-test map, or the correct world bootstrap for `-nullrhi` + `RunFilter Smoke`) and record it in `Docs/Environment.md`. Every future ticket with an Actor — VEH-002, TRACK-002, RACE-003 — hits this same wall |
+| M4 disputed half (TRACK-001 pass 1) | `code-reviewer` asked for `EditorContext` to be dropped from the CDO-mutating suites. Declined with engine-source evidence: the project's only gate runs with `GIsEditor && !IsRunningCommandlet()`, so a `CommandletContext`-only suite is never collected and would vanish silently rather than fail | Once a non-CDO fixture exists the flags can be revisited **together with** the harness fix. Until then, do not drop `EditorContext` from any suite in this project without first proving, with a `RunFilter` log line, that the suite is still collected |
 
 ### TRACK-002 — findings inherited from TRACK-001
 
