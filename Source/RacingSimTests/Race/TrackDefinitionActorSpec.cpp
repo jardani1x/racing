@@ -1163,11 +1163,12 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 		Track->RebuildTrackData();
 	}
 
-	// -- The NumSegments() < 3 branch is UNREACHABLE, and that is the finding --
+	// -- The NumSegments() < 3 branch is unreachable ONLY for a bake consistent with
+	// -- the spline state Validate() is currently reading; it is NOT unreachable in
+	// -- general (code-reviewer pass 2, M6-A) --
 	//
-	// M6 asked for a rejection test for `BakedCenterline.NumSegments() < 3`. Writing
-	// one honestly is impossible, and saying so is worth more than a test that fakes
-	// the condition through a back door:
+	// M6 asked for a rejection test for `BakedCenterline.NumSegments() < 3`. For a
+	// closed loop baked from the spline Validate() is reading, the guard cannot fire:
 	//
 	//   - Validate() rejects a non-closed loop several branches earlier, so only a
 	//     closed loop ever reaches this check;
@@ -1175,8 +1176,16 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 	//     = 3 for a closed loop;
 	//   - FTrackCenterline::NumSegments() == NumSamples() for a closed loop.
 	//
-	// So NumSegments() >= 3 always holds by the time the guard runs. The guard is
-	// defence in depth against a future bake path, not a reachable rejection.
+	// But bBakeAttempted is a has-been-baked flag, not a dirty flag (see the known
+	// gap recorded in Docs/Tickets.md), so the bake and the spline Validate() reads
+	// can disagree: bake an open, short spline (NumSegments() == 1), then call
+	// SetClosedLoop(true) without rebuilding. Validate() now passes the closed-loop
+	// and >=3-point branches and reaches this guard with NumSegments() == 1 -- live
+	// code on a stale-bake path, correctly firing. Writing a rejection test for THAT
+	// path is possible with only public API and is left to whoever fixes the
+	// stale-bake gap (TRACK-002/RACE-002), since it is the same fix. What this test
+	// asserts is narrower and still real: the guard does not false-positive at the
+	// coarsest bake a *consistent* spline/bake pair can produce.
 	//
 	// What CAN be tested is the boundary: force the coarsest bake the code permits and
 	// assert the guard sits exactly one below it and does not fire.
