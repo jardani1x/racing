@@ -163,32 +163,39 @@ bool FRacingSimBuildIdTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("A stamped explicit ID is authoritative"), BuildId.bIsAuthoritative);
 	}
 
-	// -- Explicit ID mutated by sanitisation ---------------------------------
-	// Semver build metadata ("+4417") and branch-qualified stamps ("feature/x")
-	// both contain characters the allow-list rejects. Sanitisation must not
-	// silently corrupt an authoritative ID -- it must warn with both values so
-	// CI is fixed, per H-2.
+	// -- MEDIUM-2 (CORE-002 -> CORE-003): '+' is allowed -------------------
+	// Semver build metadata ("1.4.0+4417") is the conventional shape of a CI
+	// stamp, and the Derived composer embeds a literal '+' itself. Rejecting it
+	// on the Explicit path made the two schemes contradict each other and fired
+	// the sanitisation warning on correct input. It now round-trips verbatim, so
+	// there is NO warning to expect here -- registering one would fail the test,
+	// which is exactly the assertion wanted.
 	{
-		// Pattern includes the raw stamped value so it is distinct from the
-		// "feature/x" case below -- AddExpectedMessage keys a TSet by pattern
-		// string alone, so two identical patterns would make the second
-		// registration silently replace the first (each proving nothing).
-		// Including the value also proves the *right* input was reported, not
-		// just that some warning fired.
-		AddExpectedMessagePlain(
-			TEXT("ExplicitBuildId was sanitised: stamped \"1.4.0+4417\""),
-			ELogVerbosity::Warning,
-			EAutomationExpectedMessageFlags::Contains,
-			1);
-
 		Override.Settings->BuildIdScheme = ERacingBuildIdScheme::Explicit;
 		Override.Settings->ExplicitBuildId = TEXT("1.4.0+4417");
 
 		const FRacingSimBuildId BuildId = FRacingSimBuildId::Current();
-		TestEqual(TEXT("Sanitised explicit ID drops the disallowed '+'"), BuildId.Value, FString(TEXT("1.4.04417")));
-		TestTrue(TEXT("A sanitised-but-nonempty explicit ID is still authoritative"), BuildId.bIsAuthoritative);
+		TestEqual(
+			TEXT("A semver-style CI stamp round-trips verbatim; '+' is allowed (MEDIUM-2)"),
+			BuildId.Value,
+			FString(TEXT("1.4.0+4417")));
+		TestTrue(
+			TEXT("An unmutated semver-style stamp is authoritative"),
+			BuildId.bIsAuthoritative);
 	}
+
+	// -- MEDIUM-1 (CORE-002 -> CORE-003): a mutated stamp is not authoritative --
+	// '/' is still rejected, so this stamp IS mutated. Two things must happen:
+	// the warning still fires with both values, and the result is no longer
+	// marked authoritative. The second is the fix -- previously this returned
+	// bIsAuthoritative == true, letting IsPublishable() accept an ID that cannot
+	// be traced to the CI run that produced it ("feature/x" and "feature-x" both
+	// collapse to "featurex").
 	{
+		// The pattern includes the raw stamped value. AddExpectedMessage keys a
+		// TSet by pattern string alone, so a bare "was sanitised" pattern used
+		// twice would let the second registration silently replace the first;
+		// including the value also proves the *right* input was reported.
 		AddExpectedMessagePlain(
 			TEXT("ExplicitBuildId was sanitised: stamped \"feature/x\""),
 			ELogVerbosity::Warning,
@@ -200,6 +207,47 @@ bool FRacingSimBuildIdTest::RunTest(const FString& Parameters)
 
 		const FRacingSimBuildId BuildId = FRacingSimBuildId::Current();
 		TestEqual(TEXT("Sanitised explicit ID drops the disallowed '/'"), BuildId.Value, FString(TEXT("featurex")));
+		TestEqual(TEXT("A mutated stamp still reports the Explicit scheme it came from"), BuildId.Scheme, ERacingBuildIdScheme::Explicit);
+		TestFalse(
+			TEXT("A sanitisation-mutated explicit ID is NOT authoritative (MEDIUM-1)"),
+			BuildId.bIsAuthoritative);
+
+		// The property that actually matters: the flag is what IsPublishable
+		// reads. Assert the consequence, not just the flag, so a future change
+		// that decouples the two is caught here.
+		FRacingSimVersionStamp Stamp = RacingSimVersionSpecPrivate::MakePublishableStamp();
+		Stamp.GameBuildId = BuildId;
+		FString Reason;
+		TestFalse(TEXT("An otherwise-complete stamp with a mutated build ID is not publishable"), Stamp.IsPublishable(&Reason));
+		TestFalse(TEXT("...and it says why"), Reason.IsEmpty());
+	}
+
+	// -- Character invariant, both schemes -----------------------------------
+	// The allow-list exists to make one promise: a build ID is safe in a
+	// filename, a CSV cell and a URL path segment. Assert that promise against
+	// what each scheme actually produces, rather than trusting SanitiseComponent
+	// to be applied everywhere -- the Derived composer inserts separators AFTER
+	// sanitising its components, so it is not covered by sanitisation at all.
+	{
+		auto TestIdCharacters = [this](const FString& Value, const TCHAR* What)
+		{
+			bool bAllAllowed = true;
+			for (const TCHAR Ch : Value)
+			{
+				const bool bAllowed = FChar::IsAlnum(Ch)
+					|| Ch == TEXT('.') || Ch == TEXT('_') || Ch == TEXT('-') || Ch == TEXT('+');
+				bAllAllowed = bAllAllowed && bAllowed;
+			}
+			TestTrue(*FString::Printf(TEXT("%s matches [A-Za-z0-9._+-] (got %s)"), What, *Value), bAllAllowed);
+		};
+
+		Override.Settings->BuildIdScheme = ERacingBuildIdScheme::Derived;
+		Override.Settings->BuildChannel = TEXT("release candidate/2");
+		TestIdCharacters(FRacingSimBuildId::Current().Value, TEXT("A derived build ID"));
+
+		Override.Settings->BuildIdScheme = ERacingBuildIdScheme::Explicit;
+		Override.Settings->ExplicitBuildId = TEXT("1.4.0+4417");
+		TestIdCharacters(FRacingSimBuildId::Current().Value, TEXT("An explicit build ID"));
 	}
 
 	// -- Explicit requested but not stamped ---------------------------------

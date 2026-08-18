@@ -100,8 +100,15 @@ public:
 	 * validation signature has changed across UE versions and its context type lives
 	 * in an editor-only module, so overriding it would either pull an editor
 	 * dependency into a runtime module or need a WITH_EDITOR fork that automation
-	 * running in a commandlet could not exercise. CORE-003 owns the editor-side
-	 * validation pass and can call this from there.
+	 * running in a commandlet could not exercise. CORE-003 built a reusable
+	 * range-enforcement framework (RacingSim::Validation::EnforceRanges) but
+	 * deliberately left this asset untouched, since RACE-001 owned it and was
+	 * in flight concurrently (see Docs/Tickets.md, "CORE-003 -- decision:
+	 * URaceRulesetDataAsset::Validate() stays separate"). RACE-002 is the
+	 * recommended owner of adopting that framework here: declare a range table
+	 * as URacingSimSettings::GetValidatedPropertyRanges() does, call
+	 * EnforceRanges from PostLoad(), and have Validate() call it first and fail
+	 * if any range check fails, before the content-specific checks below.
 	 *
 	 * @param OutReason set to a human-readable reason on failure; untouched on success.
 	 * @return true when this asset may be used for a result that will be published.
