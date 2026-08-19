@@ -110,3 +110,8 @@ npm-debug.log*
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Per-agent git worktrees created by the Claude Code harness. Each is its own
+# checkout with its own .git link back to this repo -- local scratch space for
+# in-progress branches, never a thing this repo commits into itself.
+.claude/worktrees/
