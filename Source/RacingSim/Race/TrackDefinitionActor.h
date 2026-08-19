@@ -107,6 +107,51 @@ public:
 	 */
 	static constexpr int32 TrackSchemaVersion = 2;
 
+	/**
+	 * Fewest BAKED checkpoint gates a track may have and still be publishable.
+	 * Enforced by Validate(); see the "Checkpoint gates" block there.
+	 *
+	 * WHY A FLOOR EXISTS AT ALL, and why it is not 1 (code-reviewer, TRACK-002 pass 1,
+	 * finding H1). Validate()'s only gate-count check used to be
+	 * FRacingCheckpointGateSet::IsValid(), i.e. "at least one gate". With exactly one
+	 * gate there is no ORDER to enforce: every crossing is a crossing of the only gate,
+	 * RACE-002's expected-checkpoint sequence degenerates to a single element, and no
+	 * shortcut whatsoever is detectable. Such a track validated green, and the HUD would
+	 * have looked perfectly healthy while counting laps for a car that drove across the
+	 * infield.
+	 *
+	 * THAT SET WAS REACHABLE WITHOUT AUTHORING IT. MakeGeneratedGateSpecs() clamps its
+	 * own count down to what the baked centerline can separate (two gates inside one
+	 * polyline segment share a plane normal and cannot be ordered). At the coarsest bake
+	 * Validate() permits -- CenterlineSampleSpacingCm >= LengthCm/3, which floors the bake
+	 * at three samples and therefore ~L/3 segments -- that clamp yields
+	 * floor(L / (2 * L/3)) == 1. A large MinCornerRadiusCm then shrinks the sagitta below
+	 * the gate half-width so the gate bake succeeds, and the whole track validated with a
+	 * single gate. So the cause is a COARSE BAKE silently degrading the gate set, not an
+	 * author typing 1.
+	 *
+	 * WHY 4. Two thresholds are in play and they are different numbers:
+	 *
+	 *   - >= 2 is where an ORDER exists at all (one gate cannot be out of order);
+	 *   - >= 4 is where a shortcut across the middle of a circuit becomes detectable,
+	 *     which is the whole reason gates exist. With gates at 0 and L/2 only, a car can
+	 *     drive to the L/2 gate, turn round across the infield, cross the line forwards
+	 *     and be credited a lap half the length of the circuit.
+	 *
+	 * No finite count forbids every shortcut -- N gates bound the longest undetectable cut
+	 * to roughly the chord across one inter-gate arc -- so the floor is a policy choice,
+	 * and 4 is chosen because it is the number this class ALREADY documented (see
+	 * NumGeneratedCheckpointGates) and ships as the generator default. Raising the floor
+	 * to match the documentation removes a contradiction; inventing a third number would
+	 * have added one.
+	 *
+	 * This is deliberately NOT enforced inside FRacingCheckpointGateSet::Build(): a
+	 * two-gate set is well-formed GEOMETRY, and Build() owns geometry. "Enough gates to
+	 * run a race on" is a RACE rule, and race rules live in Validate() -- the same split
+	 * the Reverse-only start/finish check is made on.
+	 */
+	static constexpr int32 MinCheckpointGateCount = 4;
+
 	// =======================================================================
 	// Authored data
 	// =======================================================================
@@ -179,10 +224,11 @@ public:
 	 * precedence; this is the floor, not the ceiling.
 	 *
 	 * Four (start/finish plus three) is the smallest count that makes a shortcut across
-	 * the middle of a circuit detectable, which is the point of having gates at all.
+	 * the middle of a circuit detectable, which is the point of having gates at all --
+	 * see MinCheckpointGateCount, which Validate() now enforces on the BAKED set.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
-		meta = (ClampMin = "1", UIMin = "1", UIMax = "32"))
+		meta = (ClampMin = "4", UIMin = "4", UIMax = "32"))
 	int32 NumGeneratedCheckpointGates = 4;
 
 	/** Half-width, cm, given to every generated gate. Should comfortably exceed the racing surface's half-width. */
@@ -633,6 +679,19 @@ public:
 	double GetEffectiveStepCm() const { return EffectiveStepCm; }
 
 	/**
+	 * Why the gate GENERATOR produced fewer gates than NumGeneratedCheckpointGates asked
+	 * for, or an empty string when it did not reduce the count.
+	 *
+	 * Non-empty means the baked gate set is NOT the authored intent: the centerline was
+	 * baked too coarsely to separate the requested gates, so the generator dropped some.
+	 * Validate() quotes this in its failure reason when the surviving count falls below
+	 * MinCheckpointGateCount; it is exposed here so a level-validation pass or an
+	 * automation test can see the degradation directly rather than by string-matching a
+	 * validation message.
+	 */
+	const FString& GetGeneratedGateClampNote() const { return GeneratedGateClampNote; }
+
+	/**
 	 * Returned by the arc-length accessors for an out-of-range index.
 	 *
 	 * Negative, because every real arc length is in [0, TrackLength) and 0.0 is the
@@ -677,6 +736,20 @@ private:
 	 */
 	UPROPERTY(Transient)
 	FString CheckpointGateBakeError;
+
+	/**
+	 * Derived. Why the GENERATOR produced fewer gates than NumGeneratedCheckpointGates
+	 * asked for, empty when it produced exactly what was requested (and always empty on
+	 * the authored path, which the generator never runs on).
+	 *
+	 * Separate from CheckpointGateBakeError because the two are opposite outcomes: the
+	 * bake error means no gates exist, this means gates exist but fewer than were asked
+	 * for. Before H1 the second case had no record at all -- the clamp just quietly
+	 * returned a shorter array -- so a track that had lost three of its four gates to a
+	 * coarse bake was indistinguishable from one that was authored that way.
+	 */
+	UPROPERTY(Transient)
+	FString GeneratedGateClampNote;
 
 	/** Derived. World-space grid poses, index 0 = pole. */
 	UPROPERTY(Transient)
@@ -723,6 +796,21 @@ private:
 	UPROPERTY(Transient)
 	bool bBakeFailureLogged = false;
 
+	/**
+	 * One-shot guard for the gate generator's clamp message, re-armed by a bake that
+	 * places every requested gate.
+	 *
+	 * Separate from bBakeFailureLogged because the clamp fires on bakes that SUCCEED. A
+	 * freshly placed actor's default two-point 200 cm spline bakes fine and supports
+	 * exactly one gate, so without this the actor warns on every OnConstruction and every
+	 * property edit for as long as it takes somebody to draw a circuit -- the same flood
+	 * bBakeFailureLogged exists to prevent, in a case its own condition never sees.
+	 *
+	 * Suppresses only the LOG. GeneratedGateClampNote is recorded on every bake.
+	 */
+	UPROPERTY(Transient)
+	bool bGateClampLogged = false;
+
 	/** Number of times RebuildTrackData() has run. Automation reads this; nothing else should. */
 	UPROPERTY(Transient)
 	int32 BakeAttemptCount = 0;
@@ -768,8 +856,16 @@ private:
 	 */
 	void RebuildCheckpointGates();
 
-	/** Fill OutSpecs with evenly spaced generated gates, gate 0 at distance 0. Used when CheckpointGateSpecs is empty. */
-	void MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateSpec>& OutSpecs) const;
+	/**
+	 * Fill OutSpecs with evenly spaced generated gates, gate 0 at distance 0. Used when
+	 * CheckpointGateSpecs is empty.
+	 *
+	 * NON-CONST because it records GeneratedGateClampNote. It used to be const and to
+	 * clamp its own count SILENTLY, which is how a coarse bake could degrade a four-gate
+	 * request to one gate with nothing anywhere saying so (finding H1). The note is the
+	 * clamp's testimony; Validate() quotes it, and the clamp also logs once per bake.
+	 */
+	void MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateSpec>& OutSpecs);
 
 	/** Generate ResetSampleTransforms/Distances from the baked centerline. Requires a valid centerline. */
 	void RebuildResetSamples();
