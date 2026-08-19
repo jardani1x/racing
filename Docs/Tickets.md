@@ -1484,8 +1484,14 @@ given crossing satisfies it — it must not count laps, own a timer, or referenc
 > independently verified. Criteria #2–#10 are left `[x]` because `code-reviewer`
 > independently verified those against evidence in pass 1 — that is the gate exercising
 > its own authority, which is exactly the distinction this correction is about.
+>
+> **Re-review, repair cycle 1.** `code-reviewer` independently verified H1's fix — the
+> `MinCheckpointGateCount` floor is enforced in `Validate()` on both the generated and
+> hand-authored entrances, closing the one-gate-validates-green defect — and marked H1
+> CLOSED. Criterion #1 is ticked below on the re-review's authority, not the
+> implementer's, per the distinction this correction exists to draw.
 
-- [ ] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
+- [x] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
       `UTrackCheckpointSet` — director's naming call, implementer may propose) built on
       `TRACK-001`'s typed centerline/query API (`ATrackDefinitionActor`,
       `FTrackCenterline`), never raw `USplineComponent` calls. Each gate has a position
@@ -1917,8 +1923,9 @@ existing track's hash moves. The graybox level authors six gates and is unaffect
 #### A defect this cycle introduced and then caught by running
 
 The first draft of the H1 fix logged the clamp **unconditionally**, and the Smoke run
-reported **nine** suites as `succeededWithWarnings` where the baseline had four. The
-message was the new clamp warning at a **199.999985 cm lap** — i.e.
+reported **nine** suites as `succeededWithWarnings` where the baseline had three (four
+warnings across those three suites). The message was the new clamp warning at a
+**199.999985 cm lap** — i.e.
 `USplineComponent`'s default **two-point, 200 cm** spline, which is what a freshly placed
 `ATrackDefinitionActor` has and what the CDO fixture restores on teardown.
 
@@ -2002,8 +2009,10 @@ the reviewer's specific concern about this file living in the Game target.
 **On the count moving 462 → 457, which is not a regression.** `succeeded` is *not* the pass
 count: the report splits passes into `succeeded` and `succeededWithWarnings`, and a test
 that passes every assertion but emits one `UE_LOG(Warning)` moves between the two buckets.
-The total is unchanged at **466**, `failed` and `notRun` are both **0**, and every test's
-`state` is `Success`. `Scripts/Test/Run-Smoke.ps1` and `Scripts/Test/Run-AutomationFilter.ps1`
+The baseline total was **465** (462 + 3); this cycle's total is **466** (457 + 9) — up by
+exactly one, which is `RacingSim.Race.TrackCheckpointGateOrderFloor`, the one new test this
+cycle added. `failed` and `notRun` are both **0** in both runs, and every test's `state` is
+`Success`. `Scripts/Test/Run-Smoke.ps1` and `Scripts/Test/Run-AutomationFilter.ps1`
 printed only `succeeded`, which is what made a bucket shift look like lost coverage; both
 now also print `succeededWithWarnings`, `passedTotal` and `testsInReport`. No existing field
 was removed or changed meaning, so evidence recorded by CORE-002/TRACK-001/TEST-001 against

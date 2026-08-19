@@ -45,10 +45,11 @@ Write-Output "reportCreatedOn=$($Report.reportCreatedOn)"
 # `succeeded` IS NOT THE PASS COUNT. The report splits passing tests into `succeeded` and
 # `succeededWithWarnings`; a test that passes every assertion but emits one UE_LOG(Warning)
 # moves from the first bucket to the second. Printing only `succeeded` therefore reports a
-# DROP when nothing regressed -- TRACK-002 repair cycle 1 hit exactly that: 462 -> 457 with
-# the total unchanged at 466, because a new (correct) warning moved five suites across.
-# Both buckets and the total are printed so a later ticket cannot misread a bucket shift as
-# lost coverage. The pass/fail decision is `failed` and `notRun`, not either bucket.
+# DROP when nothing regressed -- TRACK-002 repair cycle 1 hit exactly that: 462 -> 457, total
+# 465 -> 466 (up by one, the cycle's one new test), because a new (correct) warning moved
+# six suites into the warnings bucket. Both buckets and the total are printed so a later
+# ticket cannot misread a bucket shift as lost coverage. The pass/fail decision is `failed`
+# and `notRun`, not either bucket.
 $Passed = $Report.succeeded + $Report.succeededWithWarnings
 Write-Output "succeeded=$($Report.succeeded) succeededWithWarnings=$($Report.succeededWithWarnings) passedTotal=$Passed failed=$($Report.failed) notRun=$($Report.notRun)"
 Write-Output "testsInReport=$(@($Report.tests).Count)"
