@@ -27,6 +27,24 @@
 #     Content/Cars/Prototype/*	junyi	VEH-002
 #     Content/Tracks/Prototype/*	junyi	TRACK-001
 #
-# There are currently no binary assets in the repository, so there are no claims.
-# The hook is inert until the first .uasset or .umap is staged -- which is exactly when
-# it starts mattering.
+# ---------------------------------------------------------------------------
+# Claims
+# ---------------------------------------------------------------------------
+#
+# TRACK-002, 2026-08-19. The first binary asset in the repository:
+# Content/Tracks/Prototype/Maps/L_Meridian_Graybox.umap, the graybox test level.
+# The graybox level was TRACK-001's acceptance criterion and was deferred into
+# TRACK-002's scope by director ruling (Docs/Tickets.md), so that the ticket which
+# places checkpoint gates also owns the map's authoring, serialisation and license
+# posture as one unit.
+#
+# Before claiming, the whole worktree tree was searched for .uasset/.umap:
+#     find .claude/worktrees -path "*/Content/*" -type f
+# returned only Content/Tests/.gitkeep and Content/Tests/README.md across all 17
+# worktrees. No other agent held Unreal content at the time of this claim.
+#
+# The glob is Content/Tracks/Prototype/* rather than the single map file: the same
+# directory will take the sector/road/graybox-art assets a later track ticket adds,
+# and one claim per file is how a claim table stops being read.
+Content/Tracks/Prototype/*	junyi	TRACK-002
+Content/Tracks/Prototype/*/*	junyi	TRACK-002

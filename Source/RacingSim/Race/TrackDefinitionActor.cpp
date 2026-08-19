@@ -130,7 +130,27 @@ void ATrackDefinitionActor::OnConstruction(const FTransform& Transform)
 void ATrackDefinitionActor::PostLoad()
 {
 	Super::PostLoad();
-	RebuildTrackData();
+
+	// TRACK-002, closing TRACK-001 M5: RECORD THE OUTCOME OF *THIS* BAKE SPECIFICALLY.
+	//
+	// M5's doubt is narrow and real: this function reads USplineComponent geometry, and
+	// the engine does not guarantee the component's PostLoad has run before the owning
+	// actor's. If the spline were not ready here, the bake would fail -- and nothing
+	// downstream would tell you, because a placed actor is re-baked again moments later
+	// when the editor initialises the loaded world and re-runs OnConstruction. The track
+	// would be perfectly healthy by the time anyone could look at it, and the load-order
+	// bug would be invisible until the day the second bake stopped happening.
+	//
+	// BakeAttemptCount alone cannot answer the question for that reason: by the time a
+	// test can observe it, it is legitimately 2. So the load-time result is latched here,
+	// at the only moment it is knowable.
+	//
+	// This is not test scaffolding in runtime code. "Did this placed track bake when the
+	// level loaded" is a question a level-validation pass, a race director refusing to
+	// start a session, or anyone debugging a broken map has a direct interest in; the
+	// shipping game is willing to carry two ints.
+	PostLoadBakeAttemptIndex = BakeAttemptCount + 1;
+	bPostLoadBakeSucceeded = RebuildTrackData();
 }
 
 void ATrackDefinitionActor::BeginPlay()

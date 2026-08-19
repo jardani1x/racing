@@ -1102,7 +1102,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | **DONE** 2026-08-18 — `code-reviewer` approved across two passes (1 repair cycle, plus two disputed findings independently verified against actual UE 5.8 engine source and upheld); `test-engineer` independently confirmed both targets build clean from forced real recompilation and 452/452 automation Smoke tests pass (run twice, no flakiness). Merged to `main` at `5d44744`. Graybox test level deferred into `TRACK-002`'s scope by director ruling. Findings tracked forward into `TRACK-002`, `RACE-003`, `VEH-005`, `UI-001`, `TEST-001` |
-| TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | IN PROGRESS (implementation dispatched) |
+| TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | IMPLEMENTATION COMPLETE 2026-08-19, **awaiting `code-reviewer` and `test-engineer`** — not DONE. All ten acceptance criteria implemented and self-verified (both targets build clean; Smoke 462/0/0; the three new level tests 3/0/0). Evidence in `### TRACK-002 — verification evidence`. The implementer does not mark its own ticket done (TRACK-001 finding H3) |
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | OPEN |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
@@ -1444,7 +1444,7 @@ repository and is not fabricated here.
 
 | ID | Finding | What TEST-001 must do |
 | --- | --- | --- |
-| M4 residual (TRACK-001 pass 1) | `TrackDefinitionActorSpec.cpp` mutates the `ATrackDefinitionActor` **class default object**, process-wide, because neither obvious way to instantiate an actor works in this harness: `NewObject<AActor>(GetTransientPackage())` dies in `CreateDefaultSubobject` on `Assertion failed: RegisteredElementType [TypedElementRegistry.h:536]`, and `UWorld::CreateWorld(EWorldType::Game)` dies with a bare access violation inside `CreateWorld`. The restore is now exhaustive and verified by `RacingSim.Race.TrackFixtureRestore`, but the right answer is not to mutate the CDO at all | Provide a working actor-instantiation path for automation (a functional-test map, or the correct world bootstrap for `-nullrhi` + `RunFilter Smoke`) and record it in `Docs/Environment.md`. Every future ticket with an Actor — VEH-002, TRACK-002, RACE-003 — hits this same wall |
+| M4 residual (TRACK-001 pass 1) | `TrackDefinitionActorSpec.cpp` mutates the `ATrackDefinitionActor` **class default object**, process-wide, because neither obvious way to instantiate an actor works in this harness: `NewObject<AActor>(GetTransientPackage())` dies in `CreateDefaultSubobject` on `Assertion failed: RegisteredElementType [TypedElementRegistry.h:536]`, and `UWorld::CreateWorld(EWorldType::Game)` dies with a bare access violation inside `CreateWorld`. The restore is now exhaustive and verified by `RacingSim.Race.TrackFixtureRestore`, but the right answer is not to mutate the CDO at all | **CAUSE FOUND AND LARGELY CLOSED BY `TRACK-002`, 2026-08-19.** The wall was never "this harness cannot make actors" — it was a **filter/phase** artifact. `FEngineLoop::PreInit` runs every `SmokeFilter` test itself (`LaunchEngineLoop.cpp:4376`), and `RegisterEngineElements()` — which registers the `Components` typed-element type — is not called until `UEngine::Init` (`UnrealEngine.cpp:2399`), *after* `PreInit` returns. `UActorComponent::PostInitProperties` creates an editor component element for every **non-template** component (`ActorComponent.cpp:588`), so a `SmokeFilter` test constructing any actor asserts. That is one cause for all three of TRACK-001's crashes, and it explains why the CDO worked: CDO subobjects are templates, which the element path skips. **A `ProductFilter` test runs after full init and can load a real actor.** `Source/RacingSimTests/Race/TrackPrototypeLevelSpec.cpp` does exactly that against the graybox level, and `Scripts/Test/Run-AutomationFilter.ps1 -Filter Product` is the second recorded gate. Recorded in `Docs/Environment.md`. **Residual:** this yields a *package-resident, read-only* actor, not a spawnable world — `UWorld::CreateWorld` was not retried and remains presumed broken. A ticket needing a **mutable** instance (`VEH-002`) should duplicate the loaded object, or re-test `CreateWorld` from a `ProductFilter` test now that the cause is understood |
 | M4 disputed half (TRACK-001 pass 1) | `code-reviewer` asked for `EditorContext` to be dropped from the CDO-mutating suites. Declined with engine-source evidence: the project's only gate runs with `GIsEditor && !IsRunningCommandlet()`, so a `CommandletContext`-only suite is never collected and would vanish silently rather than fail | Once a non-CDO fixture exists the flags can be revisited **together with** the harness fix. Until then, do not drop `EditorContext` from any suite in this project without first proving, with a `RunFilter` log line, that the suite is still collected |
 
 ### TRACK-002 — findings inherited from TRACK-001
@@ -1473,48 +1473,48 @@ that depends on this one. TRACK-002 defines what a checkpoint gate *is* and whet
 given crossing satisfies it — it must not count laps, own a timer, or reference
 `ERaceState`.
 
-- [ ] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
+- [x] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
       `UTrackCheckpointSet` — director's naming call, implementer may propose) built on
       `TRACK-001`'s typed centerline/query API (`ATrackDefinitionActor`,
       `FTrackCenterline`), never raw `USplineComponent` calls. Each gate has a position
       (arc-length distance along the centerline, consistent with `GetGridSlotDistanceCm`/
       `GetResetSampleDistanceCm`'s precedent), a width/extent, and a legal crossing
       direction.
-- [ ] Crossing-direction validation: given a gate and a crossing (e.g. two consecutive
+- [x] Crossing-direction validation: given a gate and a crossing (e.g. two consecutive
       world positions, or a signed velocity), determine forward vs. reverse and report
       which — a reverse crossing must be distinguishable from a forward one, not merely
       rejected silently. `.claude/rules/race-tests.md`: "Checkpoint order plus crossing
       direction authorizes laps; spline distance alone never does" — this ticket owns
       the crossing-direction half of that rule; `RACE-002` owns the ordering half (it
       consumes this ticket's per-gate direction result to build lap validity).
-- [ ] Gate-placement geometry uses the **maximum** segment length, not
+- [x] Gate-placement geometry uses the **maximum** segment length, not
       `GetSampleSpacingCm()`'s average (`TRACK-001` `L2`), to bound placement error — add
       a true max-segment-length accessor to `FTrackCenterline` (or rename the existing
       one and add the real one; director's call which).
-- [ ] The polyline-vs-true-spline bias (`TRACK-001` counter-case, immediately above) is
+- [x] The polyline-vs-true-spline bias (`TRACK-001` counter-case, immediately above) is
       asserted explicitly against a closed-form circle fixture, not inherited silently —
       needed before any gate-crossing tolerance is chosen, since the bias is systematic
       and one-directional.
-- [ ] `TRACK-001` `L4` closed: `FMath::CeilToInt32(SplineLengthCm / SpacingCm)`'s
+- [x] `TRACK-001` `L4` closed: `FMath::CeilToInt32(SplineLengthCm / SpacingCm)`'s
       sample-count guard computes in `double` and compares before casting, so the
       documented overflow-safety mechanism is the real one.
-- [ ] `TRACK-001` `L7` closed: `FTrackCenterline::ProjectOntoSegments`'s degenerate
+- [x] `TRACK-001` `L7` closed: `FTrackCenterline::ProjectOntoSegments`'s degenerate
       vertical-tangent case (`Right = Up x Forward` normalises to zero) either signals
       invalidity (`bValid = false` or a dedicated flag) or is documented identically to
       `GetTransformAtDistanceCm`'s handling of the same case — this ticket's own gate
       geometry is the first real consumer of `LateralOffsetCm` as ground truth.
-- [ ] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, director-approved
+- [x] A minimal graybox test level (`Content/Tracks/Prototype/Maps/`, director-approved
       deferral from `TRACK-001`) containing one closed-loop `ATrackDefinitionActor`
       instance and the checkpoint gates this ticket defines, using only
       primitive/placeholder geometry — no final art, no license-ledger-requiring
       external asset. Explicit asset ownership taken before touching any
       `.umap`/`.uasset` (`CLAUDE.md`: content changes are serialised). Sufficient for
       `RACE-002`'s automation to exercise real checkpoint/lap logic against.
-- [ ] `TRACK-001` `M5` closed: once the level exists, a functional test loads it and
+- [x] `TRACK-001` `M5` closed: once the level exists, a functional test loads it and
       asserts the track baked correctly from `PostLoad()` alone (no `OnConstruction`, no
       `BeginPlay` rebuild) — the spawn/load path has never run because no placed
       instance existed before this ticket.
-- [ ] `RacingSimTests` gains automation coverage for crossing-direction validation
+- [x] `RacingSimTests` gains automation coverage for crossing-direction validation
       (forward, reverse, tangential/grazing, high-speed single-tick crossing) that does
       **not** require the level — testable against a procedurally-constructed gate set
       in a transient world/commandlet, matching `TRACK-001`'s testability-first design.
@@ -1523,7 +1523,7 @@ given crossing satisfies it — it must not count laps, own a timer, or referenc
       skipped-gate/ordering and reset/restart cases are `RACE-002`'s to test against
       this ticket's contract, but reverse/double/spin/high-speed crossing-direction
       detection is this ticket's own.
-- [ ] Editor **and** Game targets build with zero new warnings.
+- [x] Editor **and** Game targets build with zero new warnings.
 
 **Known risk, not yet resolved.** `TEST-001`'s findings-inherited table records that no
 project ticket has yet provided a working non-CDO actor-instantiation path for
@@ -1534,6 +1534,202 @@ real loaded level with a real placed actor instead of a CDO-mutating fixture —
 record that as the fix `TEST-001`'s finding was waiting for. If the functional-test
 infrastructure itself hits the same wall, escalate rather than reintroducing a
 CDO-mutating fixture for checkpoint-gate tests.
+
+> **Resolved, 2026-08-19.** It did hit the same wall, and the wall turned out to have a
+> door. Cause and fix are in the verification-evidence section below and in
+> `Docs/Environment.md`; the `TEST-001` inherited-findings row above is updated. Short
+> version: the crash is a **filter-phase** artifact, not a harness limitation —
+> `SmokeFilter` tests run inside `FEngineLoop::PreInit`, before `UEngine::Init` registers
+> the typed-element types that every non-template `UActorComponent` requires. A
+> `ProductFilter` test runs after full init and loads a real placed actor without
+> incident. No CDO-mutating fixture was introduced.
+
+### TRACK-002 — verification evidence
+
+Recorded by the implementer, 2026-08-19, from worktree
+`.claude/worktrees/agent-a1bb698af8574b0ce` (branch `worktree-agent-a1bb698af8574b0ce`,
+fast-forwarded onto the prior implementation commit `ed35d74` rather than reimplemented).
+
+Build results were read from **each command's own captured stdout**, never from
+`%LOCALAPPDATA%\UnrealBuildTool\Log.txt`, which is shared machine-wide and is overwritten
+by other agents' concurrent builds. Automation counts were read from `index.json`, never
+from a process exit code — which mattered twice here, since two runs exited non-zero with
+no report at all.
+
+#### Files changed
+
+| File | Change |
+|---|---|
+| `Content/Tracks/Prototype/Maps/L_Meridian_Graybox.umap` | **New.** The graybox level. First binary asset in the repository. |
+| `Content/Tracks/README.md` | **New.** What the level contains, why it references no external content, how to regenerate it, ownership and originality. |
+| `Scripts/Content/Author-PrototypeGrayboxLevel.py` | **New.** Idempotent editor-Python authoring script; the reviewable source of every authored number in the level. |
+| `Scripts/Content/Author-PrototypeGrayboxLevel.ps1` | **New.** Wrapper; self-verifying against the script's own `AUTHORING_OK` marker. |
+| `Scripts/Test/Run-AutomationFilter.ps1` | **New.** Second automation gate (`-Filter`, or `-TestNames` for the actor tests). `Run-Smoke.ps1` deliberately untouched — past evidence cites it by name. |
+| `Source/RacingSimTests/Race/TrackPrototypeLevelSpec.cpp` | **New.** Three `ProductFilter` tests against the placed, loaded track. |
+| `Source/RacingSim/Race/TrackDefinitionActor.h/.cpp` | `PostLoad()` now latches its own bake outcome (`DidPostLoadBakeSucceed`, `HasPostLoadBakeRun`, `GetPostLoadBakeAttemptIndex`). Required to close M5 — see below. |
+| `Docs/AssetOwnership.tsv` | Claims `Content/Tracks/Prototype/*` for `junyi` under TRACK-002. |
+| `Docs/Environment.md` | The `Product` gate; the `SmokeFilter`-cannot-touch-actors rule; three editor-Python invocation traps; the config-rewrite hazard. |
+| `Docs/Tickets.md` | This section, the checkboxes, and the `TEST-001` inherited-finding resolution. |
+
+`Config/DefaultGame.ini` was **reverted, not committed** — see "Hazards" below.
+
+#### Binary-asset ownership
+
+Taken before any `.umap` existed, per `CLAUDE.md` hard constraint #7. `find` across all 17
+worktrees returned no `.uasset`/`.umap` anywhere, so no other agent held Unreal content.
+Claim added to `Docs/AssetOwnership.tsv`; `.githooks/pre-commit` is active
+(`core.hooksPath` set) and `git config user.name` is `junyi`, matching the claim.
+
+#### Commands run, verbatim
+
+```powershell
+# Level authoring (run twice; second run is the recorded one)
+pwsh -File Scripts\Content\Author-PrototypeGrayboxLevel.ps1
+
+# Builds
+pwsh -File Scripts\Test\Build-Target.ps1 -Target RacingSimEditor `
+    -OutFile "<worktree>\Saved\TRACK002\build-editor-4.log" `
+    -ProjectPath "<worktree>\RacingSim.uproject"
+pwsh -File Scripts\Test\Build-Target.ps1 -Target RacingSim `
+    -OutFile "<worktree>\Saved\TRACK002\build-game.log" `
+    -ProjectPath "<worktree>\RacingSim.uproject"
+
+# Gate 1 - Smoke
+pwsh -File Scripts\Test\Run-Smoke.ps1 `
+    -ProjectPath "<worktree>\RacingSim.uproject" `
+    -ReportDir "<worktree>\Saved\Automation\Report"
+
+# Gate 2 - the actor-touching level tests
+pwsh -File Scripts\Test\Run-AutomationFilter.ps1 `
+    -TestNames "RacingSim.Race.TrackPrototypeLevelPostLoad+RacingSim.Race.TrackPrototypeLevelIdentity+RacingSim.Race.TrackPrototypeLevelGates" `
+    -ProjectPath "<worktree>\RacingSim.uproject" `
+    -ReportDir "<worktree>\Saved\Automation\LevelReport"
+```
+
+#### Build results
+
+- Editor (`RacingSimEditor Win64 Development`), final build `build-editor-4.log`:
+  `BUILD_EXITCODE=0`, `Result: Succeeded`, **`WARNING_ERROR_MATCHES=0`**.
+- Game (`RacingSim Win64 Development`), `build-game.log`: `BUILD_EXITCODE=0`,
+  `Result: Succeeded`, **`WARNING_ERROR_MATCHES=0`**, 26 compile actions — a real
+  recompile of the runtime module, not a no-op.
+- Four editor builds were run in total (`build-editor-1..4.log`), all `Succeeded` with
+  zero warning/error matches. Build 1 also proves the inherited `ed35d74` code compiles
+  clean in a fresh worktree.
+
+#### Automation results
+
+- **Smoke** — `Saved/Automation/Report/index.json`:
+  **`succeeded=462, failed=0, notRun=0`**, `reportCreatedOn=2026.08.19-06.29.07`,
+  `PROCESS_EXITCODE=0`, `NON_SUCCESS_COUNT=0`. All **39** `RacingSim.*` suites `Success`,
+  including this ticket's `GateCrossingDirection`, `GateSetBuild`, `GateCurvedTrack`,
+  `CenterlinePolylineBias` and `CenterlineLateralAxis`.
+- **Level tests** — `Saved/Automation/LevelReport/index.json`:
+  **`succeeded=3, failed=0, notRun=0`**, `reportCreatedOn=2026.08.19-06.27.51`,
+  `PROCESS_EXITCODE=0`. `TrackPrototypeLevelPostLoad`, `TrackPrototypeLevelIdentity`,
+  `TrackPrototypeLevelGates`, all `Success`.
+
+The level tests are **absent from the Smoke report by design** — they are `ProductFilter`.
+Their collection under that filter was proven separately by a real
+`Automation RunFilter Product` run, whose log shows the controller dispatching all three
+(`Sending RunTest TrackPrototypeLevelGates`, `...Identity`, `...PostLoad`) — i.e. the
+discoverability claim rests on a `RunFilter` line, per `Docs/Environment.md`'s rule, and
+only the repeatable pass/fail evidence uses `RunTests`.
+
+#### The authored level
+
+`/Game/Tracks/Prototype/Maps/L_Meridian_Graybox`, 76,652 bytes. From the authoring
+script's own report in `Saved/Logs/RacingSim.log`:
+
+```text
+[TRACK-002] Centerline spline length: 324466.9 cm (3.245 km)
+[TRACK-002] Baked gates: 6
+[TRACK-002]   gate 0 at 0.0 cm      gate 3 at 162233.5 cm
+[TRACK-002]   gate 1 at 54077.8 cm  gate 4 at 216311.3 cm
+[TRACK-002]   gate 2 at 108155.6 cm gate 5 at 270389.1 cm
+[TRACK-002] Sectors: 3   Grid slots: 8   Reset samples: 129
+```
+
+3.245 km is inside `Docs/03-TrackRaceUI.md`'s 3-5 km brief. Two consecutive runs produced
+**identical** length and gate distances, which is the idempotency claim actually
+exercised rather than asserted. Contents: one `ATrackDefinitionActor`, one
+`ADirectionalLight`, one `ASkyLight`, and **no asset references of any kind** — no meshes,
+materials or textures, not even `/Engine/BasicShapes`. No license-ledger entry is
+required, and the level cannot acquire one by accident. There is consequently no road
+surface mesh; that is a deliberate deferral to the track-art ticket, approved by the
+director before authoring.
+
+#### Two real defects, both found by running
+
+1. **`SmokeFilter` cannot touch an Actor — and this is TEST-001's open finding, solved.**
+   The spec was written `SmokeFilter` and crashed the whole run on
+   `Assertion failed: RegisteredElementType [TypedElementRegistry.h:536] Element type
+   'Components' has not been registered!` — `PROCESS_EXITCODE=3`, **no `index.json` at
+   all**. Re-running the single test alone by name reproduced it, ruling out cross-test
+   contamination. Cause, from engine source: `FEngineLoop::PreInit` runs every
+   `SmokeFilter` test itself (`LaunchEngineLoop.cpp:4376`), while `RegisterEngineElements()`
+   is not called until `UEngine::Init` (`UnrealEngine.cpp:2399`); every non-template
+   `UActorComponent` acquires an editor element in `PostInitProperties`
+   (`ActorComponent.cpp:588`). One cause for all three of TRACK-001's crashes, and it
+   explains why the CDO fixture worked — CDO subobjects are templates, which that path
+   skips. Fix: `ProductFilter` + a second recorded gate.
+2. **The original M5 assertion was unsound, and passing it would have been worse than
+   failing.** The test first asserted `World->IsInitialized() == false` and
+   `GetBakeAttemptCount() == 1`. Both failed: loading a map package **in the editor**
+   initialises the world, registers components and re-runs `OnConstruction`, so the track
+   bakes twice. Simply "correcting" the expectation to 2 would have produced a green test
+   that asserted nothing about `PostLoad` — a failed `PostLoad` bake is silently repaired
+   by the `OnConstruction` bake microseconds later, and every observable an outside test
+   can reach reports the *second* bake. That is precisely the hazard M5 describes. So
+   `ATrackDefinitionActor` now latches its load-time result in `PostLoad` itself, and the
+   test asserts `DidPostLoadBakeSucceed()` with `GetPostLoadBakeAttemptIndex() == 1`.
+   **M5's actual answer: the ordering is safe** — `FSplineCurves::ReparamTable` is a
+   serialised `UPROPERTY` (`SplineComponent.h:95`) restored during `Serialize`, strictly
+   before any `PostLoad`, and `USplineComponent::PostLoad` is `Super::PostLoad()` only
+   (`SplineComponent.cpp:672`). No move to `PostRegisterAllComponents` was needed.
+
+#### Hazards found, recorded in `Docs/Environment.md`
+
+- `-ExecCmds="py <path with spaces>"` silently truncates at the first space; the 8.3 short
+  path fixes that and breaks the `.py` extension match, which is case-sensitive. Both
+  produce the same misleading `SyntaxError`. Fix: short-path the **directory**, keep the
+  real filename.
+- A bare `Quit` in `-ExecCmds` does not exit the editor (unlike `Automation ...; Quit`,
+  where both halves are Automation subcommands). Two runs hung and were killed by PID; the
+  script now calls `unreal.SystemLibrary.quit_editor()` in a `finally`.
+- `unreal.log()` emits at **Log** verbosity and `-stdout` forwards **Display** and above,
+  so the authoring script's entire report never reaches captured stdout. The first
+  wrapper read stdout only and reported "the map was not authored" for a run that had
+  authored it perfectly.
+- **The headless editor rewrote `Config/DefaultGame.ini` on shutdown**, adding placeholder
+  `GeneralProjectSettings` keys and **deleting the ~30-line AssetManager comment block**
+  documenting BLOCKER-005 and why `bIsEditorOnly=True` is load-bearing. The functional
+  settings survived, so the diff reads like harmless tool noise and would very plausibly
+  be committed. Reverted with `git checkout --`; the restored file is what is committed.
+
+#### Open risks
+
+- **`Automation RunFilter Product` cannot complete on this machine.** It reaches
+  `System.Plugins.PixelStreaming2.FPS2DataChannelEchoTest`, which under `-nullrhi` reports
+  "No streamer factory implementation for DefaultRtc found" and then dies on
+  `Assertion failed: IsValid() [Templates/SharedPointer.h:1133]`, producing no report. The
+  crash is an engine/plugin defect in a headless configuration, unrelated to this ticket,
+  but it means the Product gate must name its tests until PixelStreaming's suite is fixed
+  or excluded. `STREAM-001` should be aware that these tests do not pass headless today.
+- **No negative control for the M5 failure mode.** `DidPostLoadBakeSucceed()` returns
+  true, but no test forces a `PostLoad` bake to fail, so the assertion's teeth are
+  argued from the engine-source reading above rather than demonstrated. Injecting that
+  failure needs a spline whose `PostLoad` is deliberately deferred, which the engine does
+  not offer a hook for.
+- **The level tests are read-only by necessity.** A package-loaded actor is shared and
+  stays resident, so mutating it would leak across tests. A ticket needing a mutable
+  instance (`VEH-002`) must duplicate the loaded object, or re-test `UWorld::CreateWorld`
+  from a `ProductFilter` test — plausibly fixed by the same phase change, but untested.
+- **Content-hash coverage of the new latch.** `PostLoadBakeAttemptIndex` and
+  `bPostLoadBakeSucceeded` are `Transient` and derived, so they are correctly outside
+  `ComputeContentHash()`; no schema bump was needed. `TrackSchemaVersion` stays at 2.
+- **Two gates now exist and both must be run.** A future ticket reporting only Smoke
+  counts is reporting a subset of this project's tests.
 
 ### RACE-003 — findings inherited from TRACK-001
 
