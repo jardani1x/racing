@@ -588,6 +588,36 @@ public:
 	int32 GetBakeAttemptCount() const { return BakeAttemptCount; }
 
 	/**
+	 * Whether the bake performed by PostLoad() -- the LOAD-TIME bake -- succeeded.
+	 *
+	 * False for an instance that was never loaded from a package (a CDO, or an actor
+	 * spawned at runtime): see HasPostLoadBakeRun() to tell "did not run" from "ran and
+	 * failed".
+	 *
+	 * WHY THIS IS NOT REDUNDANT WITH IsTrackDataBuilt(). A placed actor is baked more
+	 * than once on the way in: PostLoad bakes it, and then the editor initialises the
+	 * loaded world, registers components and re-runs OnConstruction, which bakes it
+	 * again. A PostLoad bake that FAILED -- because the spline component's own PostLoad
+	 * had not run yet, which the engine does not guarantee -- would therefore be repaired
+	 * silently, and IsTrackDataBuilt() would be true either way. This flag is the only
+	 * thing that distinguishes them, and TRACK-001 review finding M5 is precisely the
+	 * question it answers.
+	 */
+	bool DidPostLoadBakeSucceed() const { return bPostLoadBakeSucceeded; }
+
+	/** True once PostLoad() has run a bake on this instance, whatever its outcome. */
+	bool HasPostLoadBakeRun() const { return PostLoadBakeAttemptIndex != INDEX_NONE; }
+
+	/**
+	 * Which bake attempt PostLoad()'s was, 1-based, or INDEX_NONE if PostLoad has not run.
+	 *
+	 * 1 means nothing baked this instance before the load-time bake, which is what makes
+	 * DidPostLoadBakeSucceed() a statement about the load path rather than about whatever
+	 * happened to run first.
+	 */
+	int32 GetPostLoadBakeAttemptIndex() const { return PostLoadBakeAttemptIndex; }
+
+	/**
 	 * Number of centerline samples the last bake actually produced, and the step it
 	 * actually used, in centimetres.
 	 *
@@ -696,6 +726,14 @@ private:
 	/** Number of times RebuildTrackData() has run. Automation reads this; nothing else should. */
 	UPROPERTY(Transient)
 	int32 BakeAttemptCount = 0;
+
+	/** Outcome of the bake PostLoad() ran. See DidPostLoadBakeSucceed(). */
+	UPROPERTY(Transient)
+	bool bPostLoadBakeSucceeded = false;
+
+	/** 1-based index of PostLoad()'s bake among this instance's bakes, INDEX_NONE until PostLoad runs. */
+	UPROPERTY(Transient)
+	int32 PostLoadBakeAttemptIndex = INDEX_NONE;
 
 	/** Sample count the last SUCCESSFUL bake produced. Hashed; see ComputeContentHash. */
 	UPROPERTY(Transient)
