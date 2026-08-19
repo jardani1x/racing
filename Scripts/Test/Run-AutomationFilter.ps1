@@ -97,7 +97,14 @@ if (-not (Test-Path $IndexPath)) {
 
 $Report = Get-Content -LiteralPath $IndexPath -Raw | ConvertFrom-Json
 Write-Output "reportCreatedOn=$($Report.reportCreatedOn)"
-Write-Output "succeeded=$($Report.succeeded) failed=$($Report.failed) notRun=$($Report.notRun)"
+
+# See Run-Smoke.ps1: `succeeded` is NOT the pass count. A test that passes every assertion
+# but emits a UE_LOG(Warning) is counted in `succeededWithWarnings` instead, so reporting
+# `succeeded` alone shows a drop where nothing regressed. Both buckets, their sum and the
+# report's own test count are printed. The pass/fail decision is `failed` and `notRun`.
+$Passed = $Report.succeeded + $Report.succeededWithWarnings
+Write-Output "succeeded=$($Report.succeeded) succeededWithWarnings=$($Report.succeededWithWarnings) passedTotal=$Passed failed=$($Report.failed) notRun=$($Report.notRun)"
+Write-Output "testsInReport=$(@($Report.tests).Count)"
 Write-Output "totalDuration=$($Report.totalDuration)"
 
 $Failed = @($Report.tests | Where-Object { $_.state -ne 'Success' })

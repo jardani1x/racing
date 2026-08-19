@@ -1234,28 +1234,53 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 		//
 		// A three-segment bake has segments of L/3 -- about 209 m on this fixture. The
 		// gate rules added by TRACK-002 both fire on that: gates would be closer together
-		// than one segment (handled by the generator, which now clamps its own count), and
-		// a 900 cm gate is narrower than the placement tolerance at the default 15 m
-		// minimum corner radius. Both rejections are CORRECT: a 209 m chord has entirely
-		// lost a 15 m corner, and gates measured against it cannot be trusted.
+		// than one segment (handled by the generator, which clamps its own count), and a
+		// 900 cm gate is narrower than the placement tolerance at the default 15 m minimum
+		// corner radius. Both rejections are CORRECT: a 209 m chord has entirely lost a
+		// 15 m corner, and gates measured against it cannot be trusted.
 		//
-		// So the gate rules are lifted out of the way first, to isolate the guard this
-		// case is actually about. The interaction itself is then asserted directly, below,
-		// which is strictly more coverage than this case had before.
+		// The corner radius is lifted out of the way so the WIDTH rule stops firing and
+		// the gate set actually bakes. What remains is the case code-reviewer's TRACK-002
+		// finding H1 is about, and it is asserted here rather than avoided.
 		Track->MinCornerRadiusCm = 1.0e6;
-		TestTrue(TEXT("Rebake with the gate placement rules out of the way"), Track->RebuildTrackData());
+		TestTrue(TEXT("Rebake with the gate WIDTH rule out of the way"), Track->RebuildTrackData());
 
-		FString CoarseReason;
-		TestTrue(FString::Printf(TEXT("The NumSegments() < 3 guard does not fire at the floor (%s)"), *CoarseReason),
-			Track->Validate(CoarseReason));
-
-		// The generator must never manufacture an unbakeable set. At this resolution the
-		// centerline supports far fewer than the authored four gates, so it produces
-		// fewer rather than producing four and failing.
-		TestTrue(TEXT("The gate generator clamps itself to what the coarse bake supports"),
-			Track->GetNumCheckpointGates() >= 1 && Track->GetNumCheckpointGates() < Track->NumGeneratedCheckpointGates);
-		TestNearlyEqual(TEXT("...and the start/finish gate is still at distance 0"),
+		// -- H1, the defect this block used to pin as correct ------------------
+		//
+		// WHAT THIS BLOCK ASSERTED BEFORE, AND WHY IT WAS WRONG. It asserted
+		// `Validate()` == true here, plus `GetNumCheckpointGates() >= 1 && < 4`. Both pass
+		// on a set of EXACTLY ONE GATE, which is what this bake actually produces:
+		// SupportedGates = floor(L / (2 * L/3)) == 1. A one-gate track has no order to
+		// enforce and no detectable shortcut, so the old assertions certified the bug.
+		//
+		// The count is now asserted EXACTLY, not as a range. A range that happens to
+		// include the broken value is how this survived review once already.
+		TestEqual(TEXT("The coarse bake degrades the generated set to exactly one gate"),
+			Track->GetNumCheckpointGates(), 1);
+		TestNearlyEqual(TEXT("...and that one gate is still the start/finish gate at distance 0"),
 			Track->GetCheckpointGateDistanceCm(0), 0.0, 1.0e-9);
+
+		// The clamp no longer does that silently: it records what it threw away.
+		TestFalse(TEXT("...and the generator records that it reduced the count"),
+			Track->GetGeneratedGateClampNote().IsEmpty());
+		TestTrue(TEXT("...naming the requested count in the note"),
+			Track->GetGeneratedGateClampNote().Contains(TEXT("asked for 4 gates")));
+
+		// THE NEW BEHAVIOUR, asserted positively: a one-gate track does not validate.
+		FString CoarseReason;
+		TestFalse(TEXT("A one-gate track does NOT validate, however healthy its centerline is"),
+			Track->Validate(CoarseReason));
+		TestTrue(FString::Printf(TEXT("...and the reason names the gate floor: %s"), *CoarseReason),
+			CoarseReason.Contains(TEXT("baked 1 checkpoint gate")));
+		TestTrue(FString::Printf(TEXT("...and quotes the clamp, so the COARSE BAKE is named as the cause: %s"),
+			*CoarseReason), CoarseReason.Contains(TEXT("could only place 1")));
+
+		// The original point of this case, preserved: the NumSegments() < 3 guard must
+		// still not fire at the floor. Asserted by the reason NOT being the segment
+		// guard's, which is a stronger statement than the old `Validate() == true` --
+		// that one would have gone green for any reason at all once the guard was fixed.
+		TestFalse(FString::Printf(TEXT("The NumSegments() < 3 guard does not fire at the floor: %s"), *CoarseReason),
+			CoarseReason.Contains(TEXT("too coarse to query")));
 
 		// -- The interaction, asserted rather than merely avoided -------------
 		//
@@ -1274,7 +1299,177 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 		Track->CenterlineSampleSpacingCm = OriginalSpacing;
 		Track->MinCornerRadiusCm = OriginalRadiusCm;
 		Track->RebuildTrackData();
+
+		// The positive half of the control: at the authored spacing the same track bakes
+		// the full requested set, clamps nothing, and validates. Without this the two
+		// rejections above would be satisfied by a Validate() that had simply stopped
+		// returning true.
+		FString RestoredReason;
+		TestEqual(TEXT("At the authored spacing the generator places every requested gate"),
+			Track->GetNumCheckpointGates(), Track->NumGeneratedCheckpointGates);
+		TestTrue(TEXT("...at or above the enforced floor"),
+			Track->GetNumCheckpointGates() >= ATrackDefinitionActor::MinCheckpointGateCount);
+		TestTrue(TEXT("...with nothing clamped away"), Track->GetGeneratedGateClampNote().IsEmpty());
+		TestTrue(FString::Printf(TEXT("...and the track validates again: %s"), *RestoredReason),
+			Track->Validate(RestoredReason));
 	}
+
+	return true;
+}
+
+// ===========================================================================
+// H1 (code-reviewer, TRACK-002 pass 1): a gate set too small to enforce order
+// ===========================================================================
+//
+// WHY THIS IS A SEPARATE TEST AND NOT ANOTHER ExpectRejected CASE IN TrackValidation.
+// The defect had two independent entrances, and a fix that closes only one of them
+// still ships the bug:
+//
+//   1. the GENERATOR silently clamping a legal request down past the floor (covered in
+//      TrackValidation's coarse-bake block, which is where the coarse bake already is);
+//   2. an AUTHOR writing a two-gate CheckpointGateSpecs array by hand. The generator is
+//      never involved, so no amount of generator hardening touches it -- only a floor
+//      on the BAKED set does.
+//
+// Case 2 below is the negative control that distinguishes the two fixes. It asserts the
+// gate set is genuinely well-formed -- it builds, it reports two gates, nothing was
+// clamped -- and is refused anyway, on the race rule rather than on a geometry error.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTrackDefinitionGateOrderFloorTest,
+	"RacingSim.Race.TrackCheckpointGateOrderFloor",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FTrackDefinitionGateOrderFloorTest::RunTest(const FString& Parameters)
+{
+	using namespace TrackDefinitionSpecPrivate;
+
+	FTrackSpecCircleFixture Fixture;
+	ATrackDefinitionActor* Track = Fixture.Track;
+	if (!Track)
+	{
+		AddError(TEXT("Class default object for ATrackDefinitionActor is unavailable."));
+		return false;
+	}
+	SetThreeSectors(*Track);
+
+	const double LengthCm = Track->GetTrackLengthCm();
+
+	// The floor is a published constant, not a literal repeated in the test. A test that
+	// hard-codes 4 keeps passing if someone edits the constant to 1.
+	const int32 FloorCount = ATrackDefinitionActor::MinCheckpointGateCount;
+	TestTrue(TEXT("The enforced floor is at least 2, or there is no order to enforce"), FloorCount >= 2);
+
+	// Builds an evenly spaced authored set of N gates, gate 0 pinned to exactly 0. Widths
+	// are the actor's own generated defaults, which the fixture's 100 cm bake clears
+	// comfortably -- the point of these cases is the COUNT, so nothing else may be the
+	// reason a case fails.
+	auto AuthorGates = [Track, LengthCm](const int32 Count)
+	{
+		TArray<FRacingCheckpointGateSpec> Specs;
+		Specs.Reserve(Count);
+		for (int32 Index = 0; Index < Count; ++Index)
+		{
+			FRacingCheckpointGateSpec Spec;
+			Spec.GateId = (Index == 0)
+				? FName(TEXT("Gate.StartFinish"))
+				: FName(*FString::Printf(TEXT("Gate.%02d"), Index));
+			Spec.DistanceAlongCm = (Index == 0) ? 0.0 : LengthCm * static_cast<double>(Index) / static_cast<double>(Count);
+			Spec.HalfWidthCm = 900.0;
+			Spec.HalfHeightCm = 500.0;
+			Spec.LegalDirection = ERacingGateDirection::Forward;
+			Specs.Add(Spec);
+		}
+
+		Track->CheckpointGateSpecs = Specs;
+		Track->RebuildTrackData();
+	};
+
+	// -- Baseline: the shipped defaults sit at or above the floor -------------
+	{
+		FString Reason;
+		TestTrue(FString::Printf(TEXT("The default generated set validates: %s"), *Reason), Track->Validate(Reason));
+		TestTrue(TEXT("...and the default NumGeneratedCheckpointGates is at or above the floor"),
+			Track->NumGeneratedCheckpointGates >= FloorCount);
+	}
+
+	// -- Entrance 1, at the authored knob rather than through the bake --------
+	//
+	// Asking the generator for fewer gates than the floor is rejected at the FIELD, so the
+	// message points at the property to change rather than at a baked count the author
+	// never typed.
+	{
+		const int32 OriginalCount = Track->NumGeneratedCheckpointGates;
+		Track->NumGeneratedCheckpointGates = FloorCount - 1;
+		Track->RebuildTrackData();
+
+		FString Reason;
+		TestFalse(TEXT("A generator asked for fewer gates than the floor does not validate"),
+			Track->Validate(Reason));
+		TestTrue(FString::Printf(TEXT("...and the reason names the authored field: %s"), *Reason),
+			Reason.Contains(TEXT("NumGeneratedCheckpointGates")));
+
+		Track->NumGeneratedCheckpointGates = OriginalCount;
+		Track->RebuildTrackData();
+
+		FString RecoveredReason;
+		TestTrue(FString::Printf(TEXT("Recovered: %s"), *RecoveredReason), Track->Validate(RecoveredReason));
+	}
+
+	// -- Entrance 2, THE NEGATIVE CONTROL: a hand-authored set below the floor -
+	//
+	// Two gates half a lap apart on a 100 m circle: strictly increasing, separated by far
+	// more than one centerline segment, wide enough to swallow the placement tolerance.
+	// Geometrically impeccable, and unraceable -- a car can reach the far gate across the
+	// infield, turn round, cross the line forwards and be credited a lap.
+	{
+		AuthorGates(2);
+
+		TestTrue(TEXT("A two-gate authored set BUILDS -- this rejection is not a bake failure"),
+			Track->GetCheckpointGates().IsValid());
+		TestEqual(TEXT("...with exactly the two gates that were authored"), Track->GetNumCheckpointGates(), 2);
+		TestTrue(TEXT("...and the generator did not run, so nothing was clamped"),
+			Track->GetGeneratedGateClampNote().IsEmpty());
+
+		FString Reason;
+		TestFalse(TEXT("A two-gate track does not validate"), Track->Validate(Reason));
+		TestTrue(FString::Printf(TEXT("...and the reason is the ORDER floor, not geometry: %s"), *Reason),
+			Reason.Contains(TEXT("baked 2 checkpoint gate")));
+		TestFalse(FString::Printf(TEXT("...and does not blame the bake: %s"), *Reason),
+			Reason.Contains(TEXT("failed to bake")));
+	}
+
+	// -- One gate: the exact set finding H1 reported as validating green ------
+	{
+		AuthorGates(1);
+
+		TestEqual(TEXT("A one-gate authored set builds and reports one gate"), Track->GetNumCheckpointGates(), 1);
+
+		FString Reason;
+		TestFalse(TEXT("A one-gate track does not validate"), Track->Validate(Reason));
+		TestTrue(FString::Printf(TEXT("...and the reason names the ordering rule: %s"), *Reason),
+			Reason.Contains(TEXT("enforce checkpoint order")));
+	}
+
+	// -- Exactly at the floor: accepted, so the check is a floor and not a ban -
+	{
+		AuthorGates(FloorCount);
+
+		TestEqual(TEXT("An authored set exactly at the floor bakes every gate"),
+			Track->GetNumCheckpointGates(), FloorCount);
+
+		FString Reason;
+		TestTrue(FString::Printf(TEXT("...and validates: %s"), *Reason), Track->Validate(Reason));
+		TestEqual(TEXT("...giving no reason"), Reason, FString());
+	}
+
+	// Hand the CDO back the way the fixture found it. The destructor restores
+	// CheckpointGateSpecs, but every later case in THIS test would otherwise run against
+	// whatever the previous case authored.
+	Track->CheckpointGateSpecs.Reset();
+	Track->RebuildTrackData();
 
 	return true;
 }

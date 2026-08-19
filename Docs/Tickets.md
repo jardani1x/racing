@@ -1102,7 +1102,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | **DONE** 2026-08-18 — `code-reviewer` approved across two passes (1 repair cycle, plus two disputed findings independently verified against actual UE 5.8 engine source and upheld); `test-engineer` independently confirmed both targets build clean from forced real recompilation and 452/452 automation Smoke tests pass (run twice, no flakiness). Merged to `main` at `5d44744`. Graybox test level deferred into `TRACK-002`'s scope by director ruling. Findings tracked forward into `TRACK-002`, `RACE-003`, `VEH-005`, `UI-001`, `TEST-001` |
-| TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | IMPLEMENTATION COMPLETE 2026-08-19, **awaiting `code-reviewer` and `test-engineer`** — not DONE. All ten acceptance criteria implemented and self-verified (both targets build clean; Smoke 462/0/0; the three new level tests 3/0/0). Evidence in `### TRACK-002 — verification evidence`. The implementer does not mark its own ticket done (TRACK-001 finding H3) |
+| TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | REPAIR CYCLE 1 COMPLETE 2026-08-19, **awaiting re-review by `code-reviewer` and validation by `test-engineer`** — not DONE. `code-reviewer` returned CHANGES REQUESTED against `dc96061`; the four blocking findings (H1, M6, L1, L3) are closed, the non-blocking ones (M2–M5, M7, L2, L4–L6) stay open and batched forward. Re-verified: both targets build clean with zero warning/error matches; Smoke `passedTotal=466, failed=0, notRun=0` across 40 `RacingSim.*` suites; level tests 3/0/0. Evidence in `### TRACK-002 — repair cycle 1`. **Acceptance criterion #1 is deliberately `[ ]`** — ticking it is the re-review's call, not the implementer's (finding L3). The implementer does not mark its own ticket done (TRACK-001 finding H3) |
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | OPEN |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
@@ -1473,7 +1473,19 @@ that depends on this one. TRACK-002 defines what a checkpoint gate *is* and whet
 given crossing satisfies it — it must not count laps, own a timer, or reference
 `ERaceState`.
 
-- [x] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
+> **Process correction, repair cycle 1 (code-reviewer finding L3).** On `main` all ten of
+> these boxes are `[ ]`; the implementation commit ticked all ten itself. Per this
+> project's own established ruling (`TRACK-001` finding H3, "an implementer may not
+> reclassify its own acceptance criteria"), that is a process violation regardless of
+> whether the underlying work was done — and here it was not entirely: criterion #1 was
+> ticked while the gate contract still accepted a one-gate set that cannot enforce any
+> order (finding H1). Criterion #1 is therefore reverted to `[]`. **Ticking it is the
+> re-review's call, not the implementer's**, and it should be ticked only once H1's fix is
+> independently verified. Criteria #2–#10 are left `[x]` because `code-reviewer`
+> independently verified those against evidence in pass 1 — that is the gate exercising
+> its own authority, which is exactly the distinction this correction is about.
+
+- [ ] A typed, ordered checkpoint-gate contract (e.g. `FRacingCheckpointGate` /
       `UTrackCheckpointSet` — director's naming call, implementer may propose) built on
       `TRACK-001`'s typed centerline/query API (`ATrackDefinitionActor`,
       `FTrackCenterline`), never raw `USplineComponent` calls. Each gate has a position
@@ -1558,20 +1570,78 @@ no report at all.
 
 #### Files changed
 
-| File | Change |
-|---|---|
-| `Content/Tracks/Prototype/Maps/L_Meridian_Graybox.umap` | **New.** The graybox level. First binary asset in the repository. |
-| `Content/Tracks/README.md` | **New.** What the level contains, why it references no external content, how to regenerate it, ownership and originality. |
-| `Scripts/Content/Author-PrototypeGrayboxLevel.py` | **New.** Idempotent editor-Python authoring script; the reviewable source of every authored number in the level. |
-| `Scripts/Content/Author-PrototypeGrayboxLevel.ps1` | **New.** Wrapper; self-verifying against the script's own `AUTHORING_OK` marker. |
-| `Scripts/Test/Run-AutomationFilter.ps1` | **New.** Second automation gate (`-Filter`, or `-TestNames` for the actor tests). `Run-Smoke.ps1` deliberately untouched — past evidence cites it by name. |
-| `Source/RacingSimTests/Race/TrackPrototypeLevelSpec.cpp` | **New.** Three `ProductFilter` tests against the placed, loaded track. |
-| `Source/RacingSim/Race/TrackDefinitionActor.h/.cpp` | `PostLoad()` now latches its own bake outcome (`DidPostLoadBakeSucceed`, `HasPostLoadBakeRun`, `GetPostLoadBakeAttemptIndex`). Required to close M5 — see below. |
-| `Docs/AssetOwnership.tsv` | Claims `Content/Tracks/Prototype/*` for `junyi` under TRACK-002. |
-| `Docs/Environment.md` | The `Product` gate; the `SmokeFilter`-cannot-touch-actors rule; three editor-Python invocation traps; the config-rewrite hazard. |
-| `Docs/Tickets.md` | This section, the checkboxes, and the `TEST-001` inherited-finding resolution. |
+**Corrected in repair cycle 1 (code-reviewer finding M6).** The table first published here
+was the **last commit's** file list presented as the whole ticket's, and silently omitted
+seven files — including two new scripts, `Scripts/Test/Run-Smoke.ps1` and
+`Scripts/Test/Build-Target.ps1`, that the evidence section cites by name while claiming
+`Run-Smoke.ps1` was "deliberately untouched" (it did not previously exist; it was *created*
+by this ticket). The list below is the ticket's full file set across all five
+implementation commits, `f38e063`..`dc96061`, taken from
+`git diff --name-status 4f4f0d1 dc96061`, plus the repair-cycle-1 commit.
+
+| File | Status | Change |
+|---|---|---|
+| `Content/Tracks/Prototype/Maps/L_Meridian_Graybox.umap` | **New** | The graybox level. First binary asset in the repository; tracked by Git LFS. |
+| `Content/Tracks/README.md` | **New** | What the level contains, its reference posture, how to regenerate it, ownership and originality. |
+| `Scripts/Content/Author-PrototypeGrayboxLevel.py` | **New** | Idempotent editor-Python authoring script; the reviewable source of every authored number in the level. |
+| `Scripts/Content/Author-PrototypeGrayboxLevel.ps1` | **New** | Wrapper; self-verifying against the script's own `AUTHORING_OK` marker. |
+| `Scripts/Test/Build-Target.ps1` | **New** | Builds one target and greps **its own** stdout for warnings/errors, so a build result never comes from the machine-wide `UnrealBuildTool\Log.txt`. Omitted from the original table. |
+| `Scripts/Test/Run-Smoke.ps1` | **New** | Gate 1. Runs the Smoke filter and reports from `index.json`, not from the exit code. Omitted from the original table, which wrongly described it as pre-existing and untouched. Repair cycle 1 **added** `succeededWithWarnings`/`passedTotal`/`testsInReport` output; no existing field removed or changed. |
+| `Scripts/Test/Run-AutomationFilter.ps1` | **New** | Gate 2 (`-Filter`, or `-TestNames` for the actor-touching level tests). Same reporting addition in repair cycle 1. |
+| `Source/RacingSim/Race/TrackCheckpointGate.h` | **New** | `FRacingCheckpointGateSpec`, `FRacingCheckpointGate`, `FRacingCheckpointGateSet`, `ERacingGateDirection`, `FRacingGateCrossingResult`. The ticket's core contract. Omitted from the original table. |
+| `Source/RacingSim/Race/TrackCheckpointGate.cpp` | **New** | Gate bake (`Build`) and the crossing-direction query. Omitted from the original table. |
+| `Source/RacingSim/Race/TrackCenterline.h` | Modified | `GetMaxSegmentLengthCm()`, `GetAverageSegmentLengthCm()` (renamed from the misleading `GetSampleSpacingCm`), `GetSagittaBoundCm()`, and the L7 degenerate-lateral-axis flag. Omitted from the original table. |
+| `Source/RacingSim/Race/TrackCenterline.cpp` | Modified | Implementations of the above; max-segment cached at `Build()`. Omitted from the original table. |
+| `Source/RacingSim/Race/TrackDefinitionActor.h` | Modified | Authored gate fields (`CheckpointGateSpecs`, `NumGeneratedCheckpointGates`, `GeneratedGateHalfWidth/HeightCm`, `MinCornerRadiusCm`), the gate query surface, `TrackSchemaVersion` 1 → 2, the `PostLoad` bake latch, and (repair cycle 1) `MinCheckpointGateCount` + `GetGeneratedGateClampNote()`. |
+| `Source/RacingSim/Race/TrackDefinitionActor.cpp` | Modified | Gate bake and generator, gate hashing in `ComputeContentHash`, `Validate()`'s gate rules, `PostLoad()` latch, the `double`-domain sample-count guard (L4), and (repair cycle 1) the generator clamp's log/note plus `Validate()`'s gate-count floor. |
+| `Source/RacingSimTests/Race/TrackCheckpointGateSpec.cpp` | **New** | Crossing-direction, gate-build and curved-track coverage. Omitted from the original table. |
+| `Source/RacingSimTests/Race/TrackPrototypeLevelSpec.cpp` | **New** | Three `ProductFilter` tests against the placed, loaded track. |
+| `Source/RacingSimTests/Race/TrackCenterlineSpec.cpp` | Modified | Max-segment, sagitta-bound and polyline-bias coverage. Omitted from the original table. |
+| `Source/RacingSimTests/Race/TrackDefinitionActorSpec.cpp` | Modified | Gate fields added to the CDO fixture snapshot/restore; the coarse-bake block updated; (repair cycle 1) `RacingSim.Race.TrackCheckpointGateOrderFloor` added. Omitted from the original table. |
+| `Docs/AssetOwnership.tsv` | Modified | Claims `Content/Tracks/Prototype/*` for `junyi` under TRACK-002. |
+| `Docs/Environment.md` | Modified | The `Product` gate; the `SmokeFilter`-cannot-touch-actors rule; three editor-Python invocation traps; the config-rewrite hazard. |
+| `Docs/Tickets.md` | Modified | This section, the checkboxes, and the `TEST-001` inherited-finding resolution. |
 
 `Config/DefaultGame.ini` was **reverted, not committed** — see "Hazards" below.
+
+#### Rollback
+
+Reverting this ticket is **not** a plain `git revert` of the source commits. Two things
+outlive the C++:
+
+1. **`TrackSchemaVersion` 1 → 2** (`Source/RacingSim/Race/TrackDefinitionActor.h`). A
+   revert takes it back to `1`, and any result already published carrying
+   `SchemaVersion == 2` becomes unreadable-by-contract rather than merely stale: version 1
+   and version 2 are declared non-comparable *because the gates decide which laps count*.
+   Nothing publishes results yet (`RACE-003` is `OPEN`), so today the blast radius is
+   zero — but a revert **after** `RACE-003` ships must either keep the version at 2 with a
+   documented "2 means no gates again" note, or bump to 3. Do not silently reuse 1.
+   The content hash also changes on revert (the gate fields drop out of
+   `ComputeContentHash`), so every stored track hash is invalidated regardless.
+2. **The `.umap` and its Git LFS object.**
+   `Content/Tracks/Prototype/Maps/L_Meridian_Graybox.umap` is the repository's first binary
+   asset. Confirmed LFS-tracked: `.gitattributes` carries
+   `*.umap filter=lfs diff=lfs merge=lfs -text lockable`, and `git lfs ls-files` lists the
+   file under oid `3c212e2fc0`. `git revert` removes the **pointer file** from the working
+   tree; it does **not** remove the LFS object from `.git/lfs/objects`, and it does not
+   release the `Docs/AssetOwnership.tsv` claim on `Content/Tracks/Prototype/*`. A full
+   rollback therefore needs two steps the source revert will not do: (a) drop the ownership
+   row from `Docs/AssetOwnership.tsv`, and (b) run `git lfs prune` if the object must not
+   persist locally. This repository is local-only per `Docs/ADR/ADR-0004`, so there is no
+   remote LFS store to clean today — once one exists, note that removing an object from it
+   is a history rewrite and is **not** something a revert can or should do.
+   The level can be regenerated exactly from
+   `Scripts/Content/Author-PrototypeGrayboxLevel.ps1`, which is why the `.umap` is
+   recoverable rather than precious; the authoring script, not the binary, is the source of
+   truth. Verified idempotent: two consecutive runs produced identical length and gate
+   distances.
+
+Everything else — the new `Source/RacingSim/Race/TrackCheckpointGate.*` pair, the
+centerline accessors, the test specs and the `Scripts/Test/*.ps1` harness — reverts
+cleanly, with one ordering constraint: `Scripts/Test/Run-Smoke.ps1` and
+`Scripts/Test/Build-Target.ps1` are **new in this ticket**, so reverting it removes the
+project's only scripted build/test entry points. Any later ticket that starts citing them
+must not be reverted across this one.
 
 #### Binary-asset ownership
 
@@ -1653,9 +1723,21 @@ script's own report in `Saved/Logs/RacingSim.log`:
 3.245 km is inside `Docs/03-TrackRaceUI.md`'s 3-5 km brief. Two consecutive runs produced
 **identical** length and gate distances, which is the idempotency claim actually
 exercised rather than asserted. Contents: one `ATrackDefinitionActor`, one
-`ADirectionalLight`, one `ASkyLight`, and **no asset references of any kind** — no meshes,
-materials or textures, not even `/Engine/BasicShapes`. No license-ledger entry is
-required, and the level cannot acquire one by accident. There is consequently no road
+`ADirectionalLight`, one `ASkyLight`, and **no third-party or licence-ledger-requiring
+asset references** — no meshes, materials or textures, not even `/Engine/BasicShapes`.
+
+> **Corrected in repair cycle 1 (code-reviewer finding L1).** This originally read "**no
+> asset references of any kind**", which is not literally true. The `.umap` byte stream
+> does reference `/Engine/EditorResources/LightIcons/S_LightError` (the editor billboard
+> sprite the engine attaches to a light component) and
+> `/Engine/Maps/Templates/OpenWorld` (the template the map was created from). Both are
+> Epic engine content, both are editor-only, and neither is licensable third-party art —
+> so the **licensing conclusion is unchanged**: no `Docs/13-AssetLicenseLedger.md` entry is
+> required. The categorical claim was simply stronger than the evidence, and a categorical
+> claim is exactly the kind that a later reader relies on without re-checking.
+
+No license-ledger entry is required, and the level cannot acquire one by accident from
+authored content. There is consequently no road
 surface mesh; that is a deliberate deferral to the track-art ticket, approved by the
 director before authoring.
 
@@ -1730,6 +1812,217 @@ director before authoring.
   `ComputeContentHash()`; no schema bump was needed. `TrackSchemaVersion` stays at 2.
 - **Two gates now exist and both must be run.** A future ticket reporting only Smoke
   counts is reporting a subset of this project's tests.
+
+### TRACK-002 — repair cycle 1, `code-reviewer` pass 1 blocking findings
+
+`code-reviewer` returned **CHANGES REQUESTED** against `dc96061`. This cycle closes the
+four blocking findings and **nothing else**: M2–M5, M7, L2, L4–L6 were marked non-blocking
+and stay open, batched forward to `RACE-002`/`RACE-003`/`VEH-002`/`TEST-001`.
+
+| ID | Severity | Status |
+|---|---|---|
+| H1 | HIGH | **Closed.** A gate set too small to enforce order is now refused by `Validate()`. See below. |
+| M6 | Docs, blocking | **Closed.** "Files changed" table corrected to the ticket's real file set; rollback section added. |
+| L1 | Docs, blocking | **Closed.** The "no asset references of any kind" claim narrowed in `Docs/Tickets.md` and `Content/Tracks/README.md`. |
+| L3 | Process, blocking | **Closed.** Acceptance criterion #1 reverted to `[ ]`; ticking it is the re-review's call. |
+
+#### How H1 was closed
+
+**The defect.** `Validate()`'s only gate-count check was
+`FRacingCheckpointGateSet::IsValid()`, which means "at least one gate". A one-gate track
+therefore validated green. With one gate there is no order to be out of and no shortcut is
+detectable, so `CLAUDE.md`'s "ordered checkpoint gates plus a valid crossing direction" had
+lost its ordering half entirely — and the track looked perfectly healthy from a HUD.
+
+**It was reachable without anyone authoring it.** `MakeGeneratedGateSpecs` clamps its gate
+count down to `floor(L / (2 * MaxSegment))`. At the coarsest bake `Validate()` permits
+(`CenterlineSampleSpacingCm >= L/3`, which floors the bake at three samples and therefore
+`L/3` segments) that expression is `floor(1.5) == 1`. A large `MinCornerRadiusCm` shrinks
+the sagitta below the gate half-width so the one gate bakes cleanly. The reviewer's repro
+was **already in the test suite**: `RacingSim.Race.TrackValidation`'s coarse-bake block
+sets exactly that pair and asserted `Validate() == true`.
+
+**Approach taken: reject in `Validate()`, and make the clamp testify.** Both halves were
+needed, and the choice is not arbitrary:
+
+- *Why not "make the bake fail" alone.* The generator is only one of two entrances. An
+  author writing a two-gate `CheckpointGateSpecs` array by hand never invokes the
+  generator, so no amount of generator hardening rejects that track — and it is the same
+  defect. Only a floor on the **baked** set covers both. This is asserted directly by the
+  new test's negative control, which authors two geometrically impeccable gates and
+  requires the rejection to name the order rule rather than a bake failure.
+- *Why the bake still must not fail.* This file's established design is that a bake never
+  fails on a value `Validate()` will reject, so progress and ranking survive a
+  mis-authored gate set. Making the generator refuse to emit would take the centerline
+  down with it.
+- *Why the floor is 4, not 3.* Two thresholds exist and they differ: `>= 2` is where an
+  order exists at all, `>= 4` is where a shortcut across the middle of a circuit becomes
+  detectable (with gates only at `0` and `L/2`, a car can reach the far gate, turn round
+  across the infield, cross the line forwards and be credited a lap half the circuit's
+  length). No finite count forbids every shortcut, so the floor is a policy choice —
+  and **4 is the number `ATrackDefinitionActor.h` already documented** for
+  `NumGeneratedCheckpointGates` and ships as its default. Enforcing 4 removes a
+  contradiction between the header and the code; picking 3 would have added a third
+  number.
+
+Changes, all in `Source/RacingSim/Race/TrackDefinitionActor.{h,cpp}`:
+
+1. `static constexpr int32 MinCheckpointGateCount = 4`, with the reasoning above recorded
+   on it, including why the floor is enforced in `Validate()` (a race rule) and not in
+   `FRacingCheckpointGateSet::Build()` (geometry) — the same split the Reverse-only
+   start/finish check already uses.
+2. `Validate()` rejects `BakedCheckpointGates.NumGates() < MinCheckpointGateCount`, after
+   the bake-error branch so a set that failed to build still reports the build reason.
+3. `Validate()`'s `NumGeneratedCheckpointGates` check moved from `< 1` to
+   `< MinCheckpointGateCount`, and scoped to the case where the generator is actually in
+   use — rejecting an inert field would be a false failure.
+4. **The clamp now logs and records.** `MakeGeneratedGateSpecs` became non-const and sets
+   `GeneratedGateClampNote` (new `Transient` member, new
+   `GetGeneratedGateClampNote()` accessor) whenever it reduces the count, naming the
+   requested count, the produced count, the max segment, the lap length and the effective
+   step. It also emits one `LogRacingRace` warning per bake. `Validate()` appends the note
+   to its failure reason, so the message names the **coarse bake** as the cause rather
+   than blaming a count the author never typed.
+5. `NumGeneratedCheckpointGates`'s `ClampMin`/`UIMin` metadata raised from `1` to `4`, so
+   the editor cannot author below the floor in the first place.
+
+**Test changes.**
+
+- `RacingSim.Race.TrackValidation`'s coarse-bake block previously asserted
+  `GetNumCheckpointGates() >= 1 && < NumGeneratedCheckpointGates`, which **passes on
+  exactly one gate** — it pinned the bug as correct. It now asserts the count is
+  *exactly* 1 (a range that includes the broken value is how this survived review once),
+  that the clamp note is populated and names the requested count, that `Validate()`
+  **fails**, and that the reason contains both the gate floor and the clamp's explanation.
+  The block's original purpose is preserved and strengthened: the `NumSegments() < 3`
+  guard is now asserted not to fire by checking the reason does **not** contain
+  `"too coarse to query"`, which is a stronger statement than the old `Validate() == true`
+  (that assertion would have gone green for any reason at all).
+- A positive control was added to the same block: at the authored spacing the generator
+  places every requested gate, clamps nothing, and the track validates. Without it the two
+  rejections would be satisfied by a `Validate()` that had simply stopped returning true.
+- **New test `RacingSim.Race.TrackCheckpointGateOrderFloor`** (`SmokeFilter`), covering
+  both entrances: the generator-knob path, the hand-authored two-gate negative control
+  (asserts the set *builds*, reports two gates, nothing clamped — and is refused anyway,
+  on the order rule and not on geometry), the one-gate case finding H1 reported, and the
+  exactly-at-the-floor case, which must be **accepted** so the check is a floor and not a
+  ban. The floor is read from `ATrackDefinitionActor::MinCheckpointGateCount` rather than
+  hard-coded, so editing the constant to 1 fails the test instead of silently passing it.
+
+**Not changed, deliberately.** `TrackSchemaVersion` stays at **2**. `MinCheckpointGateCount`
+is a compile-time validation threshold, not authored data — it is absent from
+`ComputeContentHash()` for the same reason `Validate()`'s other thresholds are, and no
+existing track's hash moves. The graybox level authors six gates and is unaffected.
+
+#### A defect this cycle introduced and then caught by running
+
+The first draft of the H1 fix logged the clamp **unconditionally**, and the Smoke run
+reported **nine** suites as `succeededWithWarnings` where the baseline had four. The
+message was the new clamp warning at a **199.999985 cm lap** — i.e.
+`USplineComponent`'s default **two-point, 200 cm** spline, which is what a freshly placed
+`ATrackDefinitionActor` has and what the CDO fixture restores on teardown.
+
+That bake **succeeds** (a closed loop floors at three samples), so `LogBakeFailure`'s
+one-shot suppression never sees it, and 200 cm of track supports
+`floor(200 / (2 * 66.7)) == 1` gate. So the clamp fired on every `OnConstruction` and every
+`PostEditChangeProperty` for as long as it takes somebody to draw a circuit — reintroducing,
+in a new place, exactly the log-flood defect `TRACK-001` finding H1 fixed for bake failures.
+
+Fixed by routing the log through the same discipline as `bBakeFailureLogged`: a new
+`bGateClampLogged` one-shot, re-armed by a bake that places every requested gate.
+**`GeneratedGateClampNote` is still recorded on every bake**, so `Validate()` loses no
+information — only the repeated log line is suppressed, which is the documented reason
+`CLAUDE.md`'s "no warning suppression without a documented reason" asks for. Verified by
+re-running: `TrackValidation` 6 → 4 warnings, `TrackFixtureRestore` 2 → 1. The residual
+warnings are one per genuine full-set → clamped-set transition, which is the intended
+behaviour.
+
+#### Repair cycle 1 — commands run, verbatim
+
+```powershell
+# Builds. This worktree was FRESH (no Binaries/, no Intermediate/), so both builds are
+# from scratch by construction rather than by a -Clean flag.
+powershell -NoProfile -ExecutionPolicy Bypass -File "Scripts\Test\Build-Target.ps1" `
+    -Target RacingSimEditor -OutFile "<worktree>\Saved\TRACK002R1\build-editor-2.log" `
+    -ProjectPath "<worktree>\RacingSim.uproject"
+powershell -NoProfile -ExecutionPolicy Bypass -File "Scripts\Test\Build-Target.ps1" `
+    -Target RacingSim -OutFile "<worktree>\Saved\TRACK002R1\build-game-2.log" `
+    -ProjectPath "<worktree>\RacingSim.uproject"
+
+# Gate 1 - Smoke
+powershell -NoProfile -ExecutionPolicy Bypass -File "Scripts\Test\Run-Smoke.ps1" `
+    -ProjectPath "<worktree>\RacingSim.uproject" `
+    -ReportDir "<worktree>\Saved\Automation\Report"
+
+# Gate 2 - the actor-touching level tests
+powershell -NoProfile -ExecutionPolicy Bypass -File "Scripts\Test\Run-AutomationFilter.ps1" `
+    -TestNames "RacingSim.Race.TrackPrototypeLevelPostLoad+RacingSim.Race.TrackPrototypeLevelIdentity+RacingSim.Race.TrackPrototypeLevelGates" `
+    -ProjectPath "<worktree>\RacingSim.uproject" `
+    -ReportDir "<worktree>\Saved\Automation\LevelReport"
+```
+
+`pwsh` (PowerShell 7) is **not installed on this host**; only Windows PowerShell 5.1
+(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`) is present. The earlier
+evidence section's `pwsh -File ...` lines therefore cannot be replayed verbatim; the
+scripts themselves are 5.1-compatible and were run as above. Recorded so a re-reviewer does
+not waste a cycle on a command that cannot run here.
+
+#### Repair cycle 1 — build results
+
+Read from each command's own captured stdout, never from the machine-wide
+`%LOCALAPPDATA%\UnrealBuildTool\Log.txt`.
+
+| Target | Log | Exit | Result | Warning/error matches | Compile actions |
+|---|---|---|---|---|---|
+| `RacingSimEditor Win64 Development` | `Saved/TRACK002R1/build-editor.log` | 0 | `Result: Succeeded` | **0** | 32 |
+| `RacingSim Win64 Development` | `Saved/TRACK002R1/build-game.log` | 0 | `Result: Succeeded` | **0** | 14 |
+| `RacingSimEditor Win64 Development` (after the log fix) | `Saved/TRACK002R1/build-editor-2.log` | 0 | `Result: Succeeded` | **0** | — |
+| `RacingSim Win64 Development` (after the log fix) | `Saved/TRACK002R1/build-game-2.log` | 0 | `Result: Succeeded` | **0** | — |
+
+The **Game** target genuinely recompiled the changed runtime sources rather than no-opping —
+its log contains `[22/26] Compile [x64] TrackCheckpointGate.cpp` and
+`[23/26] Compile [x64] TrackDefinitionActor.cpp`, plus
+`[Adaptive Build] Excluded from RacingSim unity file: TrackDefinitionActor.cpp`. That was
+the reviewer's specific concern about this file living in the Game target.
+
+#### Repair cycle 1 — automation results
+
+- **Smoke** — `Saved/Automation/Report/index.json`, `reportCreatedOn=2026.08.19-10.35.52`:
+  **`succeeded=457, succeededWithWarnings=9, passedTotal=466, failed=0, notRun=0`**,
+  `testsInReport=466`, `PROCESS_EXITCODE=0`, `NON_SUCCESS_COUNT=0`. All 466 tests report
+  state `Success`. **40** `RacingSim.*` suites (39 before; `+1` is this cycle's new
+  `RacingSim.Race.TrackCheckpointGateOrderFloor`), all `Success` — including
+  `TrackValidation`, whose coarse-bake block was rewritten.
+- **Level tests** — `Saved/Automation/LevelReport/index.json`,
+  `reportCreatedOn=2026.08.19-10.34.34`: **`succeeded=3, failed=0, notRun=0`**,
+  `PROCESS_EXITCODE=0`. `TrackPrototypeLevelPostLoad`, `TrackPrototypeLevelIdentity`,
+  `TrackPrototypeLevelGates`, all `Success` — so the placed six-gate graybox track still
+  validates under the new floor.
+
+**On the count moving 462 → 457, which is not a regression.** `succeeded` is *not* the pass
+count: the report splits passes into `succeeded` and `succeededWithWarnings`, and a test
+that passes every assertion but emits one `UE_LOG(Warning)` moves between the two buckets.
+The total is unchanged at **466**, `failed` and `notRun` are both **0**, and every test's
+`state` is `Success`. `Scripts/Test/Run-Smoke.ps1` and `Scripts/Test/Run-AutomationFilter.ps1`
+printed only `succeeded`, which is what made a bucket shift look like lost coverage; both
+now also print `succeededWithWarnings`, `passedTotal` and `testsInReport`. No existing field
+was removed or changed meaning, so evidence recorded by CORE-002/TRACK-001/TEST-001 against
+`Run-Smoke.ps1` stays verifiable.
+
+#### Open risks from this cycle
+
+- **The floor is a policy number, and it is the strongest counter-case against this fix.**
+  Four gates do not make a circuit shortcut-proof; they bound the longest undetectable cut
+  to roughly the chord across one quarter-lap arc, which on the 3.245 km graybox is still
+  about 800 m of infield. `MinCheckpointGateCount` buys "order is enforceable at all", not
+  "shortcuts are impossible". A track wanting real shortcut resistance needs gate spacing
+  derived from its own geometry — which is `RACE-002`'s problem once it owns the ordering
+  half, and this constant should be revisited there rather than treated as settled.
+- **Raising `ClampMin` to 4 does not retro-fix existing content.** `ClampMin` constrains
+  the editor UI only; a `.umap` already saved with a lower value, or a value set from
+  Python via `set_editor_property`, still loads. `Validate()` is the real guard. No such
+  content exists today (the only placed track authors six gates), but the metadata should
+  not be mistaken for enforcement.
 
 ### RACE-003 — findings inherited from TRACK-001
 

@@ -17,12 +17,27 @@ Contents, in full:
 | `Sun_Graybox` (`ADirectionalLight`) | So the map is not black when a human opens it. |
 | `SkyLight_Graybox` (`ASkyLight`) | Same. |
 
-**Nothing else, and no asset references at all** — no static meshes, no materials, no
-textures, not even `/Engine/BasicShapes`. That is a deliberate license posture rather than
-an omission: TRACK-002's acceptance criterion is "no license-ledger-requiring external
-asset", and a level whose only references are its own actors' native classes cannot
-acquire one by accident. There is consequently **no road surface mesh**; a spline-mesh
-road belongs to the track-art ticket that owns `Docs/13-AssetLicenseLedger.md` entries.
+**Nothing else, and no third-party or licence-ledger-requiring asset references** — no
+static meshes, no materials, no textures, not even `/Engine/BasicShapes`. That is a
+deliberate license posture rather than an omission: TRACK-002's acceptance criterion is "no
+license-ledger-requiring external asset", and a level with no authored content references
+cannot acquire one by accident. There is consequently **no road surface mesh**; a
+spline-mesh road belongs to the track-art ticket that owns
+`Docs/13-AssetLicenseLedger.md` entries.
+
+> **Precise, because the earlier wording was not** (code-reviewer, TRACK-002 finding L1).
+> This section previously claimed "**no asset references at all**". The map's byte stream
+> does in fact reference two Epic engine packages:
+>
+> | Reference | What it is | Why it is there |
+> |---|---|---|
+> | `/Engine/EditorResources/LightIcons/S_LightError` | Editor billboard sprite | Attached automatically to a light component; **editor-only**, never cooked into a shipping build |
+> | `/Engine/Maps/Templates/OpenWorld` | Map template | The template the level was created from |
+>
+> Neither is licensable third-party art, so **the licensing conclusion is unchanged: no
+> ledger entry is required**. The claim was narrowed rather than defended because a
+> categorical "none at all" is the kind of statement a later reader trusts without
+> re-checking, and it was false as written.
 
 That is sufficient for what the level is for. `RACE-002`'s checkpoint/lap logic drives
 analytic positions along the baked centerline, not a car over a mesh.
