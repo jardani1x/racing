@@ -180,6 +180,18 @@ namespace TrackDefinitionSpecPrivate
 			SavedPoseHeightOffsetCm = Track->PoseHeightOffsetCm;
 			SavedResetSampleSpacingCm = Track->ResetSampleSpacingCm;
 
+			// TRACK-002's authored fields. Added here at the same commit that added them
+			// to the actor, because this fixture mutates a process-wide CDO and its whole
+			// safety argument is that the snapshot is EXHAUSTIVE. A new authored field
+			// that is not saved here is a field one suite can leave altered for every
+			// suite that runs after it -- which is exactly the location-only restore bug
+			// M4 found, in a new place.
+			SavedCheckpointGateSpecs = Track->CheckpointGateSpecs;
+			SavedNumGeneratedGates = Track->NumGeneratedCheckpointGates;
+			SavedGeneratedGateHalfWidthCm = Track->GeneratedGateHalfWidthCm;
+			SavedGeneratedGateHalfHeightCm = Track->GeneratedGateHalfHeightCm;
+			SavedMinCornerRadiusCm = Track->MinCornerRadiusCm;
+
 			USplineComponent* Spline = Track->GetCenterlineSpline();
 			if (Spline)
 			{
@@ -225,6 +237,12 @@ namespace TrackDefinitionSpecPrivate
 			Track->GridSlotLateralOffsetCm = SavedGridSlotLateralOffsetCm;
 			Track->PoseHeightOffsetCm = SavedPoseHeightOffsetCm;
 			Track->ResetSampleSpacingCm = SavedResetSampleSpacingCm;
+
+			Track->CheckpointGateSpecs = SavedCheckpointGateSpecs;
+			Track->NumGeneratedCheckpointGates = SavedNumGeneratedGates;
+			Track->GeneratedGateHalfWidthCm = SavedGeneratedGateHalfWidthCm;
+			Track->GeneratedGateHalfHeightCm = SavedGeneratedGateHalfHeightCm;
+			Track->MinCornerRadiusCm = SavedMinCornerRadiusCm;
 
 			RestoreSpline();
 			Track->RebuildTrackData();
@@ -326,6 +344,11 @@ namespace TrackDefinitionSpecPrivate
 		double SavedGridSlotLateralOffsetCm = 0.0;
 		double SavedPoseHeightOffsetCm = 0.0;
 		double SavedResetSampleSpacingCm = 0.0;
+		TArray<FRacingCheckpointGateSpec> SavedCheckpointGateSpecs;
+		int32 SavedNumGeneratedGates = 0;
+		double SavedGeneratedGateHalfWidthCm = 0.0;
+		double SavedGeneratedGateHalfHeightCm = 0.0;
+		double SavedMinCornerRadiusCm = 0.0;
 		TArray<FVector> SavedSplinePoints;
 		TArray<FVector> SavedArriveTangents;
 		TArray<FVector> SavedLeaveTangents;
@@ -1196,6 +1219,7 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 	// assert the guard sits exactly one below it and does not fire.
 	{
 		const double OriginalSpacing = Track->CenterlineSampleSpacingCm;
+		const double OriginalRadiusCm = Track->MinCornerRadiusCm;
 
 		// Ten laps' worth of spacing -- far coarser than any authoring mistake.
 		Track->CenterlineSampleSpacingCm = LengthCm * 10.0;
@@ -1204,10 +1228,51 @@ bool FTrackDefinitionValidationTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("...and therefore at 3 segments, one above the guard"),
 			Track->GetCenterline().NumSegments(), 3);
 
+		// TRACK-002 CHANGED WHAT THIS CASE MEASURES, and the change is recorded here
+		// rather than absorbed silently, because TRACK-001 wrote this test specifically so
+		// that a later ticket would have to update it deliberately.
+		//
+		// A three-segment bake has segments of L/3 -- about 209 m on this fixture. The
+		// gate rules added by TRACK-002 both fire on that: gates would be closer together
+		// than one segment (handled by the generator, which now clamps its own count), and
+		// a 900 cm gate is narrower than the placement tolerance at the default 15 m
+		// minimum corner radius. Both rejections are CORRECT: a 209 m chord has entirely
+		// lost a 15 m corner, and gates measured against it cannot be trusted.
+		//
+		// So the gate rules are lifted out of the way first, to isolate the guard this
+		// case is actually about. The interaction itself is then asserted directly, below,
+		// which is strictly more coverage than this case had before.
+		Track->MinCornerRadiusCm = 1.0e6;
+		TestTrue(TEXT("Rebake with the gate placement rules out of the way"), Track->RebuildTrackData());
+
 		FString CoarseReason;
-		TestTrue(TEXT("The NumSegments() < 3 guard does not fire at the floor"), Track->Validate(CoarseReason));
+		TestTrue(FString::Printf(TEXT("The NumSegments() < 3 guard does not fire at the floor (%s)"), *CoarseReason),
+			Track->Validate(CoarseReason));
+
+		// The generator must never manufacture an unbakeable set. At this resolution the
+		// centerline supports far fewer than the authored four gates, so it produces
+		// fewer rather than producing four and failing.
+		TestTrue(TEXT("The gate generator clamps itself to what the coarse bake supports"),
+			Track->GetNumCheckpointGates() >= 1 && Track->GetNumCheckpointGates() < Track->NumGeneratedCheckpointGates);
+		TestNearlyEqual(TEXT("...and the start/finish gate is still at distance 0"),
+			Track->GetCheckpointGateDistanceCm(0), 0.0, 1.0e-9);
+
+		// -- The interaction, asserted rather than merely avoided -------------
+		//
+		// At the DEFAULT minimum corner radius, this same coarse bake must NOT validate,
+		// and the reason must name the gates. A track whose centerline still bakes but
+		// whose gates cannot be trusted is exactly the case that looks healthy in a HUD.
+		Track->MinCornerRadiusCm = OriginalRadiusCm;
+		TestTrue(TEXT("Rebake at the default minimum corner radius"), Track->RebuildTrackData());
+
+		FString GateReason;
+		TestFalse(TEXT("A 209 m-segment bake does NOT validate at a 15 m minimum corner radius"),
+			Track->Validate(GateReason));
+		TestTrue(FString::Printf(TEXT("...and the reason names the checkpoint gates: %s"), *GateReason),
+			GateReason.Contains(TEXT("Checkpoint gate")));
 
 		Track->CenterlineSampleSpacingCm = OriginalSpacing;
+		Track->MinCornerRadiusCm = OriginalRadiusCm;
 		Track->RebuildTrackData();
 	}
 

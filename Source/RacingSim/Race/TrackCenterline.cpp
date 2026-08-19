@@ -233,8 +233,20 @@ double FTrackCenterline::GetSagittaBoundCm(const double MinCurveRadiusCm) const
 	// would start REPORTING LESS error for a worse bake.
 	const double Theta = FMath::Min(MaxSegmentLengthCm / MinCurveRadiusCm, UE_DOUBLE_PI);
 
-	// Exact sagitta, not the small-angle L^2/(8R). The small-angle form under-estimates,
-	// and an error bound that errs optimistically is worse than none.
+	// Exact sagitta for a circular arc, not the familiar small-angle L^2 / (8R).
+	//
+	// CORRECTED AFTER A FAILING TEST, and the correction is worth recording because the
+	// original comment here (and in TRACK-001's counter-case) asserted the opposite.
+	// With L read as ARC length -- which is what MaxSegmentLengthCm is -- the two forms
+	// agree to leading order and L^2 / (8R) is the LARGER of the two, because
+	// 1 - cos(x) = x^2/2 - x^4/24 + ... falls below its own leading term. So the
+	// small-angle form with arc length happens to be a safe (if looser) bound, and the
+	// claim that it under-estimates was simply wrong. RacingSim.Race.CenterlinePolylineBias
+	// asserted the wrong direction first and failed, which is how this was found.
+	//
+	// The exact form is used anyway: it is exact rather than incidentally conservative,
+	// and it stays correct at the coarse sampling where the small-angle approximation
+	// stops being an approximation of anything.
 	const double SagittaCm = MinCurveRadiusCm * (1.0 - FMath::Cos(Theta * 0.5));
 
 	// Geometric ceiling. A chord's deviation from its arc cannot exceed half the arc's

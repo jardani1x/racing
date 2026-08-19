@@ -106,13 +106,17 @@ enum class ERacingGateCrossing : uint8
 	Reverse,
 
 	/**
-	 * Passed through the gate's plane but OUTSIDE its width or height.
+	 * Passed NEAR the gate, through its plane, but outside its width or height.
 	 *
 	 * Distinct from None on purpose. The plane is infinite; the gate is not. A car
 	 * driving round the outside of a gate, over a barrier, or through a runoff area
 	 * still crosses the plane, and a caller that saw None could not tell that from
 	 * "did not reach the gate at all". It is also the signature of a shortcut, which
 	 * RACE-002 needs to be able to act on.
+	 *
+	 * "Near" is bounded by FRacingCheckpointGate::RelevanceRadiusCm. A plane crossing
+	 * farther away than that is somewhere else on the circuit -- the same infinite plane
+	 * met on the far side of the loop -- and is reported as None, not as a near-miss.
 	 */
 	OutsideExtent
 };
@@ -182,6 +186,37 @@ struct RACINGSIM_API FRacingCheckpointGate
 	/** Unit vertical axis of the gate, orthogonal to the other two. Not world up on a banked section. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints")
 	FVector UpAxis = FVector::UpVector;
+
+	/**
+	 * How far from the gate's centre, cm, a plane crossing is still ABOUT this gate.
+	 *
+	 * THE GATE'S PLANE IS INFINITE AND THE TRACK IS A LOOP, so on any closed circuit
+	 * every gate's plane is met a second time somewhere else entirely -- on a circular
+	 * test track, on the far side, two diameters away. Without this radius a single
+	 * clean lap reports every gate twice: once through the rectangle and once as an
+	 * OutsideExtent crossing hundreds of metres away, and a caller reading
+	 * DidCrossPlane() sees phantom activity on gates the car was nowhere near.
+	 *
+	 * Beyond this radius a plane crossing is reported as None: it is not a near-miss of
+	 * this gate, it is a different part of the circuit. Inside it but outside the
+	 * rectangle it stays OutsideExtent, which is the genuinely interesting case -- a car
+	 * that went round the gate through runoff.
+	 *
+	 * Derived, not authored: four times the gate's own diagonal. Four rather than one so
+	 * that going wide through runoff still registers as a near-miss (a 900x500 cm gate
+	 * gives a ~41 m radius), and bounded rather than unlimited so the far side of a
+	 * circuit cannot masquerade as one.
+	 *
+	 * RESIDUAL RISK, STATED RATHER THAN HIDDEN: where two parts of a circuit pass within
+	 * this radius of each other -- a pit lane beside the main straight -- a crossing on
+	 * the wrong leg is still reported as OutsideExtent. That is safe, because only
+	 * IsThroughGate() authorises anything and OutsideExtent never does; but a caller
+	 * counting near-misses for telemetry must know it. A crossing on the wrong leg
+	 * WITHIN the rectangle would be a false positive, and that needs the two legs to pass
+	 * within HalfWidthCm of each other, i.e. closer than the gate is wide.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints")
+	double RelevanceRadiusCm = 0.0;
 
 	/** Signed distance from the gate plane, cm. Positive is ahead of the gate in the direction of travel. */
 	double GetSignedPlaneDistanceCm(const FVector& WorldLocationCm) const

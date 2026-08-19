@@ -819,17 +819,23 @@ bool FTrackCenterlinePolylineBiasTest::RunTest(const FString& Parameters)
 	TestNearlyEqual(TEXT("GetSagittaBoundCm reproduces the closed form exactly"),
 		Centerline.GetSagittaBoundCm(TrackSpecCircleRadiusCm), ClosedFormSagittaCm, 1.0e-12);
 
-	// The familiar small-angle form L^2 / (8R) is what the codebase's comments quote.
-	// It UNDER-estimates, which is why GetSagittaBoundCm does not use it: an error bound
-	// that errs optimistically is not a bound. The gap is tiny at sane sampling, and
-	// asserting its DIRECTION is the point.
+	// The familiar small-angle form L^2 / (8R) is what TRACK-001's counter-case and
+	// several comments in this codebase quote.
+	//
+	// THIS ASSERTION WAS WRITTEN THE WRONG WAY ROUND FIRST AND FAILED, which is the only
+	// reason the direction is now recorded rather than assumed. With L read as ARC length
+	// -- which is what GetMaxSegmentLengthCm() is -- the small-angle form sits marginally
+	// ABOVE the exact sagitta, because 1 - cos(x) = x^2/2 - x^4/24 + ... falls below its
+	// own leading term. So the quoted approximation is incidentally a safe bound, not an
+	// optimistic one. (Read with L as CHORD length it would fall below; the two readings
+	// differ, and the codebase means arc length.)
 	{
 		const double SmallAngleCm =
 			(UniformSegmentCm * UniformSegmentCm) / (8.0 * TrackSpecCircleRadiusCm);
-		TestTrue(TEXT("The small-angle L^2/(8R) form under-estimates the true sagitta"),
-			SmallAngleCm <= ClosedFormSagittaCm);
+		TestTrue(TEXT("The small-angle L^2/(8R) form, with L as arc length, sits ABOVE the exact sagitta"),
+			SmallAngleCm >= ClosedFormSagittaCm);
 		TestTrue(TEXT("...but only marginally at 720 samples"),
-			ClosedFormSagittaCm - SmallAngleCm < ClosedFormSagittaCm * 0.01);
+			SmallAngleCm - ClosedFormSagittaCm < ClosedFormSagittaCm * 0.01);
 	}
 
 	// -- The bias is real, bounded, and ONE-DIRECTIONAL ----------------------

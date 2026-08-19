@@ -265,6 +265,13 @@ bool FRacingCheckpointGateSet::Build(
 		// of shearing across it.
 		Gate.UpAxis = FVector::CrossProduct(Forward, RightAxis).GetSafeNormal();
 
+		// See FRacingCheckpointGate::RelevanceRadiusCm. Four times the rectangle's own
+		// diagonal: enough that going wide through runoff still registers as a near-miss,
+		// bounded enough that the same infinite plane met on the far side of a closed
+		// circuit does not.
+		Gate.RelevanceRadiusCm = 4.0 * FMath::Sqrt(
+			Spec.HalfWidthCm * Spec.HalfWidthCm + Spec.HalfHeightCm * Spec.HalfHeightCm);
+
 		NewGates.Add(Gate);
 	}
 
@@ -377,6 +384,25 @@ FRacingGateCrossingResult FRacingCheckpointGateSet::EvaluateCrossing(
 	const FVector CrossingPoint = FMath::Lerp(FromWorldCm, ToWorldCm, Alpha);
 	const double LateralCm = Gate->GetLateralOffsetCm(CrossingPoint);
 	const double VerticalCm = Gate->GetVerticalOffsetCm(CrossingPoint);
+
+	// THE PLANE IS INFINITE AND THE TRACK IS A LOOP. On any closed circuit each gate's
+	// plane is met a second time somewhere else -- on a circular test track, two
+	// diameters away on the far side. Reporting that as OutsideExtent would mean a clean
+	// lap generated a phantom event on every gate, and a caller reading DidCrossPlane()
+	// would see activity on gates the car was nowhere near. Beyond the relevance radius
+	// this is not a near-miss of THIS gate; it is a different part of the circuit.
+	//
+	// Found by running, not by inspection: the first version of this function had no such
+	// bound and RacingSim.Race.GateCurvedTrack reported nine crossings for a four-gate
+	// lap, the extra five being far-side plane hits up to 200 m off centre.
+	if (FMath::Square(LateralCm) + FMath::Square(VerticalCm) > FMath::Square(Gate->RelevanceRadiusCm))
+	{
+		// The crossing fields are left at their defaults so that Crossing == None always
+		// means CrossingAlpha == 0, rather than sometimes carrying an alpha for a
+		// crossing the caller is being told did not happen.
+		Result.Crossing = ERacingGateCrossing::None;
+		return Result;
+	}
 
 	Result.CrossingAlpha = Alpha;
 	Result.CrossingPoint = CrossingPoint;
