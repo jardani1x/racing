@@ -259,9 +259,12 @@ struct RACINGSIM_API FTrackCenterline
 	 *     sagitta = R * (1 - cos(theta / 2)),  theta = SegmentLength / R
 	 *
 	 * and this returns that quantity evaluated at GetMaxSegmentLengthCm(), which is the
-	 * worst segment on the track. The familiar `L^2 / (8R)` is its small-angle form and
-	 * UNDER-estimates for coarse sampling, so the exact expression is used here -- an
-	 * error bound that is itself approximate in the optimistic direction is not a bound.
+	 * worst segment on the track. The familiar `L^2 / (8R)` is its small-angle form; with
+	 * L read as ARC length it sits marginally ABOVE the exact value, so it is incidentally
+	 * safe rather than wrong. The exact expression is used regardless, because it stays
+	 * correct at the coarse sampling where the approximation stops approximating anything.
+	 * See the note in the implementation: the direction of that inequality was asserted
+	 * backwards first and a test caught it.
 	 *
 	 * THE BIAS IS ONE-DIRECTIONAL, which is what makes it worth bounding rather than
 	 * treating as noise. It never pushes a position outward, so it does not average away

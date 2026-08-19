@@ -333,12 +333,34 @@ bool FRacingGateSetBuildTest::RunTest(const FString& Parameters)
 		// inward error has no margin left before a car is anywhere near it, and because
 		// the bias is one-directional it does not average away over a lap.
 		//
-		// A 100 cm minimum radius on a 1000 cm segment gives a sagitta bound clamped to
-		// half the segment, 500 cm; a 400 cm half-wide gate is then narrower than the
-		// error and must be refused.
-		TArray<FRacingCheckpointGateSpec> Bad = Specs;
-		Bad[1].HalfWidthCm = 400.0;
-		ExpectRejected(TEXT("a gate narrower than the placement tolerance"), Bad, 100.0);
+		// The numbers are worked rather than guessed, because a first attempt at this
+		// case used a 100 cm radius and a 400 cm half-width and FAILED TO BE REJECTED.
+		// The sagitta at a 1000 cm segment peaks where the segment subtends exactly pi,
+		// i.e. at R = 1000 / pi = 318 cm, and that peak is R itself -- about 318 cm, not
+		// the 500 cm clamp the case had assumed. A tighter radius than that makes the
+		// bound SMALLER, not larger. So: sit at the peak and use a gate narrower than it.
+		constexpr double PeakToleranceRadiusCm = 320.0;
+
+		FTrackCenterline Probe;
+		FString ProbeError;
+		if (BuildStraight(Probe, ProbeError))
+		{
+			const double PeakToleranceCm = Probe.GetSagittaBoundCm(PeakToleranceRadiusCm);
+			TestTrue(TEXT("The placement tolerance peaks near R = segment/pi, above 300 cm"),
+				PeakToleranceCm > 300.0);
+
+			TArray<FRacingCheckpointGateSpec> Bad = Specs;
+			Bad[1].HalfWidthCm = 200.0;
+			ExpectRejected(TEXT("a gate narrower than the placement tolerance"), Bad, PeakToleranceRadiusCm);
+
+			// ...and a gate comfortably wider than the same tolerance is accepted, so the
+			// rejection is the rule firing rather than the whole configuration being bad.
+			Bad[1].HalfWidthCm = 900.0;
+			FRacingCheckpointGateSet WideSet;
+			FString WideError;
+			TestTrue(TEXT("A gate wider than the placement tolerance is accepted"),
+				WideSet.Build(Bad, Probe, PeakToleranceRadiusCm, WideError));
+		}
 	}
 	{
 		ExpectRejected(TEXT("a non-positive minimum corner radius"), Specs, 0.0);
@@ -837,6 +859,59 @@ bool FRacingGateCurvedTrackTest::RunTest(const FString& Parameters)
 		}
 	}
 
+	// -- The far side of the loop is not a gate crossing ---------------------
+	//
+	// FOUND BY RUNNING, NOT BY INSPECTION, and it is the sharpest thing this suite
+	// caught. A gate's plane is INFINITE and a circuit is a LOOP, so every gate's plane
+	// is met a second time on the far side. The first implementation had no bound on
+	// that, and a single clean four-gate lap reported NINE plane crossings -- the five
+	// extra being far-side hits up to 200 m off centre, reported as OutsideExtent.
+	// Harmless to lap validity, since only IsThroughGate() authorises anything, but it
+	// would have handed RACE-002 a stream of phantom near-miss events on gates the car
+	// was nowhere near. FRacingCheckpointGate::RelevanceRadiusCm now bounds it.
+	{
+		const FRacingCheckpointGate* StartFinish = Set.GetGate(0);
+		TestNotNull(TEXT("Start/finish gate exists"), StartFinish);
+		if (StartFinish)
+		{
+			TestTrue(TEXT("The relevance radius is derived and positive"), StartFinish->RelevanceRadiusCm > 0.0);
+			TestTrue(TEXT("...and far wider than the gate itself, so runoff still counts as a near-miss"),
+				StartFinish->RelevanceRadiusCm > StartFinish->HalfWidthCm * 3.0);
+			TestTrue(TEXT("...and far narrower than the circuit, so the far side cannot masquerade as one"),
+				StartFinish->RelevanceRadiusCm < GateSpecCircleRadiusCm * 2.0);
+
+			// Gate 0 sits at (R, 0, 0) with its plane normal along +Y. That same plane
+			// passes through (-R, 0, 0) on the opposite side of the circle. A car crossing
+			// it THERE has crossed the plane, and must be told it crossed nothing.
+			const FVector FarSide(-GateSpecCircleRadiusCm, 0.0, 0.0);
+			const FRacingGateCrossingResult FarResult = Set.EvaluateCrossing(
+				0, FarSide - FVector(0.0, 500.0, 0.0), FarSide + FVector(0.0, 500.0, 0.0));
+
+			TestTrue(TEXT("The far-side motion was evaluated"), FarResult.bEvaluated);
+			TestEqual(TEXT("Crossing the same plane on the far side of the loop is None"),
+				FarResult.Crossing, ERacingGateCrossing::None);
+			TestFalse(TEXT("...and does not count as a plane crossing at all"), FarResult.DidCrossPlane());
+			TestNearlyEqual(TEXT("...and reports no crossing alpha, so None always means alpha 0"),
+				FarResult.CrossingAlpha, 0.0, 0.0);
+
+			// The control that keeps the above honest: the SAME motion at the gate itself
+			// is a clean forward crossing, so the None above is the radius doing its job
+			// and not the plane test being broken.
+			const FVector AtGate(GateSpecCircleRadiusCm, 0.0, 0.0);
+			TestEqual(TEXT("The same motion at the gate itself IS a forward crossing"),
+				Set.EvaluateCrossing(0, AtGate - FVector(0.0, 500.0, 0.0), AtGate + FVector(0.0, 500.0, 0.0)).Crossing,
+				ERacingGateCrossing::Forward);
+
+			// And just outside the rectangle, but well inside the relevance radius, is
+			// still the interesting near-miss case rather than silence.
+			const FVector Wide(GateSpecCircleRadiusCm, 0.0, 0.0);
+			const FVector Offset = StartFinish->RightAxis * (StartFinish->HalfWidthCm + 200.0);
+			TestEqual(TEXT("Going round the gate but near it is OutsideExtent, not None"),
+				Set.EvaluateCrossing(0, Wide + Offset - FVector(0.0, 500.0, 0.0), Wide + Offset + FVector(0.0, 500.0, 0.0)).Crossing,
+				ERacingGateCrossing::OutsideExtent);
+		}
+	}
+
 	// -- Driving the circuit crosses every gate, forwards, in order ----------
 	//
 	// The end-to-end shape of the contract, swept rather than sampled at hand-picked
@@ -847,16 +922,23 @@ bool FRacingGateCurvedTrackTest::RunTest(const FString& Parameters)
 		TArray<int32> Sequence;
 		TArray<double> Laterals;
 
-		FVector Previous = Circle.GetLocationAtDistanceCm(0.0);
+		// EXACTLY one lap, and the offset is load-bearing rather than cosmetic.
+		//
+		// Starting the sweep AT the line and ending it AT the line covers slightly more
+		// than a lap, and gate 0 is then crossed twice -- once leaving and once
+		// arriving. The first version of this test did that and reported five crossings
+		// for four gates, which looked exactly like a duplicate-trigger defect and was
+		// not one. Starting an eighth of a step past the line means the lap begins and
+		// ends between gate 0 and gate 1, so every gate is met once and gate 0 is met
+		// last.
+		const double StartOffsetCm = LengthCm / (StepsPerLap * 2);
 
-		// Start a fraction before the line so the first step crosses gate 0 rather than
-		// starting exactly on it.
-		Previous = Circle.GetLocationAtDistanceCm(-LengthCm / StepsPerLap);
+		FVector Previous = Circle.GetLocationAtDistanceCm(StartOffsetCm);
 
-		for (int32 Step = 0; Step <= StepsPerLap; ++Step)
+		for (int32 Step = 1; Step <= StepsPerLap; ++Step)
 		{
 			const FVector Current = Circle.GetLocationAtDistanceCm(
-				LengthCm * static_cast<double>(Step) / static_cast<double>(StepsPerLap));
+				StartOffsetCm + LengthCm * static_cast<double>(Step) / static_cast<double>(StepsPerLap));
 
 			Set.EvaluateCrossings(Previous, Current,
 				[&Sequence, &Laterals](const FRacingGateCrossingResult& Result)
@@ -868,12 +950,16 @@ bool FRacingGateCurvedTrackTest::RunTest(const FString& Parameters)
 			Previous = Current;
 		}
 
-		// A lap of the centerline crosses gates 0..3 once each, in order, all forward.
+		// A lap crosses each of the four gates exactly once, all forward. The lap starts
+		// just past gate 0, so the order is 1, 2, 3, 0 -- gate 0 is met last, on the way
+		// back to the line. Sequence entries are the gate index for a forward crossing
+		// and -1-index for a reverse one, so a stray reverse shows up as a negative
+		// rather than being silently counted as a pass.
 		TestEqual(TEXT("A lap on the centerline crosses four gates"), Sequence.Num(), 4);
 		if (Sequence.Num() == 4)
 		{
-			TestTrue(TEXT("...in ascending gate order, all forward"),
-				Sequence[0] == 0 && Sequence[1] == 1 && Sequence[2] == 2 && Sequence[3] == 3);
+			TestTrue(TEXT("...each exactly once, in route order, all forward"),
+				Sequence[0] == 1 && Sequence[1] == 2 && Sequence[2] == 3 && Sequence[3] == 0);
 		}
 
 		// ...and each crossing is essentially dead centre. The residual is the polyline

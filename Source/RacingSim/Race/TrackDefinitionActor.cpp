@@ -439,7 +439,29 @@ void ATrackDefinitionActor::MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateS
 	// generator runs during a bake, and a bake must not fail on a value Validate() will
 	// reject anyway. MaxGeneratedSamples is reused as the ceiling because it is already
 	// this file's "no authored number turns a rebuild into an allocation storm" bound.
-	const int32 GateCount = FMath::Clamp(NumGeneratedCheckpointGates, 1, MaxGeneratedSamples);
+	int32 GateCount = FMath::Clamp(NumGeneratedCheckpointGates, 1, MaxGeneratedSamples);
+
+	// A GENERATED SET MUST BE BAKEABLE. FRacingCheckpointGateSet::Build refuses gates
+	// closer together than one centerline segment, because two gates inside one segment
+	// share a plane normal and cannot be ordered reliably. Nothing stops an authored set
+	// from tripping that -- it is an authoring error and should be reported -- but the
+	// GENERATOR must not manufacture one, or a track with a coarse bake would silently
+	// have no gates at all through no fault of anyone who touched it.
+	//
+	// Found by running: RacingSim.Race.TrackValidation deliberately bakes at ten laps'
+	// worth of spacing to probe an unrelated guard, which floors at three samples and
+	// therefore ~L/3 segments. Four evenly spaced gates are then L/4 apart -- closer than
+	// one segment -- and the whole track stopped validating.
+	//
+	// The 2x margin is not decoration: at exactly one segment the separation check is
+	// inclusive, and gate distances are computed by repeated multiplication, so a bare
+	// >1 target would sit on the boundary and depend on rounding.
+	const double MaxSegmentCm = BakedCenterline.GetMaxSegmentLengthCm();
+	if (MaxSegmentCm > 0.0)
+	{
+		const int32 SupportedGates = FMath::FloorToInt32(LengthCm / (MaxSegmentCm * 2.0));
+		GateCount = FMath::Clamp(GateCount, 1, FMath::Max(1, SupportedGates));
+	}
 
 	const double HalfWidthCm = (FMath::IsFinite(GeneratedGateHalfWidthCm) && GeneratedGateHalfWidthCm > 0.0)
 		? GeneratedGateHalfWidthCm : 900.0;
