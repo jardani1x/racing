@@ -130,7 +130,27 @@ void ATrackDefinitionActor::OnConstruction(const FTransform& Transform)
 void ATrackDefinitionActor::PostLoad()
 {
 	Super::PostLoad();
-	RebuildTrackData();
+
+	// TRACK-002, closing TRACK-001 M5: RECORD THE OUTCOME OF *THIS* BAKE SPECIFICALLY.
+	//
+	// M5's doubt is narrow and real: this function reads USplineComponent geometry, and
+	// the engine does not guarantee the component's PostLoad has run before the owning
+	// actor's. If the spline were not ready here, the bake would fail -- and nothing
+	// downstream would tell you, because a placed actor is re-baked again moments later
+	// when the editor initialises the loaded world and re-runs OnConstruction. The track
+	// would be perfectly healthy by the time anyone could look at it, and the load-order
+	// bug would be invisible until the day the second bake stopped happening.
+	//
+	// BakeAttemptCount alone cannot answer the question for that reason: by the time a
+	// test can observe it, it is legitimately 2. So the load-time result is latched here,
+	// at the only moment it is knowable.
+	//
+	// This is not test scaffolding in runtime code. "Did this placed track bake when the
+	// level loaded" is a question a level-validation pass, a race director refusing to
+	// start a session, or anyone debugging a broken map has a direct interest in; the
+	// shipping game is willing to carry two ints.
+	PostLoadBakeAttemptIndex = BakeAttemptCount + 1;
+	bPostLoadBakeSucceeded = RebuildTrackData();
 }
 
 void ATrackDefinitionActor::BeginPlay()
@@ -203,6 +223,9 @@ bool ATrackDefinitionActor::RebuildTrackData()
 
 	bTrackDataBuilt = false;
 	BakedCenterline.Reset();
+	BakedCheckpointGates.Reset();
+	CheckpointGateBakeError.Reset();
+	GeneratedGateClampNote.Reset();
 	GridSlotTransforms.Reset();
 	GridSlotDistancesCm.Reset();
 	ResetSampleTransforms.Reset();
@@ -261,14 +284,40 @@ bool ATrackDefinitionActor::RebuildTrackData()
 	const bool bClosed = CenterlineSpline->IsClosedLoop();
 	const int32 MinSamples = bClosed ? 3 : 2;
 
-	int32 NumSamples = FMath::Max(MinSamples, FMath::CeilToInt32(SplineLengthCm / SpacingCm));
-	if (NumSamples > MaxGeneratedSamples)
+	// TRACK-002, closing TRACK-001 L4: COMPUTE IN DOUBLE, COMPARE, THEN CAST.
+	//
+	// This was FMath::Max(MinSamples, FMath::CeilToInt32(SplineLengthCm / SpacingCm)),
+	// with a comment claiming the MaxGeneratedSamples clamp below made an absurd spacing
+	// safe. The outcome was safe; the MECHANISM was not the documented one. For a spacing
+	// small enough that the quotient exceeds 2^31 -- 0.001 cm on a 5 km circuit reaches
+	// 5e8, and a mistyped 1e-9 reaches 5e14 -- CeilToInt32 casts an out-of-range double
+	// to int32, which is UNDEFINED BEHAVIOUR in C++ and in practice yields an
+	// implementation-defined value that is frequently INT32_MIN. The result then survived
+	// only because FMath::Max floored it back to MinSamples, i.e. the code degraded to a
+	// 3-sample bake by way of an integer wraparound rather than by the clamp its own
+	// comment pointed at. A guard nobody can read correctly is a guard that will be
+	// "simplified" away.
+	//
+	// The quotient is now formed and range-checked as a double, where the arithmetic is
+	// total: a huge quotient is a huge double, and infinity and NaN are values rather
+	// than traps. Only a value already proven to be inside int32 is cast.
+	const double RequestedSampleCount = FMath::CeilToDouble(SplineLengthCm / SpacingCm);
+
+	int32 NumSamples;
+	if (!FMath::IsFinite(RequestedSampleCount) || RequestedSampleCount > static_cast<double>(MaxGeneratedSamples))
 	{
 		UE_LOG(LogRacingRace, Warning,
-			TEXT("Track '%s' would bake %d samples at %f cm spacing; clamping to %d. Accuracy is reduced, "
+			TEXT("Track '%s' would bake %f samples at %f cm spacing; clamping to %d. Accuracy is reduced, "
 				 "and the content hash records the clamped count so the degraded bake is visible on a result."),
-			*TrackId.ToString(), NumSamples, SpacingCm, MaxGeneratedSamples);
+			*TrackId.ToString(), RequestedSampleCount, SpacingCm, MaxGeneratedSamples);
 		NumSamples = MaxGeneratedSamples;
+	}
+	else
+	{
+		// RequestedSampleCount is finite and <= MaxGeneratedSamples here, so the cast is
+		// in range by construction. A negative or sub-minimum value (a negative spacing
+		// cannot reach this far, but a denormal length could) is floored by FMath::Max.
+		NumSamples = FMath::Max(MinSamples, static_cast<int32>(RequestedSampleCount));
 	}
 
 	// Sample spacing is derived from the sample COUNT, not used directly, so that
@@ -313,6 +362,7 @@ bool ATrackDefinitionActor::RebuildTrackData()
 
 	RebuildGridSlots();
 	RebuildResetSamples();
+	RebuildCheckpointGates();
 
 	bTrackDataBuilt = true;
 
@@ -394,6 +444,174 @@ void ATrackDefinitionActor::RebuildResetSamples()
 	}
 }
 
+void ATrackDefinitionActor::MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateSpec>& OutSpecs)
+{
+	using namespace TrackDefinitionPrivate;
+
+	OutSpecs.Reset();
+	GeneratedGateClampNote.Reset();
+
+	const double LengthCm = BakedCenterline.GetLengthCm();
+	if (LengthCm <= 0.0)
+	{
+		return;
+	}
+
+	// Clamped rather than trusted, on the same reasoning as the grid's fallbacks: the
+	// generator runs during a bake, and a bake must not fail on a value Validate() will
+	// reject anyway. MaxGeneratedSamples is reused as the ceiling because it is already
+	// this file's "no authored number turns a rebuild into an allocation storm" bound.
+	const int32 RequestedGateCount = FMath::Clamp(NumGeneratedCheckpointGates, 1, MaxGeneratedSamples);
+	int32 GateCount = RequestedGateCount;
+
+	// A GENERATED SET MUST BE BAKEABLE. FRacingCheckpointGateSet::Build refuses gates
+	// closer together than one centerline segment, because two gates inside one segment
+	// share a plane normal and cannot be ordered reliably. Nothing stops an authored set
+	// from tripping that -- it is an authoring error and should be reported -- but the
+	// GENERATOR must not manufacture one, or a track with a coarse bake would silently
+	// have no gates at all through no fault of anyone who touched it.
+	//
+	// Found by running: RacingSim.Race.TrackValidation deliberately bakes at ten laps'
+	// worth of spacing to probe an unrelated guard, which floors at three samples and
+	// therefore ~L/3 segments. Four evenly spaced gates are then L/4 apart -- closer than
+	// one segment -- and the whole track stopped validating.
+	//
+	// The 2x margin is not decoration: at exactly one segment the separation check is
+	// inclusive, and gate distances are computed by repeated multiplication, so a bare
+	// >1 target would sit on the boundary and depend on rounding.
+	//
+	// WHAT THIS CLAMP IS AND IS NOT, restated after finding H1. It keeps the generated set
+	// BAKEABLE. It does not, and cannot, keep it RACEABLE -- clamping four gates down to
+	// one produces a set that builds cleanly and enforces nothing. Those are two different
+	// properties and they used to be conflated here, which is how a one-gate track reached
+	// Validate() and passed. Bakeability is this function's business; whether the survivors
+	// are enough to run a race on is MinCheckpointGateCount's, enforced in Validate().
+	const double MaxSegmentCm = BakedCenterline.GetMaxSegmentLengthCm();
+	if (MaxSegmentCm > 0.0)
+	{
+		const int32 SupportedGates = FMath::FloorToInt32(LengthCm / (MaxSegmentCm * 2.0));
+		GateCount = FMath::Clamp(GateCount, 1, FMath::Max(1, SupportedGates));
+	}
+
+	// H1 (code-reviewer, TRACK-002 pass 1): THE CLAMP MUST SAY SO.
+	//
+	// It used to reduce the count in silence. A four-gate request degraded to a
+	// single-gate track -- no order to enforce, no shortcut detectable -- with nothing in
+	// the log, nothing on the actor and, at the time, nothing in Validate() either. The
+	// degraded set is now recorded on the actor (Validate() quotes it and refuses the
+	// track below MinCheckpointGateCount) AND logged, because the two answer different
+	// questions: the note tells a validation pass what is wrong with THIS track, the log
+	// line tells whoever is watching a bake that the bake itself degraded something.
+	//
+	// THE NOTE IS RECORDED EVERY TIME; THE LOG LINE IS ONE-SHOT. The two are separated
+	// deliberately, and the first draft of this fix got it wrong in a way the test run
+	// caught, which is worth recording:
+	//
+	// Logging unconditionally reintroduced, in a new place, the exact defect TRACK-001's
+	// finding H1 fixed for bake failures. A freshly placed ATrackDefinitionActor has
+	// USplineComponent's default TWO-POINT, 200 cm spline. That bakes SUCCESSFULLY (a
+	// closed loop floors at three samples), so LogBakeFailure's suppression never sees it
+	// -- and 200 cm of track supports floor(200 / (2 * 66.7)) == 1 gate, so the clamp
+	// fires. Every OnConstruction and every PostEditChangeProperty while somebody drags
+	// the circuit into shape then emitted a warning. That is the normal state of the actor
+	// for as long as it takes to author a track, and `.claude/rules/unreal-source.md`
+	// forbids exactly this ("do not ... log noisily").
+	//
+	// Measured, not assumed: the first Smoke run of this change reported nine suites as
+	// succeededWithWarnings, and the message was this one, at a 199.999985 cm lap -- the
+	// CDO's default spline, restored by the test fixture's teardown.
+	//
+	// So the log follows bBakeFailureLogged's established discipline: report the first
+	// time a bake clamps, then stay quiet until a bake places the full requested set,
+	// which re-arms it. No information is lost, because GeneratedGateClampNote is set
+	// unconditionally and Validate() quotes it on every call.
+	if (GateCount < RequestedGateCount)
+	{
+		GeneratedGateClampNote = FString::Printf(
+			TEXT("The gate generator was asked for %d gates and could only place %d: the centerline baked to a "
+				 "maximum segment of %f cm over a %f cm lap (CenterlineSampleSpacingCm = %f, effective step %f cm), "
+				 "and two gates within one segment share a plane normal and cannot be ordered. Bake the centerline "
+				 "finer (lower CenterlineSampleSpacingCm) or ask for fewer gates."),
+			RequestedGateCount, GateCount, MaxSegmentCm, LengthCm, CenterlineSampleSpacingCm, EffectiveStepCm);
+
+		if (!bGateClampLogged)
+		{
+			bGateClampLogged = true;
+			UE_LOG(LogRacingRace, Warning, TEXT("Track '%s': %s (further clamp reports for this track are "
+				"suppressed until a bake places every requested gate)"), *TrackId.ToString(), *GeneratedGateClampNote);
+		}
+	}
+	else
+	{
+		// Re-armed on a clean bake, so a track that degrades AGAIN after being fixed
+		// reports it instead of staying silent forever -- the same reasoning that re-arms
+		// bBakeFailureLogged in RebuildTrackData().
+		bGateClampLogged = false;
+	}
+
+	const double HalfWidthCm = (FMath::IsFinite(GeneratedGateHalfWidthCm) && GeneratedGateHalfWidthCm > 0.0)
+		? GeneratedGateHalfWidthCm : 900.0;
+	const double HalfHeightCm = (FMath::IsFinite(GeneratedGateHalfHeightCm) && GeneratedGateHalfHeightCm > 0.0)
+		? GeneratedGateHalfHeightCm : 500.0;
+
+	const double StepCm = LengthCm / static_cast<double>(GateCount);
+
+	OutSpecs.Reserve(GateCount);
+	for (int32 Index = 0; Index < GateCount; ++Index)
+	{
+		FRacingCheckpointGateSpec Spec;
+
+		// Zero-padded so the ids sort in gate order as text as well as numerically -- a
+		// log line reading Gate.10 before Gate.2 is how an ordering bug gets misread as a
+		// gate bug.
+		Spec.GateId = (Index == 0)
+			? FName(TEXT("Gate.StartFinish"))
+			: FName(*FString::Printf(TEXT("Gate.%02d"), Index));
+
+		// Index 0 is pinned to EXACTLY 0.0 rather than computed as 0 * StepCm, so the
+		// start/finish gate cannot be moved off the distance origin by a rounding step.
+		Spec.DistanceAlongCm = (Index == 0) ? 0.0 : static_cast<double>(Index) * StepCm;
+		Spec.HalfWidthCm = HalfWidthCm;
+		Spec.HalfHeightCm = HalfHeightCm;
+		Spec.LegalDirection = ERacingGateDirection::Forward;
+
+		OutSpecs.Add(Spec);
+	}
+}
+
+void ATrackDefinitionActor::RebuildCheckpointGates()
+{
+	BakedCheckpointGates.Reset();
+	CheckpointGateBakeError.Reset();
+
+	// Cleared here as well as in MakeGeneratedGateSpecs, because the AUTHORED path never
+	// calls the generator at all: without this, filling in CheckpointGateSpecs to repair a
+	// clamped generated set would leave the old clamp note attached to a track the
+	// generator no longer touches.
+	GeneratedGateClampNote.Reset();
+
+	// Authored takes precedence; the generator is the floor for a track whose gates
+	// nobody has placed yet, which is every track the moment its spline is drawn.
+	TArray<FRacingCheckpointGateSpec> Generated;
+	const bool bUseAuthored = CheckpointGateSpecs.Num() > 0;
+	if (!bUseAuthored)
+	{
+		MakeGeneratedGateSpecs(Generated);
+	}
+
+	const TArray<FRacingCheckpointGateSpec>& Specs = bUseAuthored ? CheckpointGateSpecs : Generated;
+
+	FString Error;
+	if (!BakedCheckpointGates.Build(Specs, BakedCenterline, MinCornerRadiusCm, Error))
+	{
+		// Recorded, not logged here. RebuildTrackData's own one-shot failure logging
+		// covers the centerline; a gate failure is reported by Validate(), which is where
+		// a race director can act on it. Logging per rebuild would flood the editor while
+		// someone is dragging a gate into place.
+		CheckpointGateBakeError = Error;
+	}
+}
+
 // ===========================================================================
 // Queries
 // ===========================================================================
@@ -469,6 +687,68 @@ double ATrackDefinitionActor::GetSectorLengthCm(const int32 SectorIndex) const
 	}
 
 	return SectorStartDistancesCm[SectorIndex + 1] - SectorStartDistancesCm[SectorIndex];
+}
+
+// -- Checkpoint gates (TRACK-002) -------------------------------------------
+
+const FRacingCheckpointGateSet& ATrackDefinitionActor::GetCheckpointGates() const
+{
+	EnsureTrackDataBuilt();
+	return BakedCheckpointGates;
+}
+
+int32 ATrackDefinitionActor::GetNumCheckpointGates() const
+{
+	return GetCheckpointGates().NumGates();
+}
+
+bool ATrackDefinitionActor::GetCheckpointGate(const int32 GateIndex, FRacingCheckpointGate& OutGate) const
+{
+	const FRacingCheckpointGate* Gate = GetCheckpointGates().GetGate(GateIndex);
+	if (!Gate)
+	{
+		// Default-constructed rather than left untouched: a caller that ignores the
+		// return value gets a gate at the origin with zero extent, which crosses nothing,
+		// instead of whatever happened to be in its stack slot.
+		OutGate = FRacingCheckpointGate();
+		return false;
+	}
+
+	OutGate = *Gate;
+	return true;
+}
+
+int32 ATrackDefinitionActor::FindCheckpointGateIndexById(const FName GateId) const
+{
+	return GetCheckpointGates().FindGateIndexById(GateId);
+}
+
+double ATrackDefinitionActor::GetCheckpointGateDistanceCm(const int32 GateIndex) const
+{
+	const FRacingCheckpointGate* Gate = GetCheckpointGates().GetGate(GateIndex);
+	return Gate ? Gate->DistanceAlongCm : InvalidDistanceCm;
+}
+
+FTransform ATrackDefinitionActor::GetCheckpointGateTransform(const int32 GateIndex) const
+{
+	const FRacingCheckpointGate* Gate = GetCheckpointGates().GetGate(GateIndex);
+	return Gate ? Gate->GetTransform() : FTransform::Identity;
+}
+
+FRacingGateCrossingResult ATrackDefinitionActor::EvaluateGateCrossing(
+	const int32 GateIndex,
+	const FVector& FromWorldCm,
+	const FVector& ToWorldCm) const
+{
+	return GetCheckpointGates().EvaluateCrossing(GateIndex, FromWorldCm, ToWorldCm);
+}
+
+int32 ATrackDefinitionActor::FindFirstGateCrossing(
+	const FVector& FromWorldCm,
+	const FVector& ToWorldCm,
+	FRacingGateCrossingResult& OutResult) const
+{
+	return GetCheckpointGates().FindFirstCrossing(FromWorldCm, ToWorldCm, OutResult);
 }
 
 int32 ATrackDefinitionActor::GetNumGridSlots() const
@@ -659,6 +939,30 @@ uint32 ATrackDefinitionActor::ComputeContentHash() const
 		Hash = HashDouble(Hash, SectorStartCm);
 	}
 
+	// TRACK-002: gates change which laps COUNT, so two tracks with identical geometry and
+	// different gates are emphatically not the same content. Both the authored specs and
+	// the generator parameters are hashed, because which of the two paths ran is itself a
+	// content decision -- an authored set that happens to coincide with what the
+	// generator would have produced is still a different, independently editable track.
+	Hash = HashCombine(Hash, GetTypeHash(CheckpointGateSpecs.Num()));
+	for (const FRacingCheckpointGateSpec& Spec : CheckpointGateSpecs)
+	{
+		Hash = HashCombine(Hash, GetTypeHash(Spec.GateId));
+		Hash = HashDouble(Hash, Spec.DistanceAlongCm);
+		Hash = HashDouble(Hash, Spec.HalfWidthCm);
+		Hash = HashDouble(Hash, Spec.HalfHeightCm);
+
+		// The legal direction is the whole point of a gate. A track whose finish line
+		// accepts reverse crossings is a different competition from one that does not,
+		// and without this the two would publish the same hash.
+		Hash = HashCombine(Hash, GetTypeHash(static_cast<uint8>(Spec.LegalDirection)));
+	}
+
+	Hash = HashCombine(Hash, GetTypeHash(NumGeneratedCheckpointGates));
+	Hash = HashDouble(Hash, GeneratedGateHalfWidthCm);
+	Hash = HashDouble(Hash, GeneratedGateHalfHeightCm);
+	Hash = HashDouble(Hash, MinCornerRadiusCm);
+
 	Hash = HashCombine(Hash, GetTypeHash(NumGridSlots));
 	Hash = HashDouble(Hash, GridPoleSetbackCm);
 	Hash = HashDouble(Hash, GridSlotSpacingCm);
@@ -774,6 +1078,114 @@ bool ATrackDefinitionActor::Validate(FString& OutReason) const
 			OutReason = FString::Printf(
 				TEXT("SectorStartDistancesCm must strictly increase; [%d] (%f) <= [%d] (%f)."),
 				Index, SectorStartCm, Index - 1, SectorStartDistancesCm[Index - 1]);
+			return false;
+		}
+	}
+
+	// -- Checkpoint gates (TRACK-002) ---------------------------------------
+	//
+	// CLAUDE.md: "ordered checkpoint gates plus a valid crossing direction" authorise a
+	// lap. A track that cannot bake its gates cannot authorise anything, so this is a
+	// publishability failure and not a warning -- even though the CENTERLINE bake above
+	// succeeded and progress/ranking would work perfectly well without gates. That is
+	// exactly the trap: such a track looks entirely healthy in a HUD.
+
+	if (!FMath::IsFinite(MinCornerRadiusCm) || MinCornerRadiusCm <= 0.0)
+	{
+		OutReason = FString::Printf(TEXT("MinCornerRadiusCm must be finite and positive, got %f."), MinCornerRadiusCm);
+		return false;
+	}
+
+	// Checked only when the generator is the path actually in use. An authored gate set
+	// makes this field inert -- it still feeds the content hash, because which path ran is
+	// a content decision, but rejecting a track for a number that changes nothing about
+	// its baked gates would be a false failure, and false failures are how a validation
+	// pass teaches people to ignore it. The authored path is covered by the baked-count
+	// floor below, which is the check that actually matters either way.
+	if (CheckpointGateSpecs.Num() == 0 && NumGeneratedCheckpointGates < MinCheckpointGateCount)
+	{
+		OutReason = FString::Printf(
+			TEXT("NumGeneratedCheckpointGates is %d and CheckpointGateSpecs is empty, so this track would generate "
+				 "fewer than the %d gates required to enforce checkpoint order. Raise it, or author "
+				 "CheckpointGateSpecs explicitly."),
+			NumGeneratedCheckpointGates, MinCheckpointGateCount);
+		return false;
+	}
+
+	if (!FMath::IsFinite(GeneratedGateHalfWidthCm) || GeneratedGateHalfWidthCm <= 0.0)
+	{
+		OutReason = FString::Printf(TEXT("GeneratedGateHalfWidthCm must be finite and positive, got %f."), GeneratedGateHalfWidthCm);
+		return false;
+	}
+
+	if (!FMath::IsFinite(GeneratedGateHalfHeightCm) || GeneratedGateHalfHeightCm <= 0.0)
+	{
+		OutReason = FString::Printf(TEXT("GeneratedGateHalfHeightCm must be finite and positive, got %f."), GeneratedGateHalfHeightCm);
+		return false;
+	}
+
+	if (!BakedCheckpointGates.IsValid())
+	{
+		// The recorded bake error, not a downstream symptom. "Gate 2 is 40 cm from gate 1,
+		// inside one centerline segment" is actionable; "the track has no gates" sends the
+		// reader looking at the wrong array.
+		OutReason = CheckpointGateBakeError.IsEmpty()
+			? TEXT("Checkpoint gates failed to bake, with no recorded reason.")
+			: FString::Printf(TEXT("Checkpoint gates failed to bake: %s"), *CheckpointGateBakeError);
+		return false;
+	}
+
+	// H1 (code-reviewer, TRACK-002 pass 1): A GATE SET THAT CANNOT ENFORCE ORDER IS NOT A
+	// PUBLISHABLE TRACK, AND "IT BAKED" IS NOT THE SAME QUESTION.
+	//
+	// The check above only asks whether the set built. A one-gate set builds perfectly:
+	// its geometry is sound, gate 0 sits at distance 0 facing forwards, and every crossing
+	// query answers correctly. It is nonetheless unraceable, because with one gate there
+	// is no order to be out of and no shortcut is detectable -- the exact property gates
+	// exist to provide. See MinCheckpointGateCount for why the floor is 4 and why the
+	// coarse bake, not an author, is what produced the one-gate set.
+	//
+	// Reported AFTER the bake-error branch so a set that failed to build still reports the
+	// build reason: "gate 2 is inside one centerline segment of gate 1" is more actionable
+	// than "this track has 0 gates".
+	if (BakedCheckpointGates.NumGates() < MinCheckpointGateCount)
+	{
+		OutReason = FString::Printf(
+			TEXT("Track baked %d checkpoint gate(s); at least %d are required, because a set this small cannot "
+				 "enforce checkpoint order -- CLAUDE.md's \"ordered checkpoint gates plus a valid crossing "
+				 "direction\" has no ordering half here, and a car cutting across the circuit would still be "
+				 "credited a lap."),
+			BakedCheckpointGates.NumGates(), MinCheckpointGateCount);
+
+		if (!GeneratedGateClampNote.IsEmpty())
+		{
+			// The usual cause, and it is not visible anywhere in the authored data: the
+			// author asked for enough gates and the BAKE threw them away.
+			OutReason += FString::Printf(TEXT(" %s"), *GeneratedGateClampNote);
+		}
+
+		return false;
+	}
+
+	{
+		// A track with no forward-crossable start/finish gate can never complete a lap,
+		// however well everything else validates. Checked here rather than in the gate
+		// set's Build() because it is a RACE rule, not a geometry rule: a gate set with a
+		// bidirectional or reverse-only gate 0 is perfectly well-formed geometry.
+		const FRacingCheckpointGate* StartFinish =
+			BakedCheckpointGates.GetGate(FRacingCheckpointGateSet::StartFinishGateIndex);
+
+		if (!StartFinish)
+		{
+			OutReason = TEXT("No start/finish checkpoint gate.");
+			return false;
+		}
+
+		if (StartFinish->LegalDirection == ERacingGateDirection::Reverse)
+		{
+			OutReason = FString::Printf(
+				TEXT("Start/finish gate '%s' is Reverse-only, so a forward lap could never be completed."),
+				*StartFinish->GateId.ToString());
 			return false;
 		}
 	}

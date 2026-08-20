@@ -13,6 +13,18 @@ namespace TrackCenterlinePrivate
 	 */
 	constexpr double MinWrapSegmentLengthCm = 1.0;
 
+	/**
+	 * Below this length, |Up x Forward| is treated as unusable and the query reports
+	 * bLateralOffsetValid = false (TRACK-002, TRACK-001 L7).
+	 *
+	 * Forward is a unit vector, so |Up x Forward| == sin(angle from vertical) and this
+	 * threshold is an ANGLE, not a distance: 1e-6 is about 0.00006 degrees off vertical.
+	 * Chosen tight deliberately. The flag exists to catch geometry that is genuinely
+	 * degenerate, not to declare steep-but-real track sections unmeasurable -- a 45
+	 * degree climb, which no circuit has, still gives 0.707 here.
+	 */
+	constexpr double MinLateralAxisLength = 1.0e-6;
+
 	bool IsFiniteVector(const FVector& V)
 	{
 		return FMath::IsFinite(V.X) && FMath::IsFinite(V.Y) && FMath::IsFinite(V.Z);
@@ -124,6 +136,18 @@ bool FTrackCenterline::Build(
 	SampleDistancesCm.Append(InDistancesCm.GetData(), InDistancesCm.Num());
 	TotalLengthCm = InTotalLengthCm;
 	bClosedLoop = bInClosedLoop;
+
+	// TRACK-002 (TRACK-001 L2): the worst segment, computed once here rather than
+	// scanned per query. Every geometric error bound this model publishes is driven by
+	// the maximum, not the mean -- see GetMaxSegmentLengthCm. Computed AFTER the commit
+	// because GetSegmentLengthCm() reads the members that were just written.
+	MaxSegmentLengthCm = 0.0;
+	const int32 SegmentCount = NumSegments();
+	for (int32 Segment = 0; Segment < SegmentCount; ++Segment)
+	{
+		MaxSegmentLengthCm = FMath::Max(MaxSegmentLengthCm, GetSegmentLengthCm(Segment));
+	}
+
 	return true;
 }
 
@@ -174,6 +198,7 @@ void FTrackCenterline::Reset()
 	SampleLocations.Reset();
 	SampleDistancesCm.Reset();
 	TotalLengthCm = 0.0;
+	MaxSegmentLengthCm = 0.0;
 	bClosedLoop = false;
 }
 
@@ -187,10 +212,47 @@ int32 FTrackCenterline::NumSegments() const
 	return bClosedLoop ? SampleLocations.Num() : SampleLocations.Num() - 1;
 }
 
-double FTrackCenterline::GetSampleSpacingCm() const
+double FTrackCenterline::GetAverageSegmentLengthCm() const
 {
 	const int32 Segments = NumSegments();
 	return Segments > 0 ? TotalLengthCm / static_cast<double>(Segments) : 0.0;
+}
+
+double FTrackCenterline::GetSagittaBoundCm(const double MinCurveRadiusCm) const
+{
+	// A bound that can be NaN or infinite is not a bound: it would compare false against
+	// every threshold it is placed in and silently authorise whatever it was guarding.
+	if (!FMath::IsFinite(MinCurveRadiusCm) || MinCurveRadiusCm <= 0.0 || MaxSegmentLengthCm <= 0.0)
+	{
+		return 0.0;
+	}
+
+	// theta is the angle the worst segment subtends at the tightest radius. Capped at
+	// pi: a single segment spanning more than half a circle is not a sampling artefact,
+	// it is a broken bake, and beyond pi the cosine turns back on itself and the formula
+	// would start REPORTING LESS error for a worse bake.
+	const double Theta = FMath::Min(MaxSegmentLengthCm / MinCurveRadiusCm, UE_DOUBLE_PI);
+
+	// Exact sagitta for a circular arc, not the familiar small-angle L^2 / (8R).
+	//
+	// CORRECTED AFTER A FAILING TEST, and the correction is worth recording because the
+	// original comment here (and in TRACK-001's counter-case) asserted the opposite.
+	// With L read as ARC length -- which is what MaxSegmentLengthCm is -- the two forms
+	// agree to leading order and L^2 / (8R) is the LARGER of the two, because
+	// 1 - cos(x) = x^2/2 - x^4/24 + ... falls below its own leading term. So the
+	// small-angle form with arc length happens to be a safe (if looser) bound, and the
+	// claim that it under-estimates was simply wrong. RacingSim.Race.CenterlinePolylineBias
+	// asserted the wrong direction first and failed, which is how this was found.
+	//
+	// The exact form is used anyway: it is exact rather than incidentally conservative,
+	// and it stays correct at the coarse sampling where the small-angle approximation
+	// stops being an approximation of anything.
+	const double SagittaCm = MinCurveRadiusCm * (1.0 - FMath::Cos(Theta * 0.5));
+
+	// Geometric ceiling. A chord's deviation from its arc cannot exceed half the arc's
+	// own length, so an absurd radius/segment pair still returns something finite and
+	// meaningful rather than an unbounded number.
+	return FMath::Min(SagittaCm, MaxSegmentLengthCm * 0.5);
 }
 
 int32 FTrackCenterline::GetSegmentEndSampleIndex(const int32 SegmentIndex) const
@@ -411,14 +473,39 @@ FTrackCenterlineQuery FTrackCenterline::ProjectOntoSegments(
 	// Unreal is left-handed with Z up, so the right-hand side of the direction of
 	// travel is Up x Forward. Verified rather than remembered: Forward = +X gives
 	// Up x Forward = (0,0,1) x (1,0,0) = (0,1,0) = +Y, which is Unreal's right.
-	const FVector Right = FVector::CrossProduct(FVector::UpVector, Forward).GetSafeNormal();
+	const FVector RightUnnormalised = FVector::CrossProduct(FVector::UpVector, Forward);
+
+	// TRACK-002, closing TRACK-001 L7.
+	//
+	// |Up x Forward| is sin(angle between the segment and world up), so this length IS
+	// the measure of how close the segment is to vertical. Previously the result went
+	// straight through GetSafeNormal(), which returns the ZERO VECTOR below its
+	// threshold -- and a zero Right dotted with anything is zero, so a car on a vertical
+	// segment was reported at LateralOffsetCm == 0.0 with bValid == true. That is
+	// byte-identical to "dead centre of the road", the most favourable possible answer
+	// for a track-limits or gate-extent check, produced by the geometry being broken.
+	// This ticket's gate extents are the first consumer to read LateralOffsetCm as
+	// ground truth, so the case is now SIGNALLED instead of silently defaulted.
+	const double RightLength = RightUnnormalised.Size();
+	const bool bLateralAxisUsable = RightLength > TrackCenterlinePrivate::MinLateralAxisLength;
+
 	const FVector ToPoint = WorldLocationCm - BestPoint;
 
 	Result.bValid = true;
 	Result.DistanceAlongCm = WrapDistanceCm(SampleDistancesCm[BestSegment] + BestAlpha * GetSegmentLengthCm(BestSegment));
 	Result.Location = BestPoint;
 	Result.Forward = Forward;
-	Result.LateralOffsetCm = FVector::DotProduct(ToPoint, Right);
+
+	// bValid stays true on purpose: distance, location, direction and 3D separation are
+	// all still correct on a vertical segment. Only the SIGNED SIDEWAYS component is
+	// undefined, so only that is flagged. Clearing bValid would take a car's progress
+	// and ranking down with the lateral offset, which is a larger failure than the one
+	// being reported.
+	Result.bLateralOffsetValid = bLateralAxisUsable;
+	Result.LateralOffsetCm = bLateralAxisUsable
+		? FVector::DotProduct(ToPoint, RightUnnormalised / RightLength)
+		: 0.0;
+
 	Result.DistanceToCenterlineCm = FMath::Sqrt(BestSquaredDistance);
 	return Result;
 }

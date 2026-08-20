@@ -245,7 +245,7 @@ bool FTrackCenterlineBuildTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("Default-constructed centerline is invalid"), Empty.IsValid());
 		TestNearlyEqual(TEXT("Unbuilt length is zero"), Empty.GetLengthCm(), 0.0, 0.0);
 		TestEqual(TEXT("Unbuilt segment count is zero"), Empty.NumSegments(), 0);
-		TestNearlyEqual(TEXT("Unbuilt spacing is zero"), Empty.GetSampleSpacingCm(), 0.0, 0.0);
+		TestNearlyEqual(TEXT("Unbuilt spacing is zero"), Empty.GetAverageSegmentLengthCm(), 0.0, 0.0);
 		TestEqual(TEXT("Unbuilt location query is the origin"), Empty.GetLocationAtDistanceCm(500.0), FVector::ZeroVector);
 		TestFalse(TEXT("Unbuilt nearest-point query is invalid"), Empty.FindNearest(FVector(1.0, 2.0, 3.0)).bValid);
 		TestFalse(TEXT("Unbuilt hinted query is invalid"), Empty.FindNearestNear(FVector(1.0, 2.0, 3.0), 0.0, 100.0).bValid);
@@ -290,7 +290,7 @@ bool FTrackCenterlineDistanceDomainTest::RunTest(const FString& Parameters)
 
 	// -- Sample spacing ------------------------------------------------------
 	TestNearlyEqual(TEXT("Spacing is length over segment count"),
-		Centerline.GetSampleSpacingCm(), LengthCm / static_cast<double>(TrackSpecCircleSamples), TolCm);
+		Centerline.GetAverageSegmentLengthCm(), LengthCm / static_cast<double>(TrackSpecCircleSamples), TolCm);
 
 	// -- Wrapping ------------------------------------------------------------
 	TestNearlyEqual(TEXT("Wrap 0"), Centerline.WrapDistanceCm(0.0), 0.0, TolCm);
@@ -698,6 +698,357 @@ bool FTrackCenterlineAmbiguityTest::RunTest(const FString& Parameters)
 
 		TestTrue(FString::Printf(TEXT("Hinted sweep tracks the truth all the way round (worst %g cm)"), WorstErrorCm),
 			WorstErrorCm < 1.0);
+	}
+
+	return true;
+}
+
+// ===========================================================================
+// TRACK-002: the polyline-vs-true-spline bias, asserted against a closed form
+// ===========================================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTrackCenterlinePolylineBiasTest,
+	"RacingSim.Race.CenterlinePolylineBias",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+/**
+ * TRACK-001 recorded this as its STRONGEST COUNTER-CASE and required TRACK-002 to
+ * assert it rather than inherit it silently, because TRACK-002 is the first ticket to
+ * place geometry (checkpoint gates) using these transforms.
+ *
+ * The claim being tested, stated precisely:
+ *
+ *   The baked model is an INSCRIBED polyline. Every sample lies exactly on the true
+ *   curve; every point between two samples lies on a chord, and a chord lies INSIDE
+ *   its arc. So GetLocationAtDistanceCm() is biased toward the inside of every corner
+ *   by at most the sagitta of the segment containing it, and NEVER toward the outside.
+ *
+ * Three properties matter, and only the first is obvious:
+ *
+ *   1. the bias is BOUNDED -- by GetSagittaBoundCm(), which is derived from the MAXIMUM
+ *      segment length, not the mean (TRACK-001 L2);
+ *   2. the bias is ONE-DIRECTIONAL -- always inward. This is why it cannot be treated
+ *      as noise: it does not average away over a lap, so a car compared against a
+ *      track-limits threshold or a gate half-width is systematically credited with
+ *      being that much closer to the inside of every corner;
+ *   3. the bound is TIGHT -- it is actually attained mid-segment, so it is not a
+ *      vacuous over-estimate that would pass any comparison put in front of it.
+ *
+ * A circle is used because all three quantities are closed-form, so the assertions
+ * compare against mathematics rather than against another function in this file.
+ */
+bool FTrackCenterlinePolylineBiasTest::RunTest(const FString& Parameters)
+{
+	using namespace TrackCenterlineSpecPrivate;
+
+	FTrackCenterline Centerline;
+	FString Error;
+	if (!BuildCircle(Centerline, Error))
+	{
+		AddError(FString::Printf(TEXT("Circle failed to build: %s"), *Error));
+		return false;
+	}
+
+	const double LengthCm = Centerline.GetLengthCm();
+	const double UniformSegmentCm = LengthCm / static_cast<double>(TrackSpecCircleSamples);
+
+	// -- The two accessors are different numbers, and which one you use matters --
+	{
+		// On a UNIFORMLY sampled centerline the mean and the maximum coincide, so this
+		// pair alone proves nothing. It is asserted first so the non-uniform case below
+		// is visibly the discriminating one.
+		TestNearlyEqual(TEXT("Uniform circle: average segment length"),
+			Centerline.GetAverageSegmentLengthCm(), UniformSegmentCm, 1.0e-6);
+		TestNearlyEqual(TEXT("Uniform circle: max segment length equals the average"),
+			Centerline.GetMaxSegmentLengthCm(), UniformSegmentCm, 1.0e-6);
+
+		// THE CASE TRACK-001 L2 IS ABOUT. FTrackCenterline::Build explicitly permits
+		// non-uniform sample distances, and BuildFromPolyline produces them for any
+		// polyline with unequal edges. Here one segment is forty times the others: the
+		// mean barely moves, the maximum tells the truth, and sizing gate geometry from
+		// the mean would understate the worst case by more than an order of magnitude.
+		TArray<FVector> Uneven;
+		for (int32 Index = 0; Index <= 40; ++Index)
+		{
+			Uneven.Add(FVector(static_cast<double>(Index) * 100.0, 0.0, 0.0));
+		}
+		Uneven.Add(FVector(8000.0, 0.0, 0.0));   // one 4000 cm segment among forty 100 cm ones
+
+		FTrackCenterline NonUniform;
+		FString UnevenError;
+		TestTrue(TEXT("A non-uniformly sampled centerline builds"),
+			NonUniform.BuildFromPolyline(Uneven, /*bClosedLoop*/ false, UnevenError));
+
+		TestNearlyEqual(TEXT("Non-uniform: the longest segment is 4000 cm"),
+			NonUniform.GetMaxSegmentLengthCm(), 4000.0, 1.0e-6);
+		TestNearlyEqual(TEXT("Non-uniform: the mean is only 8000/41 cm"),
+			NonUniform.GetAverageSegmentLengthCm(), 8000.0 / 41.0, 1.0e-6);
+		TestTrue(TEXT("The maximum is more than TWENTY times the mean -- a mean cannot bound a worst case"),
+			NonUniform.GetMaxSegmentLengthCm() > NonUniform.GetAverageSegmentLengthCm() * 20.0);
+
+		// Unbuilt reports zero rather than a stale or garbage bound.
+		const FTrackCenterline Empty;
+		TestNearlyEqual(TEXT("Unbuilt max segment length is zero"), Empty.GetMaxSegmentLengthCm(), 0.0, 0.0);
+		TestNearlyEqual(TEXT("Unbuilt sagitta bound is zero"), Empty.GetSagittaBoundCm(1000.0), 0.0, 0.0);
+
+		// A rebuild must not leave the previous maximum behind: the bound would then
+		// describe a centerline that no longer exists.
+		FTrackCenterline Rebuilt;
+		FString RebuildError;
+		TestTrue(TEXT("Build a coarse centerline"), Rebuilt.BuildFromPolyline(Uneven, false, RebuildError));
+		TestTrue(TEXT("Rebuild it finely"), BuildCircle(Rebuilt, RebuildError));
+		TestNearlyEqual(TEXT("The max segment length follows the REBUILD, not the first build"),
+			Rebuilt.GetMaxSegmentLengthCm(), UniformSegmentCm, 1.0e-6);
+	}
+
+	// -- The closed form -----------------------------------------------------
+	//
+	// For a chord subtending angle theta on a circle of radius R, the sagitta is
+	// R * (1 - cos(theta / 2)). Here theta = 2*pi / N, so the deviation of the polyline
+	// from the circle is R * (1 - cos(pi / N)), attained exactly at each segment's
+	// midpoint and zero at each sample.
+	const double ClosedFormSagittaCm =
+		TrackSpecCircleRadiusCm * (1.0 - FMath::Cos(UE_DOUBLE_PI / static_cast<double>(TrackSpecCircleSamples)));
+
+	TestTrue(TEXT("The closed-form sagitta is sub-millimetre at this sampling, but not zero"),
+		ClosedFormSagittaCm > 0.0 && ClosedFormSagittaCm < 0.1);
+
+	TestNearlyEqual(TEXT("GetSagittaBoundCm reproduces the closed form exactly"),
+		Centerline.GetSagittaBoundCm(TrackSpecCircleRadiusCm), ClosedFormSagittaCm, 1.0e-12);
+
+	// The familiar small-angle form L^2 / (8R) is what TRACK-001's counter-case and
+	// several comments in this codebase quote.
+	//
+	// THIS ASSERTION WAS WRITTEN THE WRONG WAY ROUND FIRST AND FAILED, which is the only
+	// reason the direction is now recorded rather than assumed. With L read as ARC length
+	// -- which is what GetMaxSegmentLengthCm() is -- the small-angle form sits marginally
+	// ABOVE the exact sagitta, because 1 - cos(x) = x^2/2 - x^4/24 + ... falls below its
+	// own leading term. So the quoted approximation is incidentally a safe bound, not an
+	// optimistic one. (Read with L as CHORD length it would fall below; the two readings
+	// differ, and the codebase means arc length.)
+	{
+		const double SmallAngleCm =
+			(UniformSegmentCm * UniformSegmentCm) / (8.0 * TrackSpecCircleRadiusCm);
+		TestTrue(TEXT("The small-angle L^2/(8R) form, with L as arc length, sits ABOVE the exact sagitta"),
+			SmallAngleCm >= ClosedFormSagittaCm);
+		TestTrue(TEXT("...but only marginally at 720 samples"),
+			SmallAngleCm - ClosedFormSagittaCm < ClosedFormSagittaCm * 0.01);
+	}
+
+	// -- The bias is real, bounded, and ONE-DIRECTIONAL ----------------------
+	{
+		double WorstInwardCm = 0.0;
+		double WorstOutwardCm = 0.0;
+
+		// Swept at a step deliberately coprime with the sampling, so the probe lands
+		// mid-segment as well as on samples. Probing only at sample distances would
+		// measure zero everywhere and report a bias of nothing.
+		constexpr int32 Probes = 7919;
+		for (int32 Step = 0; Step < Probes; ++Step)
+		{
+			const double DistanceCm = LengthCm * static_cast<double>(Step) / static_cast<double>(Probes);
+			const double RadiusCm = Centerline.GetLocationAtDistanceCm(DistanceCm).Size2D();
+
+			// Inside the true curve is a SMALLER radius on a circle travelled about the
+			// origin. Both directions are accumulated so the one-directional claim is
+			// measured rather than assumed.
+			WorstInwardCm = FMath::Max(WorstInwardCm, TrackSpecCircleRadiusCm - RadiusCm);
+			WorstOutwardCm = FMath::Max(WorstOutwardCm, RadiusCm - TrackSpecCircleRadiusCm);
+		}
+
+		// 1. BOUNDED.
+		TestTrue(FString::Printf(
+			TEXT("The measured inward bias (%g cm) is within GetSagittaBoundCm (%g cm)"),
+			WorstInwardCm, Centerline.GetSagittaBoundCm(TrackSpecCircleRadiusCm)),
+			WorstInwardCm <= Centerline.GetSagittaBoundCm(TrackSpecCircleRadiusCm) + 1.0e-9);
+
+		// 2. ONE-DIRECTIONAL. This is the property that stops it being noise. A tiny
+		// tolerance is allowed for floating-point at the samples themselves, where the
+		// deviation is exactly zero by construction.
+		TestTrue(FString::Printf(
+			TEXT("The bias is never OUTWARD (worst outward excursion %g cm)"), WorstOutwardCm),
+			WorstOutwardCm < 1.0e-6);
+
+		// 3. TIGHT. If the bound were a vacuous over-estimate it would pass (1) while
+		// telling a gate-width check nothing useful. It is attained mid-segment, so the
+		// measured worst case must come close to it.
+		TestTrue(FString::Printf(
+			TEXT("The bound is tight, not vacuous: measured %g cm vs bound %g cm"),
+			WorstInwardCm, ClosedFormSagittaCm),
+			WorstInwardCm > ClosedFormSagittaCm * 0.9);
+	}
+
+	// -- Coarser sampling makes it worse, quadratically ----------------------
+	//
+	// Asserting the SCALING rather than one number is what makes this a test of the
+	// model instead of a snapshot of one configuration.
+	{
+		const int32 CoarseSamples = TrackSpecCircleSamples / 8;
+		const double CoarseTotalCm = TrackSpecCircleCircumferenceCm();
+		const double CoarseStepCm = CoarseTotalCm / static_cast<double>(CoarseSamples);
+
+		TArray<FVector> Locations;
+		TArray<double> Distances;
+		Locations.Reserve(CoarseSamples);
+		Distances.Reserve(CoarseSamples);
+		for (int32 Index = 0; Index < CoarseSamples; ++Index)
+		{
+			const double Angle = 2.0 * UE_DOUBLE_PI * static_cast<double>(Index) / static_cast<double>(CoarseSamples);
+			Locations.Add(FVector(
+				TrackSpecCircleRadiusCm * FMath::Cos(Angle),
+				TrackSpecCircleRadiusCm * FMath::Sin(Angle),
+				0.0));
+			Distances.Add(static_cast<double>(Index) * CoarseStepCm);
+		}
+
+		FTrackCenterline Coarse;
+		FString CoarseError;
+		TestTrue(TEXT("A coarse circle builds"), Coarse.Build(Locations, Distances, CoarseTotalCm, true, CoarseError));
+
+		const double CoarseBoundCm = Coarse.GetSagittaBoundCm(TrackSpecCircleRadiusCm);
+		TestTrue(TEXT("Eight times coarser sampling gives a much larger bias bound"),
+			CoarseBoundCm > ClosedFormSagittaCm * 50.0);
+
+		// Quadratic to within a couple of percent: 8x coarser is ~64x the sagitta.
+		TestNearlyEqual(TEXT("The bias scales as the square of the segment length"),
+			CoarseBoundCm / ClosedFormSagittaCm, 64.0, 1.0);
+	}
+
+	// -- The bound refuses to be a NaN or an infinity ------------------------
+	//
+	// A bound that is NaN compares false against every threshold it is placed in and
+	// silently authorises whatever it was guarding, which is strictly worse than having
+	// no bound at all.
+	{
+		TestNearlyEqual(TEXT("A zero radius gives 0, not a division by zero"),
+			Centerline.GetSagittaBoundCm(0.0), 0.0, 0.0);
+		TestNearlyEqual(TEXT("A negative radius gives 0"),
+			Centerline.GetSagittaBoundCm(-1000.0), 0.0, 0.0);
+		TestNearlyEqual(TEXT("A NaN radius gives 0"),
+			Centerline.GetSagittaBoundCm(std::numeric_limits<double>::quiet_NaN()), 0.0, 0.0);
+
+		// An infinite radius is a straight line, whose sagitta is zero. Reached through
+		// the arithmetic rather than special-cased, so this also proves the expression
+		// does not produce a NaN from inf/inf.
+		const double InfiniteRadiusCm = Centerline.GetSagittaBoundCm(std::numeric_limits<double>::infinity());
+		TestTrue(TEXT("An infinite radius gives a finite bound"), FMath::IsFinite(InfiniteRadiusCm));
+		TestNearlyEqual(TEXT("...of zero: a straight line has no sagitta"), InfiniteRadiusCm, 0.0, 1.0e-9);
+
+		// A radius far tighter than the segment length is geometric nonsense; the bound
+		// must stay finite and stop at half the segment rather than run away.
+		const double AbsurdCm = Centerline.GetSagittaBoundCm(1.0e-6);
+		TestTrue(TEXT("An absurdly tight radius still returns a finite bound"), FMath::IsFinite(AbsurdCm));
+		TestTrue(TEXT("...clamped to half the longest segment"),
+			AbsurdCm <= Centerline.GetMaxSegmentLengthCm() * 0.5 + 1.0e-9);
+	}
+
+	return true;
+}
+
+// ===========================================================================
+// TRACK-002 (TRACK-001 L7): the degenerate vertical-tangent lateral offset
+// ===========================================================================
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTrackCenterlineLateralAxisTest,
+	"RacingSim.Race.CenterlineLateralAxis",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+/**
+ * THE BUG THIS PINS. ProjectOntoSegments computes Right = Up x Forward and normalised
+ * it with GetSafeNormal(), which returns the ZERO VECTOR below its threshold. On an
+ * exactly vertical segment the cross product IS zero, so LateralOffsetCm came back as
+ * 0.0 with bValid == true -- byte-identical to "the car is dead on the centerline",
+ * which is the single most favourable answer a track-limits or gate-extent check can
+ * receive, produced by the geometry being undefined.
+ *
+ * GetTransformAtDistanceCm documented that degeneracy; ProjectOntoSegments did not.
+ * TRACK-002's gate extents are the first consumer to read LateralOffsetCm as ground
+ * truth, so the case is now signalled by bLateralOffsetValid.
+ */
+bool FTrackCenterlineLateralAxisTest::RunTest(const FString& Parameters)
+{
+	using namespace TrackCenterlineSpecPrivate;
+
+	// -- Ordinary geometry reports a usable lateral axis ---------------------
+	{
+		FTrackCenterline Centerline;
+		FString Error;
+		if (!BuildCircle(Centerline, Error))
+		{
+			AddError(FString::Printf(TEXT("Circle failed to build: %s"), *Error));
+			return false;
+		}
+
+		const FTrackCenterlineQuery Query = Centerline.FindNearest(FVector(TrackSpecCircleRadiusCm + 300.0, 0.0, 0.0));
+		TestTrue(TEXT("A normal query is valid"), Query.bValid);
+		TestTrue(TEXT("...and its lateral offset is usable"), Query.bLateralOffsetValid);
+		TestTrue(TEXT("...and non-zero off the centerline"), FMath::Abs(Query.LateralOffsetCm) > 100.0);
+
+		// A steep climb is NOT degenerate, and must not be flagged as one. The threshold
+		// exists to catch broken geometry, not to declare real elevation unmeasurable.
+		const TArray<FVector> Steep({
+			FVector(0.0, 0.0, 0.0),
+			FVector(1000.0, 0.0, 1000.0),          // 45 degrees
+			FVector(2000.0, 0.0, 2000.0) });
+		FTrackCenterline Climb;
+		FString ClimbError;
+		TestTrue(TEXT("A 45-degree climb builds"), Climb.BuildFromPolyline(Steep, false, ClimbError));
+
+		const FTrackCenterlineQuery ClimbQuery = Climb.FindNearest(FVector(1000.0, 400.0, 1000.0));
+		TestTrue(TEXT("A 45-degree climb still has a usable lateral axis"), ClimbQuery.bLateralOffsetValid);
+		TestNearlyEqual(TEXT("...and measures the offset correctly"), ClimbQuery.LateralOffsetCm, 400.0, 1.0e-6);
+	}
+
+	// -- An exactly vertical segment signals instead of lying ----------------
+	{
+		const TArray<FVector> Vertical({
+			FVector(0.0, 0.0, 0.0),
+			FVector(0.0, 0.0, 5000.0),
+			FVector(0.0, 0.0, 10000.0) });
+
+		FTrackCenterline Shaft;
+		FString Error;
+		TestTrue(TEXT("A vertical centerline builds -- it is legal geometry, just degenerate"),
+			Shaft.BuildFromPolyline(Vertical, /*bClosedLoop*/ false, Error));
+
+		// A point 700 cm to one side of the shaft, halfway up.
+		const FTrackCenterlineQuery Query = Shaft.FindNearest(FVector(0.0, 700.0, 5000.0));
+
+		// bValid stays TRUE on purpose. Progress, position, direction and 3D separation
+		// are all still correct on a vertical segment; clearing bValid would take
+		// ranking down with the lateral offset, which is the larger failure.
+		TestTrue(TEXT("A query on a vertical segment is still valid"), Query.bValid);
+		TestNearlyEqual(TEXT("...its 3D distance is correct"), Query.DistanceToCenterlineCm, 700.0, 1.0e-6);
+		TestNearlyEqual(TEXT("...its arc distance is correct"), Query.DistanceAlongCm, 5000.0, 1.0e-6);
+
+		// ...but the sideways component is flagged, not silently zero.
+		TestFalse(TEXT("The lateral offset is flagged as UNUSABLE on a vertical segment"),
+			Query.bLateralOffsetValid);
+		TestNearlyEqual(TEXT("...and forced to zero rather than left as garbage"),
+			Query.LateralOffsetCm, 0.0, 0.0);
+
+		// THE DISCRIMINATION THAT MATTERS. Before the flag, this query and a query for a
+		// car genuinely on the centerline were indistinguishable. Now they are not.
+		const FTrackCenterlineQuery OnLine = Shaft.FindNearest(FVector(0.0, 0.0, 5000.0));
+		TestNearlyEqual(TEXT("A car ON the vertical centerline also reports zero lateral offset"),
+			OnLine.LateralOffsetCm, 0.0, 1.0e-9);
+		TestFalse(TEXT("...and is ALSO flagged unusable, so neither can be mistaken for a measurement"),
+			OnLine.bLateralOffsetValid);
+		TestTrue(TEXT("The two are told apart by the 3D distance, which remains meaningful"),
+			FMath::Abs(Query.DistanceToCenterlineCm - OnLine.DistanceToCenterlineCm) > 600.0);
+	}
+
+	// -- A default-constructed query is not accidentally 'usable' ------------
+	{
+		const FTrackCenterlineQuery Default;
+		TestFalse(TEXT("A default query is invalid"), Default.bValid);
+		TestFalse(TEXT("...and its lateral offset is not claimed usable"), Default.bLateralOffsetValid);
 	}
 
 	return true;
