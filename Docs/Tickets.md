@@ -2195,15 +2195,23 @@ Scripts/Test/Run-Smoke.ps1                              # passedTotal=471 failed
 Scripts/Test/Run-AutomationFilter.ps1 -TestNames <3 level tests>   # 3/0/0
 ```
 
-Logs: `Saved/BuildLogs/RACE-002-Editor-2.log`, `Saved/BuildLogs/RACE-002-Game-2.log`.
-Reports: `Saved/Automation/RACE-002-Smoke-2/index.json`,
-`Saved/Automation/RACE-002-Level-1/index.json`.
+Logs: `Saved/BuildLogs/RACE-002-Editor-final.log`,
+`Saved/BuildLogs/RACE-002-Game-final.log`. Reports:
+`Saved/Automation/RACE-002-Smoke-final/index.json`
+(`reportCreatedOn 2026.08.20-06.24.33`),
+`Saved/Automation/RACE-002-Level-final/index.json`
+(`reportCreatedOn 2026.08.20-06.25.32`).
+
+**These four artifacts were produced from the committed tree**, after `726c290`, not
+from the working copy that first went green — an earlier passing run predated a
+comment-only edit, and re-running was cheaper than reporting a number whose source had
+since been touched. The earlier artifacts (`-2`, `-1`) are still on disk and agree.
 
 `WARNING_ERROR_MATCHES=0` is the script's own grep for `warning|error` over the full
 captured build output, so it covers UHT and the linker as well as the compiler.
 
-**Smoke: 471 tests, 469 succeeded + 2 succeededWithWarnings, 0 failed, 0 notRun**
-(`reportCreatedOn 2026.08.20-06.13.32`). Up from TRACK-002's 466 by the five new suites.
+**Smoke: 471 tests, 469 succeeded + 2 succeededWithWarnings, 0 failed, 0 notRun.**
+Up from TRACK-002's 466 by the five new suites.
 `RacingSim.Race.LapTrackerConfiguration`, `LapCleanLap`, `LapOrdering`,
 `LapResetAndRestart`, `LapClockFault` all `Success` with `warnings=0 errors=0`.
 
