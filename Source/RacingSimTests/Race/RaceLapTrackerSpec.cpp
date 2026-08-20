@@ -659,26 +659,61 @@ bool FRaceLapOrderingTest::RunTest(const FString& Parameters)
 			Invalidity.ToRunValidity(), ERacingRunValidity::InvalidReverseCrossing);
 		TestEqual(TEXT("...naming the start/finish gate"), Invalidity.GateIndex, 0);
 
-		// Turning round and crossing forwards again closes that ruined lap exactly once
-		// and opens exactly one new one -- it does not manufacture a second lap, and the
-		// FIRST fault is still the one reported.
-		const FLapDriveSummary Forwards = Rig.Drive(600.0, 8);
-		TestEqual(TEXT("Re-crossing forwards closes the ruined lap once"), Forwards.LapsClosed, 1);
-		TestEqual(TEXT("...counting nothing"), Forwards.LapsCounted, 0);
-		TestEqual(TEXT("...and opening exactly one new lap"), Forwards.LapsOpened, 1);
+		// The reverse crossing REWINDS gate 0, exactly as a reverse crossing of an ordinary
+		// gate rewinds that gate: the car is behind the line and has to cross it forwards
+		// again before anything else can count.
+		TestFalse(TEXT("The reverse crossing un-satisfies the start/finish gate"),
+			Rig.Tracker->IsGateSatisfied(0));
+		TestEqual(TEXT("...and points the cursor back at it"), Rig.Tracker->GetExpectedGateIndex(), 0);
+		TestEqual(TEXT("...netting the forward pass that opened the lap back to zero"),
+			Backwards.GatesAdvanced, -1);
 
-		if (Forwards.ClosedLaps.Num() == 1)
+		// TURNING ROUND AND CROSSING FORWARDS AGAIN IS NOT A LAP BOUNDARY. The car is back
+		// where it was, having taken no ordered gate since the lap opened, so the forward
+		// crossing re-triggers gate 0 and lap 1 keeps running on its original timer.
+		//
+		// THESE FOUR ASSERTIONS ARE THE H1 FIX AND THEY USED TO READ THE OTHER WAY ROUND --
+		// this suite previously asserted the closed lap, the opened lap and the +1 on the
+		// lap number that the bug produced, which is why the bug survived review. See
+		// RacingSim.Race.LapLineSpin for the multi-oscillation case that makes the
+		// difference visible as three phantom laps rather than one.
+		const FLapDriveSummary Forwards = Rig.Drive(600.0, 8);
+		TestEqual(TEXT("Re-crossing forwards with no ordered gate taken since the lap opened closes nothing"),
+			Forwards.LapsClosed, 0);
+		TestEqual(TEXT("...counts nothing"), Forwards.LapsCounted, 0);
+		TestEqual(TEXT("...opens no new lap"), Forwards.LapsOpened, 0);
+		TestEqual(TEXT("The car is STILL on lap 1"), Rig.Tracker->GetCurrentLapNumber(), 1);
+		TestEqual(TEXT("...with no lap recorded as completed"), Rig.Tracker->GetLapsCompleted(), 0);
+		TestEqual(TEXT("...and nothing in the last-completed-lap slot"),
+			Rig.Tracker->GetLastCompletedLap().LapNumber, 0);
+		TestEqual(TEXT("...netting the oscillation back to a single forward pass"),
+			Forwards.GatesAdvanced, 1);
+		TestTrue(TEXT("...with gate 0 satisfied again, so the lap can still be completed"),
+			Rig.Tracker->IsGateSatisfied(0));
+		TestEqual(TEXT("...and gate 1 expected"), Rig.Tracker->GetExpectedGateIndex(), 1);
+		TestEqual(TEXT("The recorded fault is still the reverse crossing, unchanged by the re-trigger"),
+			Rig.Tracker->GetCurrentLapInvalidity().Reason, ERaceLapInvalidReason::ReverseFinishCrossing);
+
+		// Lap 1 closes when the car actually DRIVES a lap -- once, uncounted, carrying the
+		// FIRST fault. The lap boundary happens where a lap happened, not where the car
+		// wiggled.
+		const FLapDriveSummary Ruined = Rig.Drive(600.0 + LapCm, LapSpecStepsPerLap);
+		TestEqual(TEXT("Driving a real lap closes the ruined lap exactly once"), Ruined.LapsClosed, 1);
+		TestEqual(TEXT("...counting nothing"), Ruined.LapsCounted, 0);
+		TestEqual(TEXT("...and opening exactly one new lap"), Ruined.LapsOpened, 1);
+
+		if (Ruined.ClosedLaps.Num() == 1)
 		{
-			TestEqual(TEXT("The closed lap keeps the FIRST fault, the reverse crossing"),
-				Forwards.ClosedLaps[0].Validity, ERacingRunValidity::InvalidReverseCrossing);
+			TestEqual(TEXT("The closed lap is lap 1"), Ruined.ClosedLaps[0].LapNumber, 1);
+			TestEqual(TEXT("...keeping the FIRST fault, the reverse crossing"),
+				Ruined.ClosedLaps[0].Validity, ERacingRunValidity::InvalidReverseCrossing);
 		}
 
-		TestEqual(TEXT("The car is on lap 2"), Rig.Tracker->GetCurrentLapNumber(), 2);
+		TestEqual(TEXT("The car is now on lap 2"), Rig.Tracker->GetCurrentLapNumber(), 2);
 		TestEqual(TEXT("...with no valid laps"), Rig.Tracker->GetValidLapsCompleted(), 0);
 
 		// And the ruined lap does not poison the next one: a clean lap from here counts.
-		Rig.CurrentDistanceCm = 600.0;
-		const FLapDriveSummary Clean = Rig.Drive(600.0 + LapCm, LapSpecStepsPerLap);
+		const FLapDriveSummary Clean = Rig.Drive(600.0 + LapCm * 2.0, LapSpecStepsPerLap);
 		TestEqual(TEXT("The following clean lap counts exactly once"), Clean.LapsCounted, 1);
 		TestEqual(TEXT("...and its sectors are consistent"),
 			Clean.ClosedLaps.Num() == 1 && Clean.ClosedLaps[0].AreSectorsConsistent(), true);
@@ -1098,6 +1133,218 @@ bool FRaceLapClockFaultTest::RunTest(const FString& Parameters)
 	// A restart clears the latch: the fault is per-session, like the clocks.
 	Rig.Machine->Restart();
 	TestFalse(TEXT("Restart clears the clock fault"), Rig.Machine->HasRaceClockFault());
+
+	return true;
+}
+
+// ===========================================================================
+// 6. A SPIN ON THE LINE. RACE-002 repair cycle 1, review finding H1/H2.
+// ===========================================================================
+//
+// Docs/03-TrackRaceUI.md:46 names "spins on the line" as a required test case, and
+// `.claude/rules/race-tests.md` requires "spins at gates" generally -- the start/finish
+// line IS a gate. Section 3 above covers a spin at an ORDINARY gate and a single
+// reverse/forward oscillation at the line; neither one caught this.
+//
+// WHAT WENT WRONG AND WHY THE OLD COVERAGE MISSED IT. Every forward crossing of the line
+// unconditionally closed the lap in progress and opened a new one, so an oscillation
+// F,R,F,R,F,R,F -- one spin, net zero real progress, and the exact stream TRACK-002's own
+// crossing-direction case nets as ONE forward pass -- produced FOUR lap boundaries: three
+// closed laps, CurrentLapNumber +4, a ~0.03 s LastCompletedLap and a ranking key
+// (Docs/03-TrackRaceUI.md:43, lap * trackLength + splineDistance) three laps ahead of a
+// car that had not moved. ValidLapsCompleted stayed 0 the whole time -- the phantom laps
+// carried ReverseFinishCrossing -- which is exactly why a suite that only ever asserted
+// the VALID count could sit green over it. This suite asserts the boundary count, the lap
+// NUMBER, the total (valid-or-not) lap count and the ranking key, because those are the
+// four numbers the bug moved.
+//
+// The control case at the end is not decoration: a fix that suppressed real laps as well
+// as phantom ones would pass every assertion above it.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRaceLapLineSpinTest,
+	"RacingSim.Race.LapLineSpin",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRaceLapLineSpinTest::RunTest(const FString& Parameters)
+{
+	using namespace RaceLapSpecPrivate;
+
+	// -- A multi-oscillation spin ACROSS the start/finish line ----------------
+	{
+		FLapSpecRig Rig;
+		if (!Rig.Build(*this))
+		{
+			return false;
+		}
+
+		const double LapCm = Rig.LapLengthCm;
+		Rig.StartRacing(-800.0);
+
+		// Seven crossings of the line, alternating, ending where it began: forward, back,
+		// forward, back, forward, back, forward. Four forward passes and three reverse ones,
+		// no two consecutive crossings sharing a direction -- TRACK-002's GateCurvedTrack
+		// spin case nets that stream at EXACTLY ONE forward pass, and this layer is required
+		// by acceptance criterion 6 not to derive a different net from the same stream.
+		const double SpinPositionsCm[] = { 400.0, -300.0, 500.0, -200.0, 600.0, -400.0, 700.0 };
+
+		FLapDriveSummary Spin;
+		for (const double PositionCm : SpinPositionsCm)
+		{
+			Spin.Accumulate(Rig.Step(PositionCm));
+		}
+
+		// -- The four numbers the bug moved ----------------------------------
+		TestEqual(TEXT("A spin on the line closes NO lap: three of the four forward crossings were not lap boundaries"),
+			Spin.LapsClosed, 0);
+		TestEqual(TEXT("...counts none"), Spin.LapsCounted, 0);
+		TestEqual(TEXT("...and opens exactly one, the first crossing, which started the car's lap 1"),
+			Spin.LapsOpened, 1);
+		TestEqual(TEXT("The car is on lap 1, not lap 4: the lap number cannot outrun real progress"),
+			Rig.Tracker->GetCurrentLapNumber(), 1);
+		TestEqual(TEXT("No lap has been completed, valid or otherwise"),
+			Rig.Tracker->GetLapsCompleted(), 0);
+		TestEqual(TEXT("...and none validly"), Rig.Tracker->GetValidLapsCompleted(), 0);
+		TestEqual(TEXT("Nothing reached the last-completed-lap slot, so no 0.03-second 'lap' can reach a HUD"),
+			Rig.Tracker->GetLastCompletedLap().LapNumber, 0);
+		TestEqual(TEXT("...nor the best-lap slot"), Rig.Tracker->GetBestValidLap().LapNumber, 0);
+
+		// -- The net, against TRACK-002's own crossing-stream semantics -------
+		TestEqual(TEXT("Seven alternating crossings of the line net exactly one forward advance"),
+			Spin.GatesAdvanced, 1);
+		TestTrue(TEXT("...leaving the start/finish gate satisfied"), Rig.Tracker->IsGateSatisfied(0));
+		TestEqual(TEXT("...and gate 1 expected"), Rig.Tracker->GetExpectedGateIndex(), 1);
+		TestFalse(TEXT("...with no ordered gate beyond the line credited"),
+			Rig.Tracker->IsGateSatisfied(1) || Rig.Tracker->IsGateSatisfied(2) || Rig.Tracker->IsGateSatisfied(3));
+
+		// -- The documented ranking key, which is where this reaches gameplay --
+		//
+		// Docs/03-TrackRaceUI.md:43: progress is ordered by lap * trackLength +
+		// splineDistance. With the phantom laps the car sat a full three laps up the order
+		// having driven 15 metres.
+		const double RankingKeyCm =
+			static_cast<double>(Rig.Tracker->GetCurrentLapNumber()) * LapCm + Rig.Tracker->GetProgressDistanceCm();
+		TestEqual(TEXT("The ranking key reflects one lap plus 700 cm, not four laps plus 700 cm"),
+			RankingKeyCm, LapCm + 700.0, 1.0);
+
+		// -- The spin is still reported as what it was ------------------------
+		//
+		// Reclassifying the forward crossings does NOT withdraw the reverse-crossing
+		// invalidity: CLAUDE.md names reverse finish crossings on their own, and section 3
+		// asserts the reason stays distinct from a skipped gate.
+		TestEqual(TEXT("The lap is still voided by the reverse crossings of the line"),
+			Rig.Tracker->GetCurrentLapInvalidity().Reason, ERaceLapInvalidReason::ReverseFinishCrossing);
+		TestEqual(TEXT("...naming the start/finish gate"), Rig.Tracker->GetCurrentLapInvalidity().GateIndex, 0);
+
+		// -- And the lap the car is ACTUALLY on still closes, exactly once -----
+		const FLapDriveSummary Rest = Rig.Drive(LapCm + 400.0, LapSpecStepsPerLap);
+		TestEqual(TEXT("Driving the rest of the lap closes lap 1 exactly once"), Rest.LapsClosed, 1);
+		TestEqual(TEXT("...uncounted, because of the reverse crossings"), Rest.LapsCounted, 0);
+		TestEqual(TEXT("...and opens exactly one new lap"), Rest.LapsOpened, 1);
+		TestEqual(TEXT("The session recorded exactly ONE lap boundary for the one lap driven"),
+			Rig.Tracker->GetLapsCompleted(), 1);
+		TestEqual(TEXT("...putting the car on lap 2"), Rig.Tracker->GetCurrentLapNumber(), 2);
+
+		if (Rest.ClosedLaps.Num() == 1)
+		{
+			const FRacingLapTiming& Closed = Rest.ClosedLaps[0];
+			TestEqual(TEXT("The closed lap is lap 1"), Closed.LapNumber, 1);
+			TestEqual(TEXT("...invalid as a reverse crossing"), Closed.Validity, ERacingRunValidity::InvalidReverseCrossing);
+
+			// THE PHANTOM-LAP SIGNATURE, asserted directly: the bug's closed laps were the
+			// duration of a single evaluation step. A real lap here is ~407 steps.
+			TestTrue(TEXT("...with a real lap's duration, not a single step's"),
+				Closed.LapDurationSeconds > LapSpecStepsPerLap * LapSpecSecondsPerStep * 0.9);
+			TestTrue(TEXT("...and no more than the spin plus the lap"),
+				Closed.LapDurationSeconds < (LapSpecStepsPerLap + 20) * LapSpecSecondsPerStep);
+		}
+	}
+
+	// -- THE CONTROL: a genuine lap still closes and counts exactly once -------
+	//
+	// The whole risk of the H1 fix is that it suppresses real lap boundaries along with
+	// phantom ones. This is the same drive as RacingSim.Race.LapCleanLap's first lap,
+	// restated here so the suppression case and the non-suppression case fail together or
+	// not at all -- a fix that broke real laps would otherwise leave this suite green.
+	{
+		FLapSpecRig Rig;
+		if (!Rig.Build(*this))
+		{
+			return false;
+		}
+
+		const double LapCm = Rig.LapLengthCm;
+		Rig.StartRacing(-800.0);
+
+		const FLapDriveSummary Opening = Rig.Drive(400.0, 8);
+		TestEqual(TEXT("Control: the grid crossing opens lap 1"), Opening.LapsOpened, 1);
+		TestEqual(TEXT("...and closes nothing"), Opening.LapsClosed, 0);
+
+		// Real forward progress all the way round, one clean finish crossing.
+		const FLapDriveSummary Lap = Rig.Drive(400.0 + LapCm, LapSpecStepsPerLap);
+		TestEqual(TEXT("Control: a genuine lap still CLOSES exactly once"), Lap.LapsClosed, 1);
+		TestEqual(TEXT("...still COUNTS exactly once"), Lap.LapsCounted, 1);
+		TestEqual(TEXT("...and still opens the next lap exactly once"), Lap.LapsOpened, 1);
+		TestEqual(TEXT("Control: the valid lap count is 1"), Rig.Tracker->GetValidLapsCompleted(), 1);
+		TestEqual(TEXT("Control: the total lap count is 1"), Rig.Tracker->GetLapsCompleted(), 1);
+		TestEqual(TEXT("Control: the car is on lap 2"), Rig.Tracker->GetCurrentLapNumber(), 2);
+		TestEqual(TEXT("Control: four ordered gates were satisfied across the lap"), Lap.GatesAdvanced, 4);
+
+		if (Lap.ClosedLaps.Num() == 1)
+		{
+			TestEqual(TEXT("Control: the closed lap is Valid"),
+				Lap.ClosedLaps[0].Validity, ERacingRunValidity::Valid);
+			TestTrue(TEXT("...with consistent sectors"), Lap.ClosedLaps[0].AreSectorsConsistent());
+		}
+
+		// A SECOND genuine lap: the boundary rule must not be a one-shot that only the
+		// first lap of a session can satisfy.
+		const FLapDriveSummary Second = Rig.Drive(400.0 + LapCm * 2.0, LapSpecStepsPerLap);
+		TestEqual(TEXT("Control: a second genuine lap counts exactly once too"), Second.LapsCounted, 1);
+		TestEqual(TEXT("...taking the valid lap count to 2"), Rig.Tracker->GetValidLapsCompleted(), 2);
+	}
+
+	// -- The U-TURN case: a forward line crossing with NO reverse crossing -----
+	//
+	// The related defect the same review noted. The car crosses the line, then goes back
+	// behind it round the OUTSIDE of the gate rectangle -- TRACK-002 reports that as
+	// OutsideExtent, a near miss, which is not a crossing at all -- and then crosses the
+	// line forwards a second time. There is no reverse crossing anywhere in that stream, so
+	// the reverse-crossing handling could never have caught it; only the
+	// "did this lap get anywhere" test does.
+	{
+		FLapSpecRig Rig;
+		if (!Rig.Build(*this))
+		{
+			return false;
+		}
+
+		Rig.StartRacing(-800.0);
+		Rig.Drive(400.0, 8);
+		TestEqual(TEXT("U-turn: lap 1 is open"), Rig.Tracker->GetCurrentLapNumber(), 1);
+
+		// Back behind the line, wide of the gate.
+		const FLapDriveSummary Wide = Rig.Drive(-600.0, 8,
+			/*WideFrom*/ -900.0, /*WideTo*/ 900.0, LapSpecGateHalfWidthCm + 600.0);
+		TestTrue(TEXT("Going back round the OUTSIDE of the line registers as a near miss"),
+			Wide.NearMisses > 0);
+		TestEqual(TEXT("...and not as a crossing, so no reverse-crossing fault is recorded"),
+			Rig.Tracker->GetCurrentLapInvalidity().Reason, ERaceLapInvalidReason::None);
+
+		// Forwards over the line again, on the centerline this time. The target is 700 rather
+		// than 600 so that no interpolated step lands exactly ON the gate plane -- this case
+		// is about the lap-boundary rule, not about re-litigating TRACK-002's half-open
+		// sign convention at zero.
+		const FLapDriveSummary Back = Rig.Drive(700.0, 8);
+		TestEqual(TEXT("U-turn: returning to the line closes no lap -- no ordered gate was ever taken"),
+			Back.LapsClosed, 0);
+		TestEqual(TEXT("...counts none"), Back.LapsCounted, 0);
+		TestEqual(TEXT("...opens none"), Back.LapsOpened, 0);
+		TestEqual(TEXT("...and leaves the car on lap 1"), Rig.Tracker->GetCurrentLapNumber(), 1);
+		TestEqual(TEXT("...with no lap recorded"), Rig.Tracker->GetLapsCompleted(), 0);
+	}
 
 	return true;
 }

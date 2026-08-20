@@ -376,8 +376,15 @@ public:
 	 *   5. the finish gate counts a lap only after every ordered gate and a legal
 	 *      forward crossing;
 	 *   6. arc-length distance supplies continuous progress and sector splits, and
-	 *      NEVER authorises a lap.
+	 *      NEVER authorises a lap;
+	 *   7. a forward crossing of the line is a LAP BOUNDARY only when an ordered gate
+	 *      beyond the line is held (HasOrderedGateProgress()); otherwise it re-triggers
+	 *      gate 0 and the lap in progress continues untouched, so a spin on the line or a
+	 *      U-turn back to it cannot manufacture laps. Reverse crossings of the line rewind
+	 *      gate 0 the same way an ordinary gate is rewound, so the net this class derives
+	 *      from an oscillating crossing stream is the SAME net TRACK-002 derives from it.
 	 *
+
 	 * Allocation-free in the steady state. Crossing results are collected into an inline
 	 * buffer; only a lap CLOSE allocates, once, for that lap's sector array.
 	 *
@@ -567,6 +574,18 @@ private:
 
 	/** Lowest-indexed ordered gate not yet crossed this lap, or INDEX_NONE when all are. */
 	int32 FindFirstMissedGateIndex() const;
+
+	/**
+	 * Is any ordered gate BEYOND the start/finish line currently held for the lap in
+	 * progress?
+	 *
+	 * The genuine-progress test a forward crossing of the line has to pass before it is
+	 * treated as a lap boundary rather than as a re-trigger of gate 0. Gate 0 itself is
+	 * excluded because crossing it forwards is what opens a lap, so it is always held and
+	 * proves nothing. Gates only -- never arc length, which ranks cars and never
+	 * authorises a lap. Advance() carries the full reasoning at the call site.
+	 */
+	bool HasOrderedGateProgress() const;
 
 	/** Record the sample as "where the car was" without evaluating crossings. */
 	void AcceptSample(const FVector& WorldLocationCm, double CenterlineDistanceCm);

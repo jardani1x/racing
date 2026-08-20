@@ -624,12 +624,74 @@ FRaceLapTrackerUpdate URaceLapTracker::Advance(const FVector& WorldLocationCm, c
 		{
 			if (bForward && bLegal)
 			{
+				// A FORWARD CROSSING OF THE LINE IS A LAP BOUNDARY ONLY WHEN THE LAP IN
+				// PROGRESS ACTUALLY WENT SOMEWHERE.
+				//
+				// Gate 0 is a gate, and it needs the same protection the rewind-on-reverse
+				// handling further down already gives every ordinary gate. Without it, the
+				// oscillating stream F,R,F,R,F on the line -- one spin, net zero real
+				// progress, and the stream TRACK-002's own crossing-direction case nets as
+				// EXACTLY ONE forward pass -- closed and re-opened a lap on each of the
+				// three forward crossings: three "completed" laps, +3 on CurrentLapNumber,
+				// a ~0.03 s LastCompletedLap, and a ranking key
+				// (Docs/03-TrackRaceUI.md:43, lap * trackLength + splineDistance) three laps
+				// ahead of a car that had not moved. Deriving a different net from the same
+				// crossing stream is precisely what this ticket's criterion 6 forbids, and
+				// gate 0 was the one gate where it was still being done.
+				//
+				// PROGRESS IS COUNTED IN GATES, NEVER IN DISTANCE. At least one ordered gate
+				// beyond the line must be held. Arc length is deliberately not consulted
+				// even as a tie-breaker: Docs/03-TrackRaceUI.md rule 6 and
+				// FRacingProgressSample both say distance ranks cars and never authorises a
+				// lap, and a lap boundary is exactly the authorisation they mean.
+				//
+				// HELD NOW, not "held at some point during this lap". A car that reverses
+				// back out through every gate it took has undone its progress, and the same
+				// rewinds that undo it must also withdraw the right to close a lap on it. A
+				// latched bMadeProgress flag would survive that, and would additionally need
+				// clearing on every session/restart path -- more state to get wrong for a
+				// strictly worse answer.
+				//
+				// This does NOT soften the unconditional close for a lap that DID make
+				// progress: a shortcut lap, a lap with a missed gate, a lap ruined by a
+				// reset still closes at the line uncounted, exactly as before. The only
+				// crossings this reclassifies are the ones with no ordered progress behind
+				// them at all -- a spin on the line, and a U-turn across the infield back to
+				// it, neither of which is a lap.
+				const bool bIsLapBoundary = !bLapInProgress || HasOrderedGateProgress();
+
+				if (!bIsLapBoundary)
+				{
+					// NOT a lap boundary: give the same answer the ordinary gates give,
+					// which is to (re-)satisfy the gate and move the cursor past it. The lap
+					// in progress keeps its open time, its sector cursor and its recorded
+					// fault; nothing about it is closed, counted, re-numbered or re-timed.
+					//
+					// The increment is conditional so that it exactly cancels the decrement
+					// the reverse branch below applied: one forward and one reverse crossing
+					// of the line net to zero, and an odd number of them nets to one.
+					if (!GateSatisfied[FRacingCheckpointGateSet::StartFinishGateIndex])
+					{
+						GateSatisfied[FRacingCheckpointGateSet::StartFinishGateIndex] = true;
+						++Update.GatesAdvanced;
+					}
+
+					ExpectedGateIndex = Gates.GetNextGateIndex(FRacingCheckpointGateSet::StartFinishGateIndex);
+
+					UE_LOG(LogRacingRace, Verbose,
+						TEXT("Forward crossing of the start/finish gate on lap %d with no ordered gate held since it "
+							 "opened; re-triggering gate 0 rather than manufacturing a lap boundary."),
+						CurrentLapNumber);
+					continue;
+				}
+
 				if (bLapInProgress)
 				{
-					// THE FINISH LINE ALWAYS CLOSES THE LAP IN PROGRESS AND OPENS THE
-					// NEXT ONE, valid or not.
+					// THE FINISH LINE CLOSES THE LAP IN PROGRESS AND OPENS THE NEXT ONE,
+					// valid or not, once the boundary test above has established that there
+					// was a lap to close.
 					//
-					// The alternative -- refusing to close an invalid lap -- was
+					// The alternative -- refusing to close an INVALID lap -- was
 					// rejected: a car that cuts the last corner would then never get a
 					// lap boundary at the line, its timer would run on into the next lap,
 					// and the HUD would show one endless lap. A shortcut lap is a lap
@@ -657,14 +719,31 @@ FRaceLapTrackerUpdate URaceLapTracker::Advance(const FVector& WorldLocationCm, c
 			// MissedCheckpoint: CLAUDE.md calls out reverse finish crossings on their
 			// own, and the ticket requires the two to stay distinguishable.
 			//
-			// Progress is NOT rewound here, and that is what keeps a spin on the line
-			// from manufacturing laps. The car is behind the line again with gate 0
-			// still marked; the next forward crossing therefore closes this (already
-			// invalid) lap exactly once and opens exactly one new one, however many
-			// times the car crosses back and forth.
+			// PROGRESS IS REWOUND when gate 0 is the gate last taken, for the same reason
+			// and by the same rule an ordinary gate is rewound below: the car is behind the
+			// line again and must cross it forwards before anything else can count. That
+			// keeps Update.GatesAdvanced summable across the steps of a spin on the line --
+			// TRACK-002's stream and this layer's net stay the same number.
+			//
+			// The rewind deliberately does NOT apply once the car has been round: if the
+			// cursor has already wrapped back to gate 0, every ordered gate was taken and
+			// this is a car reversing over the line at the END of a lap. Un-satisfying gate 0
+			// there would make the lap it then closes look as though it had missed the
+			// start/finish gate on top of the reverse crossing it actually committed.
 			if (bLapInProgress)
 			{
 				MarkLapInvalid(ERaceLapInvalidReason::ReverseFinishCrossing, GateIndex, Crossing.GateId);
+
+				const int32 ExpectedAfterFinishGate =
+					Gates.GetNextGateIndex(FRacingCheckpointGateSet::StartFinishGateIndex);
+
+				if (ExpectedGateIndex == ExpectedAfterFinishGate
+					&& GateSatisfied[FRacingCheckpointGateSet::StartFinishGateIndex])
+				{
+					GateSatisfied[FRacingCheckpointGateSet::StartFinishGateIndex] = false;
+					ExpectedGateIndex = FRacingCheckpointGateSet::StartFinishGateIndex;
+					--Update.GatesAdvanced;
+				}
 			}
 
 			UE_LOG(LogRacingRace, Verbose,
@@ -870,6 +949,30 @@ bool URaceLapTracker::CloseLap(const double TimeSeconds, FRacingLapTiming& OutTi
 		OutTiming.SectorDurationsSeconds.Num(), ValidLapsCompleted, LapsCompleted);
 
 	return bValid;
+}
+
+bool URaceLapTracker::HasOrderedGateProgress() const
+{
+	// Gate 0 is excluded ON PURPOSE. Crossing the line forwards is what OPENS a lap, so
+	// gate 0 is satisfied for every lap in progress by construction and says nothing about
+	// whether the car got anywhere afterwards. "Progress" here means an ordered gate BEYOND
+	// the line, which on a closed circuit cannot be reached without driving.
+	//
+	// A live scan rather than a cached flag, deliberately -- see the boundary test in
+	// Advance(). Reverse crossings clear these flags, so undriving the lap withdraws the
+	// answer, which a latched flag could not do.
+	//
+	// O(gates) on a set ConfigureTrack() floors at 2 and this project's tracks author 4-6.
+	// It runs once per forward crossing of the start/finish line, not per frame.
+	for (int32 Index = FRacingCheckpointGateSet::StartFinishGateIndex + 1; Index < GateSatisfied.Num(); ++Index)
+	{
+		if (GateSatisfied[Index])
+		{
+			return true;
+		}
+	}
+
+	return false;
 }
 
 int32 URaceLapTracker::FindFirstMissedGateIndex() const
