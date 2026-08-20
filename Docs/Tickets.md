@@ -2361,6 +2361,7 @@ here. Read before writing `RACE-003`'s acceptance criteria.
 | ID | Finding | What RACE-003 must do |
 | --- | --- | --- |
 | M2 (pass 1) | A step that crosses the finish line and then a sector boundary drops the new lap's first sector boundary — the boundary is re-validated against `CurrentSectorIndex` at apply time and the lap that just opened reset it. The lap closes `TimingUnavailable` (honest) rather than publishing wrong splits, but a split is lost. Needs a step of roughly a third of a lap to reach | Either carry the boundary forward into the newly opened lap when the crossing precedes it in `CrossingAlpha` order, or state in the results contract that a lap opened mid-step may legitimately report no splits. Do not silently emit a partial set |
+| M1 (repair cycle 1 re-review, `R2-M1`) | H1's fix means a lap in which **no** ordered gate is ever satisfied no longer closes at the line at all — the lap in progress just continues. If the driver then completes one clean physical lap, `CloseLap` sees every gate satisfied and closes it **Valid**, with a duration spanning **two** physical laps; `GetLapsCompleted()` under-reports by one and the ranking key (`lap * L + distance`) sits a lap low. Direction-safe (no phantom credit), but a valid lap whose time is not one lap's time reaches results/HUD. One missed gate is enough on a directly-configured 2-gate tracker (`MinOrderedGateCount = 2`); the graybox's `MinCheckpointGateCount = 4` requires a full-lap excursion | Decide and implement: either mark the lap invalid when a forward line crossing is refused as a boundary (requires `RaceLapTracker` to expose that refusal, which it currently does not), or state explicitly in the results contract that a valid lap's duration may span more than one physical lap and ensure no consumer assumes otherwise |
 | L2 (pass 1) | An empty sector table is a legal configuration (`GetNumSectors() == 0`, "laps without splits", asserted in `RacingSim.Race.LapTrackerConfiguration`), but `FRacingLapTiming::AreSectorsConsistent()` (CORE-002) returns false for a lap carrying no splits — so every lap on a sectorless track reads "inconsistent" to a consumer that checks | Decide what `AreSectorsConsistent()` means with zero authored sectors — vacuously true is the likely answer — and fix it in `RacingTelemetry.h` where the contract lives, not in the lap tracker. Add the assertion RACE-002 could not add without changing a Core contract mid-ticket |
 | L6 (pass 1) | Three inherited-finding fixes shipped by RACE-002 (TRACK-002 `L4` near-miss direction, `L5` thread constraint, `R1-L3` clamp-log re-arm) are closed by construction or by comment, with no direct assertion. A future edit can silently reopen any of them | Add one assertion apiece, or record explicitly that "closed by construction" is the accepted standard for these three and why |
 | L9 (pass 1) | The first forward line crossing of a session **opens** lap 1 rather than closing anything, so `GetLapsCompleted()` and `GetCurrentLapNumber()` differ by exactly one for the entire session. Correct and deliberate; documented nowhere | Write the convention into the results/HUD data contract before a consumer invents its own. `GetValidLapsCompleted()`, `GetLapsCompleted()` and `GetCurrentLapNumber()` are three different numbers and RACE-002's own counter-case already warns they must not be conflated |
@@ -2386,7 +2387,11 @@ them across tickets would produce two different answers to one question.
 **RACE-002 `L4`, `L5` and `L8` are fix-on-next-touch**, recorded here so "next touch"
 means something: duplicated gate-wrap arithmetic in `Advance()`, a loose expected-warning
 substring in `RaceLapTrackerSpec.cpp`, and a header comment that understates a lap close's
-allocation count.
+allocation count. **Repair cycle 1 re-review adds two more to this list:** `R2-L1`, a
+blank line inside a `/** */` doc comment in `RaceLapTracker.h`'s new rule-7 block missing
+its `*` prefix (compiles, but breaks the file's own comment convention); `R2-L2`, the new
+`LapLineSpin` test's duration bound uses inline magic factors (`* 0.9`,
+`LapSpecStepsPerLap + 20`) instead of named tolerances, unlike the rest of the rig.
 
 ### RACE-002 — repair cycle 1 evidence, 2026-08-20
 
@@ -2463,6 +2468,11 @@ Report: `Saved/Automation/RACE-002-R1-Smoke-final/index.json`
 (TRACK-002 `M7`). All six `RaceLapTracker*` suites `Success` with `warnings=0 errors=0`:
 `LapTrackerConfiguration`, `LapCleanLap`, `LapOrdering`, `LapResetAndRestart`,
 `LapClockFault`, `LapLineSpin`. The warning baseline is unchanged at 2 suites / 3 warnings.
+**Re-review `R2-L3`: this cycle re-ran Smoke only.** The three placed-level tests from
+pass 1 (`TrackPrototypeLevelPostLoad`/`Identity`/`Gates`, `3/0/0`) were not re-run —
+defensible, since this cycle's change is confined to `RaceLapTracker.*`, which no level
+test loads and no shipping actor yet owns, but stated explicitly here rather than left
+implicit. `test-engineer`'s independent run should cover both gates.
 
 **The new test was proved to fail against the pre-fix runtime.** `H2`'s whole complaint is
 that the old suite asserted the bug as expected, so a new test that has only ever been run
@@ -2495,7 +2505,16 @@ The stash was popped and both targets rebuilt before this report.
   crossing never becomes a lap boundary — the lap in progress simply continues. Defensible
   (the car validly passed no gate, so nothing authorised a lap), and it awards nothing, but
   it is a behaviour change from the pre-fix "close it and mark it invalid". Not reachable
-  by driving on the graybox, where the gates span the road.
+  by driving on the graybox, where the gates span the road. **Re-review, `R2-M1`:**
+  the consequence is stronger than "continues" if the driver then completes one clean
+  physical lap — nothing marks the missed-gate lap invalid, so `CloseLap` sees every gate
+  satisfied on the *next* pass and closes it **Valid**, with a duration spanning two
+  physical laps, while `GetLapsCompleted()` under-reports by one and the ranking key sits
+  a lap low. Fail-safe in direction (no phantom credit, no fast time), but a valid lap
+  whose duration is not one lap's time reaches `RACE-003`'s results and the `UI-001` HUD.
+  On the graybox (`MinCheckpointGateCount = 4`) this needs a full-lap off-track excursion;
+  a directly-configured 2-gate tracker (`MinOrderedGateCount = 2`) turns **one** missed
+  gate into it. Recorded as an explicit `RACE-003` obligation below, not left as prose only.
 - **A one-gate track.** `MinOrderedGateCount` is 2 and `ATrackDefinitionActor` floors at 4,
   so "there is always a gate beyond the line" is guaranteed by configuration, not by this
   function. `ConfigureTrack` refuses a one-gate set, and the configuration suite asserts it.
