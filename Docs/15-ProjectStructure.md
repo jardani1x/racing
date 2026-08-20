@@ -65,10 +65,24 @@ Source/
       RaceDirector.*                 <- planned, not yet implemented. Will own a URaceStateMachine
                                          (Docs/01-Architecture.md's "session orchestration" role);
                                          RACE-001's header documents the split in detail.
-      TrackDefinitionActor.*
-      TrackCheckpoint.*
-      RaceProgressComponent.*
-      RaceResult.*
+      TrackCenterline.*              <- TRACK-001: world-free arc-length model, queries
+      TrackDefinitionActor.*         <- TRACK-001/TRACK-002: centerline, sectors, grid,
+                                        reset samples, baked gate set, content hash
+      TrackCheckpointGate.*          <- TRACK-002: FRacingCheckpointGate /
+                                        FRacingCheckpointGateSet. World-free USTRUCTs, not
+                                        the `ATrackCheckpoint` actor earlier drafts of
+                                        Docs/01-Architecture.md specified: a gate is a
+                                        plane + bounded rectangle + legal direction, and a
+                                        crossing is a segment/plane intersection, which an
+                                        overlap volume cannot do at racing speeds.
+                                        (Corrected at RACE-002, closing TRACK-002 M5.)
+      RaceLapTracker.*               <- RACE-002: URaceLapTracker. Ordered-gate progress,
+                                        lap counting, sector splits, per-lap validity.
+                                        Fills the role earlier drafts called
+                                        `URaceProgressComponent`; a UObject, not a
+                                        component, for the testability reason
+                                        RaceStateMachine.* records.
+      RaceResult.*                   <- planned, RACE-003
     UI/
       RaceHUDViewModel.*
       RaceHUDController.*
@@ -91,6 +105,14 @@ Source/
     Race/
       RaceClockSpec.cpp                <- RACE-001
       RaceStateMachineSpec.cpp         <- RACE-001
+      TrackCenterlineSpec.cpp          <- TRACK-001
+      TrackDefinitionActorSpec.cpp     <- TRACK-001/TRACK-002
+      TrackCheckpointGateSpec.cpp      <- TRACK-002: per-gate crossing direction
+      TrackPrototypeLevelSpec.cpp      <- TRACK-002: the placed graybox level.
+                                          ProductFilter, not Smoke -- it instantiates an
+                                          actor. See Docs/Environment.md.
+      RaceLapTrackerSpec.cpp           <- RACE-002: lap order, sector timing, reset,
+                                          restart, clock-fault validity
     Tests/                        <- TEST-001: tests about the test infrastructure
       AutomationTestPlacementSpec.cpp  <- no registered test defined under Source/RacingSim/
       NonShippingArtifactSpec.cpp      <- Game link inputs (.rsp) + DirectoriesToNeverCook

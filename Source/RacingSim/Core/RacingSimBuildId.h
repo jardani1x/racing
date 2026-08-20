@@ -120,12 +120,22 @@ struct RACINGSIM_API FRacingSimBuildId
 	/**
 	 * True when this ID is unique per build and traceable back to the CI run that
 	 * produced it: the Explicit scheme, a non-empty stamped value, AND a value
-	 * that survived sanitisation byte-for-byte.
+	 * whose CHARACTERS survived sanitisation unchanged.
 	 *
 	 * That last condition is CORE-003's fix for CORE-002 finding MEDIUM-1. A
 	 * mutated stamp is not authoritative, because sanitisation is lossy --
 	 * "feature/x" and "feature-x" both record as "featurex", so the flag could
 	 * otherwise promise uniqueness for two different builds sharing one ID.
+	 *
+	 * PRECISELY WHAT IS CHECKED (C3-7, corrected at RACE-002; the comment previously
+	 * read "survived sanitisation byte-for-byte", which overstated it). The comparison
+	 * is against the TRIMMED stamp, so leading or trailing whitespace is silently
+	 * removed and the ID still counts as authoritative. That is deliberate rather than
+	 * an oversight: trimming cannot map two distinct stamps onto one identifier, which
+	 * is the collision this flag exists to prevent, and a CI variable with a stray
+	 * newline is common enough that failing it closed would produce unlabelled
+	 * developer results for a formatting accident. Character-level mutation inside the
+	 * trimmed value is what makes it false.
 	 *
 	 * Results produced with bIsAuthoritative == false are developer results and
 	 * must be labelled as such wherever they are shown; IsPublishable() refuses

@@ -410,6 +410,11 @@ struct RACINGSIM_API FRacingCheckpointGateSet
 	 * previously good set intact rather than half-overwritten -- the same commit-at-the-
 	 * bottom discipline FTrackCenterline::Build uses.
 	 *
+	 * Consecutive gates must be more than one centerline segment apart, and on a CLOSED
+	 * loop that invariant is also checked across the wrap from the last gate back to
+	 * gate 0 (RACE-002, closing TRACK-002 finding M1) -- the lap boundary is the one
+	 * place an ordering coin-flip costs a lap rather than a checkpoint.
+	 *
 	 * @param InSpecs             authored gates, ascending in DistanceAlongCm, [0] at exactly 0.
 	 * @param Centerline          a built centerline; gate planes are derived from it.
 	 * @param MinCurveRadiusCm    tightest corner radius the authored curve contains, cm. Used to turn

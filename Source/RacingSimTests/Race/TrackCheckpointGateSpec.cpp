@@ -417,6 +417,74 @@ bool FRacingGateSetBuildTest::RunTest(const FString& Parameters)
 			BuildError.Contains(TEXT("vertical")));
 	}
 
+	// -- The separation invariant holds ACROSS THE LOOP CLOSURE too ----------
+	//
+	// M1 (code-reviewer, TRACK-002 pass 1), fixed and covered at RACE-002. The
+	// per-gate check compares gate N with gate N-1, which leaves exactly one pair
+	// unchecked on a closed circuit: the last gate and gate 0. An authored last gate
+	// one centimetre before the line is the near-identical-plane, coin-flip-ordering
+	// case the check exists to prevent, sitting at the one place on the track where
+	// getting the order wrong costs a LAP rather than a checkpoint.
+	//
+	// The fixture is a circle because the rule is about the wrap; an OPEN centerline
+	// has no loop closure and its last gate must still be accepted, which the control
+	// at the end of this block asserts.
+	{
+		FTrackCenterline Circle;
+		FString CircleError;
+		if (BuildCircle(Circle, CircleError))
+		{
+			const double LengthCm = Circle.GetLengthCm();
+			const double MaxSegmentCm = Circle.GetMaxSegmentLengthCm();
+
+			TArray<FRacingCheckpointGateSpec> Loop;
+			Loop.Add(MakeSpec(TEXT("Gate.StartFinish"), 0.0));
+			Loop.Add(MakeSpec(TEXT("Gate.01"), LengthCm * 0.33));
+			Loop.Add(MakeSpec(TEXT("Gate.02"), LengthCm * 0.66));
+
+			FRacingCheckpointGateSet Spread;
+			FString SpreadError;
+			TestTrue(TEXT("Well-separated gates on a closed loop build"),
+				Spread.Build(Loop, Circle, GateSpecCircleRadiusCm, SpreadError));
+
+			// Move the LAST gate to within one centerline segment of the line, across
+			// the wrap. Every consecutive pair is still fine; only the closure is not.
+			Loop.Last().DistanceAlongCm = LengthCm - MaxSegmentCm * 0.5;
+
+			FRacingCheckpointGateSet Crowded;
+			FString CrowdedError;
+			TestFalse(TEXT("Rejected: the last gate sits inside one segment of the start/finish gate"),
+				Crowded.Build(Loop, Circle, GateSpecCircleRadiusCm, CrowdedError));
+			TestTrue(TEXT("...and the reason names the loop closure"),
+				CrowdedError.Contains(TEXT("loop closure")));
+
+			// Just outside the bound is accepted, so the rejection above is the rule
+			// firing at its boundary rather than the whole configuration being bad.
+			Loop.Last().DistanceAlongCm = LengthCm - MaxSegmentCm * 2.0;
+			FRacingCheckpointGateSet JustClear;
+			FString JustClearError;
+			TestTrue(TEXT("A last gate two segments clear of the line is accepted"),
+				JustClear.Build(Loop, Circle, GateSpecCircleRadiusCm, JustClearError));
+
+			// The control: on an OPEN centerline there is no wrap, so a gate near the
+			// end is not near gate 0 and must still build.
+			FTrackCenterline OpenLine;
+			FString OpenError;
+			if (BuildStraight(OpenLine, OpenError))
+			{
+				TArray<FRacingCheckpointGateSpec> OpenSpecs;
+				OpenSpecs.Add(MakeSpec(TEXT("Gate.StartFinish"), 0.0));
+				OpenSpecs.Add(MakeSpec(TEXT("Gate.01"), 20000.0));
+				OpenSpecs.Add(MakeSpec(TEXT("Gate.02"), OpenLine.GetLengthCm() - 1.0));
+
+				FRacingCheckpointGateSet OpenSet;
+				FString OpenBuildError;
+				TestTrue(TEXT("On an OPEN centerline the wrap check does not apply"),
+					OpenSet.Build(OpenSpecs, OpenLine, 100000.0, OpenBuildError));
+			}
+		}
+	}
+
 	return true;
 }
 

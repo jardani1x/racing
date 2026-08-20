@@ -807,6 +807,16 @@ private:
 	 * bBakeFailureLogged exists to prevent, in a case its own condition never sees.
 	 *
 	 * Suppresses only the LOG. GeneratedGateClampNote is recorded on every bake.
+	 *
+	 * RE-ARMED ON TWO PATHS, not one (R1-L3, RACE-002): by a generated bake that places
+	 * every requested gate, AND by any bake that uses AUTHORED specs -- the authored path
+	 * never calls the generator, so without the second the flag could stay armed across a
+	 * generated -> authored -> generated round trip and swallow the second clamp report.
+	 *
+	 * NEVER LOGGED FOR A TEMPLATE/CDO at all (R1-M2, RACE-002): a class default object is
+	 * not a track, its default two-point spline supports one gate, and the test fixture
+	 * that borrows the CDO made every suite that touched it emit the same meaningless
+	 * warning.
 	 */
 	UPROPERTY(Transient)
 	bool bGateClampLogged = false;

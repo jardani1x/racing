@@ -1362,6 +1362,22 @@ bool FTrackDefinitionGateOrderFloorTest::RunTest(const FString& Parameters)
 	const int32 FloorCount = ATrackDefinitionActor::MinCheckpointGateCount;
 	TestTrue(TEXT("The enforced floor is at least 2, or there is no order to enforce"), FloorCount >= 2);
 
+	// R1-L1 (code-reviewer, TRACK-002 repair-cycle re-review), closed at RACE-002.
+	//
+	// ">= 2" pins the wrong threshold. Two is where an ORDER exists at all; FOUR is
+	// where a shortcut across the middle of a circuit becomes detectable, which is the
+	// reason gates exist -- with gates at 0 and L/2 only, a car can drive to the L/2
+	// gate, turn round across the infield, cross the line forwards and be credited a
+	// lap half the length of the circuit. Lowering the constant to 3 would have passed
+	// every case in this test.
+	//
+	// RACE-002 did NOT replace the constant with geometry-derived spacing (out of its
+	// scope, and TRACK-002's H1 residual risk is explicit that no finite count forbids
+	// every shortcut), so the alternative the finding offered does not apply and the
+	// assertion is the fix. See ATrackDefinitionActor::MinCheckpointGateCount for the
+	// full reasoning behind the number.
+	TestTrue(TEXT("...and specifically at least 4, the shortcut-detectability floor"), FloorCount >= 4);
+
 	// Builds an evenly spaced authored set of N gates, gate 0 pinned to exactly 0. Widths
 	// are the actor's own generated defaults, which the fixture's 100 cm bake clears
 	// comfortably -- the point of these cases is the COUNT, so nothing else may be the

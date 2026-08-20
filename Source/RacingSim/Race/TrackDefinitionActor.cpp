@@ -534,7 +534,23 @@ void ATrackDefinitionActor::MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateS
 				 "finer (lower CenterlineSampleSpacingCm) or ask for fewer gates."),
 			RequestedGateCount, GateCount, MaxSegmentCm, LengthCm, CenterlineSampleSpacingCm, EffectiveStepCm);
 
-		if (!bGateClampLogged)
+		// R1-M2 (code-reviewer, TRACK-002 repair-cycle re-review), fixed at RACE-002:
+		// A TEMPLATE IS NOT A TRACK, so its clamp is not news.
+		//
+		// The warning baseline grew from 3 suites/4 warnings to 9 suites/13 warnings when
+		// this log was added, and every one of the new ones came from the CLASS DEFAULT
+		// OBJECT: TrackDefinitionActorSpec's fixture borrows the CDO
+		// (GetMutableDefault<ATrackDefinitionActor>()), bakes a circle on it and restores
+		// the 200 cm two-point default spline in its destructor -- which supports one
+		// gate, so the clamp fires once per suite that uses the fixture. Nothing was
+		// wrong, and nine warnings per run that mean nothing is how a real one gets
+		// missed.
+		//
+		// GeneratedGateClampNote is still recorded unconditionally, for templates too, so
+		// no information is lost: Validate() quotes it and GetGeneratedGateClampNote()
+		// exposes it. Only the LOG LINE is suppressed, and only for an object that can
+		// never be raced on.
+		if (!bGateClampLogged && !IsTemplate())
 		{
 			bGateClampLogged = true;
 			UE_LOG(LogRacingRace, Warning, TEXT("Track '%s': %s (further clamp reports for this track are "
@@ -597,6 +613,17 @@ void ATrackDefinitionActor::RebuildCheckpointGates()
 	if (!bUseAuthored)
 	{
 		MakeGeneratedGateSpecs(Generated);
+	}
+	else
+	{
+		// R1-L3 (code-reviewer, TRACK-002 repair-cycle re-review), fixed at RACE-002.
+		//
+		// bGateClampLogged is re-armed by MakeGeneratedGateSpecs, which the authored path
+		// never calls -- so a generated -> authored -> generated round trip left the
+		// second clamp unlogged and the header's re-arm contract describing something the
+		// code did not do. Re-arming here makes the two agree: the generator is not in
+		// play on this path, so there is no clamp to suppress a report of.
+		bGateClampLogged = false;
 	}
 
 	const TArray<FRacingCheckpointGateSpec>& Specs = bUseAuthored ? CheckpointGateSpecs : Generated;
@@ -1102,6 +1129,27 @@ bool ATrackDefinitionActor::Validate(FString& OutReason) const
 	// its baked gates would be a false failure, and false failures are how a validation
 	// pass teaches people to ignore it. The authored path is covered by the baked-count
 	// floor below, which is the check that actually matters either way.
+	// R1-L2 (code-reviewer, TRACK-002 repair-cycle re-review), fixed at RACE-002: THE
+	// FIELD STILL FEEDS THE CONTENT HASH ON THE AUTHORED PATH.
+	//
+	// Relaxing the check below to "only when the generator is in use" was right -- an
+	// inert field must not fail a track -- but it left NumGeneratedCheckpointGates
+	// completely unvalidated whenever CheckpointGateSpecs is populated, while
+	// ComputeContentHash() still hashes it. An authored track could therefore carry an
+	// arbitrary or negative value into the identity two results are compared on. A bare
+	// sanity floor keeps the hash covering a meaningful number without reintroducing a
+	// false failure: 1, not MinCheckpointGateCount, because on this path the field
+	// generates nothing and only has to be a number a generator could have used.
+	if (CheckpointGateSpecs.Num() > 0 && NumGeneratedCheckpointGates < 1)
+	{
+		OutReason = FString::Printf(
+			TEXT("NumGeneratedCheckpointGates is %d. The generator is not in use (CheckpointGateSpecs is authored), "
+				 "but the field still feeds this track's content hash, so it may not be a value no generator could "
+				 "have produced. Set it to at least 1."),
+			NumGeneratedCheckpointGates);
+		return false;
+	}
+
 	if (CheckpointGateSpecs.Num() == 0 && NumGeneratedCheckpointGates < MinCheckpointGateCount)
 	{
 		OutReason = FString::Printf(
