@@ -12,7 +12,11 @@ uint32 URaceRulesetDataAsset::ComputeContentHash() const
 	uint32 Hash = GetTypeHash(RulesetId);
 	Hash = HashCombine(Hash, GetTypeHash(CountdownSeconds));
 
-	// Any field added by RACE-002/RACE-003 must be combined in here as well.
+	// RACE-002. A ruleset that voids a lap on reset and one that does not are different
+	// competitions on identical geometry, so the flag has to be visible on a result.
+	Hash = HashCombine(Hash, GetTypeHash(bResetInvalidatesLap));
+
+	// Any field added by RACE-003 must be combined in here as well.
 	return Hash;
 }
 

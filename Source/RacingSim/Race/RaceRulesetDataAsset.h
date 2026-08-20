@@ -48,8 +48,11 @@ public:
 	 * Layout version of the C++ that reads this asset. Hand-bumped, never derived.
 	 *
 	 * 1 = RACE-001: RulesetId + CountdownSeconds.
+	 * 2 = RACE-002: bResetInvalidatesLap. A version-1 result and a version-2 result are
+	 *     not comparable even on identical geometry, because this field decides whether
+	 *     a lap containing a reset counts at all.
 	 */
-	static constexpr int32 RulesetSchemaVersion = 1;
+	static constexpr int32 RulesetSchemaVersion = 2;
 
 	/**
 	 * Stable identifier written into every result, e.g. "Ruleset.TimeTrial.Default".
@@ -77,6 +80,38 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Ruleset", meta = (ClampMin = "0.0", UIMin = "0.0", UIMax = "10.0", ForceUnits = "s"))
 	double CountdownSeconds = 3.0;
+
+	/**
+	 * Does resetting/teleporting the vehicle invalidate the lap it happened on?
+	 *
+	 * RACE-002. Docs/03-TrackRaceUI.md rule 8 explicitly defers this to the ruleset:
+	 * "Reset returns the car to the most recent safe valid sample and may invalidate or
+	 * penalize the lap according to the ruleset." This is that decision, made once,
+	 * here, rather than implied by whatever URaceLapTracker happened to do.
+	 *
+	 * TRUE BY DEFAULT, and the default is the safe direction:
+	 *
+	 *   - a reset places the car somewhere it did not drive to. The pose is at or BEFORE
+	 *     where it left the road (TRACK-001's GetResetTransformAtOrBeforeDistanceCm can
+	 *     never award distance), so it is not a shortcut -- but it is a free, on-line,
+	 *     stationary recovery from a moment the driver had lost the car, and a lap
+	 *     containing one is not comparable with a lap that does not;
+	 *   - failing open would make "reset" the cheapest way to survive a mistake on a
+	 *     timed lap, which is the reset-awards-progress failure Gate B names;
+	 *   - the error is asymmetric. A lap wrongly marked INVALID is visible and can be
+	 *     re-driven; a lap wrongly marked VALID is indistinguishable from a clean one by
+	 *     the time it reaches a leaderboard.
+	 *
+	 * Set false for a practice/exploration ruleset where resets are free. The reset is
+	 * still recorded on the lap either way -- the flag decides validity, not visibility.
+	 *
+	 * NO RANGE TABLE, DELIBERATELY: a bool has no range to validate, so CORE-003's
+	 * EnforceRanges/Validate() split (C3-1) has nothing to enforce here and the
+	 * DataAsset property-flag gap (C3-2) is not triggered. See RACE-002's evidence
+	 * section in Docs/Tickets.md.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Ruleset")
+	bool bResetInvalidatesLap = true;
 
 	/**
 	 * The identity of this ruleset for FRacingSimVersionStamp::RulesetVersion.

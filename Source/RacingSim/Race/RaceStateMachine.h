@@ -329,6 +329,23 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Race|Timing")
 	bool IsRaceClockRunning() const { return RaceClock.IsRunning(); }
 
+	/**
+	 * True when the authoritative race clock refused a transition's request to start,
+	 * or was not running when the race finished.
+	 *
+	 * RACE-001 finding M4, closed at RACE-002: CommitTransition used to discard
+	 * FRaceClock::Start()/Stop()'s bool return, so a refused Start still entered
+	 * Racing and froze a silent 0.000 result with nothing marking the run as
+	 * untimed. This latch is that signal, and URaceLapTracker turns it into an
+	 * ERacingRunValidity so a zero-duration lap can never reach a result.
+	 *
+	 * Per-session and cleared only by Restart, alongside the clocks themselves.
+	 * Unreachable with the shipped platform time source (FPlatformTime::Seconds is
+	 * finite); reachable through CreateWithTimeSource, which is how it is tested.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Race|Timing")
+	bool HasRaceClockFault() const { return bRaceClockFaulted; }
+
 	/** True when a ruleset is configured and Countdown therefore expires on its own. */
 	UFUNCTION(BlueprintPure, Category = "Race|Timing")
 	bool HasAutomaticCountdown() const { return Ruleset != nullptr; }
@@ -399,4 +416,8 @@ private:
 
 	/** Re-entrancy guard for OnRaceStateChanged. See ERaceTransitionResult::RejectedReentrant. */
 	bool bIsBroadcasting = false;
+
+	/** Set when the race clock refused to start or stop. See HasRaceClockFault(). */
+	UPROPERTY(VisibleAnywhere, Category = "Race|Timing")
+	bool bRaceClockFaulted = false;
 };

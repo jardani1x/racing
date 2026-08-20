@@ -1104,7 +1104,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | **DONE** 2026-08-18 — `code-reviewer` approved across two passes (1 repair cycle, plus two disputed findings independently verified against actual UE 5.8 engine source and upheld); `test-engineer` independently confirmed both targets build clean from forced real recompilation and 452/452 automation Smoke tests pass (run twice, no flakiness). Merged to `main` at `5d44744`. Graybox test level deferred into `TRACK-002`'s scope by director ruling. Findings tracked forward into `TRACK-002`, `RACE-003`, `VEH-005`, `UI-001`, `TEST-001` |
 | TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | **DONE** 2026-08-20 — `code-reviewer` returned CHANGES REQUESTED against `dc96061` (1 HIGH + 7 MEDIUM + 5 LOW, four blocking); repair cycle 1 closed all four blocking findings (H1: `MinCheckpointGateCount = 4` enforced in `Validate()` against both the generated and hand-authored gate paths; M6, L1, L3: documentation/process corrections); re-review returned APPROVED WITH FOLLOW-UPS. `test-engineer` independently confirmed both targets build clean with zero warning/error matches, Smoke `passedTotal=466, failed=0, notRun=0` across 40 `RacingSim.*` suites, and all three level tests pass (3/0/0). Merged to `main` at `00ad83b` (merge of `5c3165b`). Non-blocking findings (M2–M5, M7, L2, L4–L6) and two open risks (gate-order floor bounds "no order" but not shortcut-proofing; graybox level has no drivable surface) tracked forward into `RACE-002`, `RACE-003`, `VEH-002`, `TEST-001` |
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
-| RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | ACCEPTANCE CRITERIA OPENED 2026-08-20, unblocked, ready for implementation |
+| RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | **IMPLEMENTED 2026-08-20, awaiting review + validation** — all 15 acceptance criteria met on branch `worktree-agent-a2dcff27414a9c965`; both targets build with zero warning/error matches; Smoke `passedTotal=471, failed=0, notRun=0` (5 new suites); the 3 placed-level tests pass 3/0/0. Closes RACE-001 `M4`; TRACK-002 `M1`, `M3`, `M5`, `L2`, `L4`, `L5`, `R1-M2`, `R1-L1`, `R1-L2`, `R1-L3`; CORE-003 `C3-7`. `code-reviewer` and `test-engineer` have NOT run and it is NOT merged. See "RACE-002 — verification evidence, 2026-08-20" |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | OPEN |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
 
@@ -2088,71 +2088,71 @@ stream of per-gate crossing results into "is this lap valid, and how long did it
 `RACE-003` (results, restart, metadata) and `UI-001`/`UI-002` (display) are later,
 separate tickets that depend on this one.
 
-- [ ] A typed lap/progress tracker (director's naming call, implementer may propose —
+- [x] A typed lap/progress tracker (director's naming call, implementer may propose —
       e.g. `URaceLapTracker`) consumes `FRacingCheckpointGateSet::EvaluateCrossings`
       for all order-relevant logic — **never `FindFirstGateCrossing`**, which returns
       the earliest plane crossing including `OutsideExtent` and would silently treat a
       near-miss as the through-gate event (closes TRACK-002 `M3`).
-- [ ] Forward crossing of the finish gate, after every ordered checkpoint gate has been
+- [x] Forward crossing of the finish gate, after every ordered checkpoint gate has been
       crossed forward in sequence since the last finish crossing, increments the lap
       count exactly once.
-- [ ] A finish crossing with one or more ordered gates not yet crossed forward invalidates
+- [x] A finish crossing with one or more ordered gates not yet crossed forward invalidates
       that lap (does not increment), and the invalidity reason names the specific
       skipped gate — not a generic "invalid lap" — per `.claude/rules/race-tests.md`:
       "Checkpoint order plus crossing direction authorizes laps; spline distance alone
       never does." This is the ordering half of that rule; TRACK-002 already closed the
       per-gate crossing-direction half.
-- [ ] Reverse crossing of the finish gate does not increment the lap and is reported as
+- [x] Reverse crossing of the finish gate does not increment the lap and is reported as
       a distinct, named invalidity — not collapsed into the same reason as a skipped gate.
-- [ ] Re-crossing an already-satisfied gate before completing the next one in order does
+- [x] Re-crossing an already-satisfied gate before completing the next one in order does
       not advance progress or count twice (double-trigger case from `race-tests.md`).
-- [ ] A spin at a gate — alternating forward/reverse crossings on the same plane — nets
+- [x] A spin at a gate — alternating forward/reverse crossings on the same plane — nets
       to at most one forward advance of progress, consistent with TRACK-002's own
       `GateCurvedTrack` spin test (`no two consecutive crossings share a direction and
       the net is exactly one forward pass`); lap logic built on top must not re-derive a
       different, inconsistent net from the same crossing stream.
-- [ ] Sector timing: sector-boundary crossings (from `ATrackDefinitionActor`'s TRACK-001
+- [x] Sector timing: sector-boundary crossings (from `ATrackDefinitionActor`'s TRACK-001
       sector markers) are timed against `RACE-001`'s `FRaceClock` (monotonic,
       server-side per `CLAUDE.md`), producing per-sector durations that populate
       `FRacingLapTiming::SectorDurationsSeconds` (`CORE-002`) — `AreSectorsConsistent()`
       must hold for every completed lap this ticket produces.
-- [ ] Reset/teleport: after a reset, this ticket's progress state is reseeded using
+- [x] Reset/teleport: after a reset, this ticket's progress state is reseeded using
       `GetResetSampleDistanceCm()` (TRACK-001) rather than trusting stale
       pre-reset progress, and the policy for whether a reset invalidates the
       **current in-progress lap** is decided and documented (not left implicit) —
       `race-tests.md` lists reset/teleport as a required test case.
-- [ ] Restart: a session restart clears lap/sector/progress state cleanly, with no stale
+- [x] Restart: a session restart clears lap/sector/progress state cleanly, with no stale
       gate-crossed flags surviving into the new session — `race-tests.md` lists restart
       as a required test case; `RACE-001`'s `L3` (`Restart` from `PreRace` bumps no
       session id) is relevant context, not this ticket's to fix, but the new session's
       lap state must not depend on that id changing.
-- [ ] `RACE-001` `M4` closed: `FRaceClock::Start()`/`Stop()`'s `bool` return is checked
+- [x] `RACE-001` `M4` closed: `FRaceClock::Start()`/`Stop()`'s `bool` return is checked
       wherever this ticket calls it; a refused `Start` marks the run's
       `ERacingRunValidity` (Core, `CORE-002`) invalid rather than allowing a silent
       `0.000` result to reach a result later.
-- [ ] `Docs/01-Architecture.md` and `Docs/15-ProjectStructure.md` updated to describe
+- [x] `Docs/01-Architecture.md` and `Docs/15-ProjectStructure.md` updated to describe
       `FRacingCheckpointGate`/`FRacingCheckpointGateSet` in place of the stale
       `ATrackCheckpoint`/`TrackCheckpoint.*` description — closes TRACK-002 `M5`, and
       must land before/at the start of implementation since this ticket reads those docs
       as the contract.
-- [ ] TRACK-002 `M1` (loop-closure gate-separation check missing in
+- [x] TRACK-002 `M1` (loop-closure gate-separation check missing in
       `FRacingCheckpointGateSet::Build()`) is either fixed as prep work for this ticket,
       or explicitly accepted with a written reason if this ticket's own gate usage makes
       the gap moot by construction — not silently inherited a second time.
-- [ ] Any new range-validated tunable this ticket adds (lap/sector tolerances, timing
+- [x] Any new range-validated tunable this ticket adds (lap/sector tolerances, timing
       windows) follows `CORE-003`'s `EnforceRanges`/`Validate()` split (`C3-1`); if reused
       on a `UDataAsset` rather than a `config` object, the property-flag filter in
       `RacingSimValidation.cpp` is parameterised first (`C3-2` — **do not reuse the
       framework on a DataAsset without closing this**); any bound whose extreme value
       means "off"/"unbounded" rather than "least" is declared with `WithReplacement()`
       and the resulting behaviour is asserted, not just the field's range (`C3-3`).
-- [ ] Automation coverage (level-free where possible, matching TRACK-002's
+- [x] Automation coverage (level-free where possible, matching TRACK-002's
       testability-first design) for the ordering/reset/restart cases
       `.claude/rules/race-tests.md` assigns to this ticket: skipped gates, double
       overlaps, spins at gates, reset/teleport, and restart. Reverse/grazing/high-speed
       per-gate crossing-direction detection is already covered by TRACK-002 and is not
       re-tested here.
-- [ ] Editor **and** Game targets build with zero new warnings.
+- [x] Editor **and** Game targets build with zero new warnings.
 
 **Deliberately excluded from this ticket's scope**, tracked forward rather than silently
 assumed: results screen/metadata format and restart-flow UX (`RACE-003`); lap/sector/time
@@ -2161,6 +2161,157 @@ display (`UI-001`/`UI-002`); the net-client-authority automation test blocked on
 checkpoint-gate spacing for real shortcut resistance (TRACK-002's `H1` residual risk —
 this ticket may need to know the current floor is a policy constant, not shortcut-proof,
 but redesigning gate placement is not in scope unless it blocks a criterion above).
+
+### RACE-002 — verification evidence, 2026-08-20
+
+Implementation branch `worktree-agent-a2dcff27414a9c965`. **Not merged**; `code-reviewer`
+and `test-engineer` have not run. Every number below was read out of the artifact named
+beside it, never from a process exit code (Docs/Environment.md).
+
+**Files changed**
+
+| File | Change |
+| --- | --- |
+| `Source/RacingSim/Race/RaceLapTracker.h` | NEW. `URaceLapTracker`, `ERaceLapInvalidReason`, `FRaceLapInvalidity`, `FRaceLapTrackerUpdate` |
+| `Source/RacingSim/Race/RaceLapTracker.cpp` | NEW. Ordering, lap open/close, sector splits, reset policy, plausibility guard |
+| `Source/RacingSimTests/Race/RaceLapTrackerSpec.cpp` | NEW. Five `SmokeFilter` suites |
+| `Source/RacingSim/Race/RaceStateMachine.h/.cpp` | RACE-001 `M4`: `FRaceClock::Start()`/`Stop()` returns checked; `HasRaceClockFault()` latch, cleared by `Restart` |
+| `Source/RacingSim/Race/RaceRulesetDataAsset.h/.cpp` | `bResetInvalidatesLap`; `RulesetSchemaVersion` 1 → 2; field added to `ComputeContentHash()` |
+| `Source/RacingSim/Race/TrackCheckpointGate.h/.cpp` | TRACK-002 `M1`: loop-closure separation check in `Build()` |
+| `Source/RacingSim/Race/TrackDefinitionActor.h/.cpp` | TRACK-002 `R1-M2` (no clamp log for a template/CDO), `R1-L2` (`NumGeneratedCheckpointGates >= 1` on the authored path), `R1-L3` (re-arm on the authored path + header contract) |
+| `Source/RacingSim/Core/RacingSimBuildId.h` | CORE-003 `C3-7`: doc corrected to what the check actually asserts |
+| `Source/RacingSimTests/Race/TrackCheckpointGateSpec.cpp` | Loop-closure case + open-centerline control for `M1` |
+| `Source/RacingSimTests/Race/TrackDefinitionActorSpec.cpp` | `R1-L1`: floor pinned at `>= 4`, not `>= 2` |
+| `Docs/01-Architecture.md`, `Docs/15-ProjectStructure.md` | TRACK-002 `M5`: `ATrackCheckpoint`/`TrackCheckpoint.*` replaced by the real types |
+
+No `Content/` change, so no `Docs/AssetOwnership.tsv` claim was needed or taken.
+
+**Commands run, and what they returned**
+
+```powershell
+Scripts/Test/Build-Target.ps1 -Target RacingSimEditor   # BUILD_EXITCODE=0, Result: Succeeded, WARNING_ERROR_MATCHES=0
+Scripts/Test/Build-Target.ps1 -Target RacingSim         # BUILD_EXITCODE=0, Result: Succeeded, WARNING_ERROR_MATCHES=0
+Scripts/Test/Run-Smoke.ps1                              # passedTotal=471 failed=0 notRun=0
+Scripts/Test/Run-AutomationFilter.ps1 -TestNames <3 level tests>   # 3/0/0
+```
+
+Logs: `Saved/BuildLogs/RACE-002-Editor-2.log`, `Saved/BuildLogs/RACE-002-Game-2.log`.
+Reports: `Saved/Automation/RACE-002-Smoke-2/index.json`,
+`Saved/Automation/RACE-002-Level-1/index.json`.
+
+`WARNING_ERROR_MATCHES=0` is the script's own grep for `warning|error` over the full
+captured build output, so it covers UHT and the linker as well as the compiler.
+
+**Smoke: 471 tests, 469 succeeded + 2 succeededWithWarnings, 0 failed, 0 notRun**
+(`reportCreatedOn 2026.08.20-06.13.32`). Up from TRACK-002's 466 by the five new suites.
+`RacingSim.Race.LapTrackerConfiguration`, `LapCleanLap`, `LapOrdering`,
+`LapResetAndRestart`, `LapClockFault` all `Success` with `warnings=0 errors=0`.
+
+**The warning baseline went DOWN, which is `R1-M2` measured rather than asserted:**
+TRACK-002 left 9 suites / 13 warnings; this run has **2 suites / 3 warnings**
+(`TrackFailedBakeIsNotRetried` 1, `TrackValidation` 2), both pre-existing and both
+deliberate.
+
+**Two defects the new tests found in the first implementation, fixed before this report**
+
+1. `FRaceLapTrackerUpdate::GatesAdvanced` was clamped at zero per step, so a spin's
+   rewind could not cancel its advance: `RacingSim.Race.LapOrdering` measured a net of
+   **3** for a triple spin where TRACK-002's own crossing stream nets **1**. The field is
+   now signed. This is exactly the "lap logic must not re-derive a different net" clause,
+   caught by the test rather than by inspection.
+2. The unannounced-teleport guard compared a **straight-line** step against **half a
+   lap**. On the circular fixture the largest chord available is the diameter `2R`, which
+   is `2/π ≈ 0.64` of that bound, so the guard could never fire — a car teleported to the
+   exact opposite side of the circuit passed it. It now tests **arc travel > ¼ lap OR
+   chord > ½ lap**, and the configuration suite pins `2R < chord bound` so a future edit
+   cannot collapse the two tests back into one.
+
+**How each criterion was met**
+
+1. `URaceLapTracker::Advance` calls `FRacingCheckpointGateSet::EvaluateCrossings` and
+   nothing else; `FindFirstCrossing`/`FindFirstGateCrossing` appear nowhere in
+   `RaceLapTracker.cpp`. TRACK-002 `M3` closed.
+2. `RacingSim.Race.LapCleanLap`: a clean lap closes once, counts once, opens the next
+   once; a second clean lap takes the count to 2.
+3. `RacingSim.Race.LapOrdering` drives wide of gate 2 (`OutsideExtent`, so not crossed),
+   then crosses gate 3: `FRaceLapInvalidity{MissedCheckpoint, GateIndex 2, GateId
+   "Gate.02"}`, `ToDebugString()` contains `Gate.02`, lap closes uncounted.
+4. Reverse finish is `ERaceLapInvalidReason::ReverseFinishCrossing` →
+   `InvalidReverseCrossing`, and first-fault-wins keeps it even though the same lap then
+   also fails the all-gates check. Asserted distinct from the skip reason.
+5. Double trigger: exercised through the reset path (reset behind a satisfied gate, drive
+   over it again) — `GatesAdvanced == 0`, no lap closed, cursor unchanged.
+6. Spin: five alternating crossings net exactly `+1`, gate satisfied, next gate expected,
+   lap still clean and still countable.
+7. Sectors: three splits per lap, all `> 0`, summing to `LapDurationSeconds` within
+   `1e-9`; `AreSectorsConsistent()` asserted on every valid lap the suite produces.
+   Boundary times are interpolated inside the step from `CrossingAlpha`-equivalent
+   arc-length fractions against `FRaceClock`'s elapsed reading, so the splits telescope
+   to the lap by construction.
+8. Reset: `NotifyVehicleReset(pose, GetResetSampleDistanceCm()-style distance)` re-seeds
+   both the previous position (so the next step cannot sweep gates across the teleport)
+   and the arc-length hint. Policy is `URaceRulesetDataAsset::bResetInvalidatesLap`,
+   **default true**, documented at the field and at the call site, and both settings are
+   tested.
+9. Restart: `ResetForNewSession()` clears every counter, flag, split and cached lap and
+   is idempotent; the gate-flag array is cleared element-wise rather than reallocated. A
+   restart the owner forgets to announce is caught by the session-id watch. Both paths
+   asserted in `RacingSim.Race.LapResetAndRestart`.
+10. RACE-001 `M4`: `CommitTransition` now separates "already running" from "refused" via
+    `IsRunning()`, latches `bRaceClockFaulted`, and the tracker turns that into
+    `ERacingRunValidity::InvalidIncomplete` for the run and every lap.
+    `RacingSim.Race.LapClockFault` drives it with a NaN time source: a gate-perfect lap
+    closes **uncounted** with a `0.000` duration and `IsComplete() == false`.
+11. Docs updated (TRACK-002 `M5`); `Docs/01-Architecture.md` also gained the corrected
+    data-flow chain and the two rules that constrain it.
+12. TRACK-002 `M1` **fixed**, not accepted: `Build()` checks the wrap gap on a closed
+    loop, with a test for the rejection, a boundary control and an open-centerline
+    control proving the check does not apply where there is no wrap.
+13. **No range-validated tunable was added**, so `C3-1`/`C3-2`/`C3-3` are not triggered —
+    stated rather than assumed. The one new tunable is a `bool`, which has no range;
+    the plausibility bounds are **derived from track length**, deliberately, so no
+    authored number and no range table exist to drift. `C3-2`'s blocking precondition
+    (the `CPF_Config` filter in `RacingSimValidation.cpp`) is therefore untouched and
+    still open for whichever ticket first adds a *numeric* ruleset field.
+14. Five level-free `SmokeFilter` suites cover skipped gates, double overlaps, spins,
+    reset/teleport and restart, plus configuration guards and the clock fault.
+15. Both targets, zero warning/error matches.
+
+**Open risks**
+
+- **A small unannounced teleport is not caught.** Under ¼ lap of arc and ½ lap of chord,
+  an unannounced jump is indistinguishable from a hitch. `NotifyVehicleReset()` is the
+  contract; the guard is defence in depth. `VEH-005` must call it.
+- **Sector splits are detected in arc-length space**, not by a plane crossing. They can
+  never authorise a lap (gates do that, and the suite proves distance alone counts
+  nothing), but a step that crosses the start/finish line *and* a sector boundary in that
+  order will drop that boundary's split; the lap then closes with an incomplete split set
+  and is marked `TimingUnavailable` rather than silently reporting wrong splits. Needs a
+  step of roughly a third of a lap, i.e. already teleport territory.
+- **`ATrackDefinitionActor` has no sector-gate bake**, so sector timing inherits the
+  arc-length caveat above rather than the segment/plane guarantee gates enjoy.
+- **`MinCheckpointGateCount = 4` remains a policy constant, not shortcut-proofing**
+  (TRACK-002 `H1`, out of scope here). `R1-L1` is now pinned at 4 by test.
+- **No `ARaceDirector` exists**, so nothing yet owns a `URaceLapTracker` in a real
+  session and RACE-001 `M1`'s net-client test is still blocked, as scoped.
+- **`ERacingRunValidity` has no timing-fault enumerator**; a refused clock maps to
+  `InvalidIncomplete` with the precise cause in `ERaceLapInvalidReason`. If `RACE-003`
+  wants the distinction on a published result, that is a Core enum change it owns.
+
+**Strongest counter-case against this design.** The finish line closes the lap in
+progress *unconditionally* on a legal forward crossing, valid or not. A driver who cuts
+the last corner therefore gets a lap boundary, a fresh timer and a clean next lap — and a
+driver who spins on the line gets that lap voided by `ReverseFinishCrossing` even though
+the spin netted no progress. The opposite policy (refuse to close an invalid lap) was
+rejected because it produces one endless lap with a running timer and a HUD that never
+advances, which is worse in the common case; but it means "laps completed" and "valid
+laps completed" are two different numbers that both have to reach the UI, and `RACE-003`
+must not conflate them.
+
+**Rollback.** Every change is additive except the four inherited-finding fixes. Reverting
+the branch restores TRACK-002's behaviour exactly; reverting only `RaceLapTracker.*` plus
+the `RaceStateMachine`/`RaceRulesetDataAsset` edits leaves the `M1`/`R1-*`/`C3-7` fixes
+standing, since they are independent commits-worth of change in separate files.
 
 ### RACE-003 — findings inherited from TRACK-001
 

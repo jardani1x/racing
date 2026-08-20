@@ -372,25 +372,67 @@ void URaceStateMachine::CommitTransition(ERaceState NewState, ERaceTransition Tr
 		// across the boundary, because there is no pending timer to carry.
 		RaceClock.Reset();
 		CountdownClock.Reset();
+		// The fault latch is per-session, like the clocks it describes. A restart is
+		// the only thing that clears it, so a run cannot inherit the previous run's
+		// fault and cannot shed its own.
+		bRaceClockFaulted = false;
 		++SessionId;
 		break;
 
 	case ERaceState::Countdown:
 		// Countdown time starts; race time deliberately does not. See ERaceState.
+		//
+		// This return is deliberately NOT latched as a fault: the countdown clock does
+		// not time the result. A countdown that fails to start expires immediately (its
+		// Sample returns 0.0 forever, so PollAutoTransitions goes green on the first
+		// poll), which is visible, harmless and not a reason to void a lap time.
 		CountdownClock.Reset();
 		CountdownClock.Start(NowSeconds);
 		break;
 
 	case ERaceState::Racing:
+	{
 		CountdownClock.Stop(NowSeconds);
-		RaceClock.Start(NowSeconds);
+
+		// RACE-001 FINDING M4, CLOSED AT RACE-002. The return was previously discarded.
+		//
+		// FRaceClock::Start returns false for two different reasons: the clock was
+		// already running (an idempotent no-op, which cannot happen on this edge because
+		// Racing is only reachable from Countdown and PreRace re-zeroed the clock), or
+		// it REFUSED a non-finite reading. IsRunning() separates them, so a benign
+		// no-op is not reported as a fault and a real refusal is not swallowed.
+		//
+		// Without this, a refused Start still entered Racing and later froze a silent
+		// 0.000 result with nothing anywhere marking the run -- a zero-duration lap
+		// reaching a leaderboard as the fastest ever driven.
+		if (!RaceClock.Start(NowSeconds) && !RaceClock.IsRunning())
+		{
+			bRaceClockFaulted = true;
+			UE_LOG(LogRacingRace, Error,
+				TEXT("The race clock refused to start on entry to Racing (session %d). The run is marked faulted; "
+					 "URaceLapTracker will invalidate every lap it produces rather than publish a zero duration."),
+				SessionId);
+		}
 		break;
+	}
 
 	case ERaceState::Finished:
 		// Freeze once. FRaceClock::Stop is idempotent, so even a second entry could
 		// not extend the result -- but a second entry is impossible anyway, since
 		// Finished has no incoming edge from itself.
-		RaceClock.Stop(NowSeconds);
+		//
+		// M4's other half. Stop returns false only when the clock was NOT RUNNING, and
+		// on this edge (Racing -> Finished) that means it never successfully started --
+		// so there is no duration to freeze and the result about to be presented is a
+		// zero. Note that a non-finite reading here does not refuse: Stop falls back to
+		// the ratcheted high-water value, which is the correct behaviour and returns true.
+		if (!RaceClock.Stop(NowSeconds))
+		{
+			bRaceClockFaulted = true;
+			UE_LOG(LogRacingRace, Error,
+				TEXT("The race clock was not running at the finish (session %d); the session produced no timed result."),
+				SessionId);
+		}
 		break;
 
 	case ERaceState::Results:
