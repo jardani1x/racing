@@ -210,6 +210,163 @@ they prove the harness, command form and report export work on this machine.
 
 `-nullrhi` skips GPU work. Any future rendering or screenshot test must drop it.
 
+### Run automation tests — the `Product` filter, for anything that touches an Actor
+
+**VERIFIED 2026-08-19 (TRACK-002).** Second gate, alongside `Smoke`. It exists for one
+reason, and the reason resolves a finding that had been open across TRACK-001, TEST-001
+and TRACK-002.
+
+```powershell
+# VERIFIED 2026-08-19 - see the TRACK-002 verification-evidence section in Docs/Tickets.md
+pwsh -File Scripts/Test/Run-AutomationFilter.ps1 `
+    -Filter Product `
+    -ProjectPath "<...>\RacingSim.uproject" `
+    -ReportDir "<...>\Saved\Automation\ProductReport"
+```
+
+Same rules as `Smoke`: counts come from `index.json`, never from the exit code.
+
+#### A `SmokeFilter` test cannot create an Actor in this project. Ever.
+
+TRACK-001 recorded, as a brute fact with no explanation, that actors cannot be
+instantiated in automation here — `NewObject<AActor>(GetTransientPackage())` dies on
+
+```text
+Assertion failed: RegisteredElementType
+[Elements/Framework/TypedElementRegistry.h:536]
+Element type 'Components' has not been registered!
+```
+
+and `UWorld::CreateWorld(EWorldType::Game)` dies inside `CreateWorld`. Both kill
+`UnrealEditor-Cmd` outright and produce **no `index.json`**, so the gate reports nothing
+at all rather than a failure. TEST-001 inherited the finding and did not close it; every
+Actor-bearing ticket was expected to hit the same wall.
+
+**The wall is a timing artifact, and it is avoidable.** Three engine facts, read from
+source and then confirmed by running:
+
+1. `FEngineLoop::PreInit` runs the smoke tests itself —
+   `FAutomationTestFramework::Get().RunSmokeTests()`,
+   `Runtime/Launch/Private/LaunchEngineLoop.cpp:4376`. **Every `SmokeFilter` test in the
+   process executes there**, during `PreInit`. The `-ExecCmds` line is not what runs
+   them; it is processed later, on the first engine tick.
+2. The typed-element types `Object`/`Actor`/`Components`/`SMInstance` are registered by
+   `RegisterEngineElements()`, called from `UEngine::Init` —
+   `Runtime/Engine/Private/UnrealEngine.cpp:2399` — i.e. **after `PreInit` returns**.
+3. `UActorComponent::PostInitProperties` calls
+   `UEngineElementsLibrary::CreateEditorComponentElement` for every **non-template**
+   component, under `WITH_EDITOR`, on the game thread —
+   `Runtime/Engine/Private/Components/ActorComponent.cpp:588`. That reaches
+   `UTypedElementRegistry::CreateElementImpl`, which `checkf`s that the element type is
+   registered.
+
+So a `SmokeFilter` test runs in a window where constructing any non-template actor
+component is a hard crash. This explains all three of TRACK-001's failures with one
+cause, including why the CDO fixture worked: CDO subobjects are templates, and the
+element path skips templates.
+
+`ProductFilter` tests are **not** run by `RunSmokeTests()`. They run only from the
+deferred `Automation RunFilter Product` command, which executes after `UEngine::Init`
+has completed. Same process, same flags, roughly fifteen seconds later in boot — and
+actors work.
+
+#### Proven, not inferred
+
+`Source/RacingSimTests/Race/TrackPrototypeLevelSpec.cpp` was written `SmokeFilter`
+first. It crashed with exactly that assertion, from `LoadPackage` on a map containing one
+placed `ATrackDefinitionActor`:
+
+- under the full `Automation RunFilter Smoke` gate — `PROCESS_EXITCODE=3`, no
+  `index.json`;
+- and again when invoked alone by name (`Automation RunTests
+  RacingSim.Race.TrackPrototypeLevelPostLoad`) — same assertion, `EXIT=3`. The isolation
+  run is what rules out cross-test contamination and pins it to the harness phase.
+
+Switching the same three tests to `ProductFilter`, with no other change, made them pass.
+
+#### The rule this creates
+
+- **A test that constructs, loads or spawns an Actor or an `UActorComponent` must be
+  `ProductFilter`, and must be gated by `Run-AutomationFilter.ps1 -Filter Product`.**
+- A test that does not touch actors should stay `SmokeFilter` — it is the faster gate and
+  it runs earlier.
+- Both gates must be run and reported. `Smoke` alone no longer covers this project's
+  tests, and a ticket that reports only `Smoke` counts is reporting a subset.
+- The `EditorContext` requirement is unchanged and still applies to both filters: the
+  gates run with `GIsEditor` true and `IsRunningCommandlet()` false, so a
+  `CommandletContext`-only suite is never collected.
+
+#### What is still not solved
+
+This gives a **loaded, package-resident** actor instance. It does **not** give a
+spawnable world: `UWorld::CreateWorld` was not retried and is still presumed broken, and
+nothing here lets a test spawn a fresh actor and mutate it. A package-loaded actor is
+shared and stays resident, so tests using it must be **read-only** — see the header of
+`TrackPrototypeLevelSpec.cpp`. A ticket needing a mutable actor instance (`VEH-002`)
+should duplicate the loaded object, or re-open the `CreateWorld` question now that the
+element-registration cause is understood: a `ProductFilter` test may well be able to
+create a world where a `SmokeFilter` one could not.
+
+### Author the graybox level (editor Python)
+
+**VERIFIED 2026-08-19 (TRACK-002).**
+
+```powershell
+pwsh -File Scripts/Content/Author-PrototypeGrayboxLevel.ps1
+```
+
+Three non-obvious failures were hit and fixed getting this to work headlessly. All three
+produce misleading messages, and each one only becomes visible after the previous is
+fixed, so they are recorded in order:
+
+1. **`-ExecCmds="py <path with spaces>"` silently truncates.** The engine's ExecCmds
+   tokenizer splits on whitespace, so `py "C:\Users\jun yi\...\x.py"` arrives at Python as
+   `C:\Users\jun`. Not ending in `.py`, it is evaluated as literal source and fails with
+   `SyntaxError: unexpected character after line continuation character (<string>, line 1)`
+   — a message naming neither the path nor the cause. `FPythonScriptPlugin`'s own comment
+   (`PythonScriptPlugin.cpp:1813-1822`) advertises support for pathnames with spaces; that
+   support is real but sits downstream of the ExecCmds split, so it never sees the path.
+2. **The 8.3 short path fixes the spaces and breaks the extension.** Short names are
+   uppercase (`AUTHOR~1.PY`), and the file-versus-snippet decision is
+   `UE::String::FindFirst(Command, TEXT(".py"))`, which defaults to
+   `ESearchCase::CaseSensitive` (`Core/Public/String/Find.h:23`). Identical error message,
+   different cause. **Fix: short-path the parent directory only and re-join the real
+   filename** — no spaces, lowercase extension.
+3. **`; Quit` does not quit, and `unreal.log()` does not reach stdout.** `Quit` after
+   `Automation RunFilter Smoke` works because *both* halves are `Automation` subcommands
+   and the automation controller quits; as a bare console command it is not handled, and
+   the editor sat in its tick loop forever under `-unattended`, producing no output and no
+   exit (killed by PID twice). The script now calls `unreal.SystemLibrary.quit_editor()`
+   in a `finally`. Separately, `unreal.log()` emits at **Log** verbosity and `-stdout`
+   forwards **Display** and above, so the script's entire report reaches
+   `Saved/Logs/RacingSim.log` and never reaches captured stdout. The first version of the
+   wrapper read stdout only and printed "the map was not authored" for a run that had
+   authored it perfectly. **Evidence for this command comes from
+   `Saved/Logs/RacingSim.log`, not from stdout and not from the exit code.**
+
+#### The headless editor REWRITES `Config/*.ini` on shutdown, and strips your comments
+
+**Check `git status` after every editor run, and revert config churn you did not
+author.** TRACK-002's authoring runs silently rewrote `Config/DefaultGame.ini`:
+
+- the entire `[/Script/EngineSettings.GeneralProjectSettings]` block was expanded with
+  ~18 placeholder defaults, including
+  `CopyrightNotice=Fill out your copyright notice in the Description page of Project
+  Settings.` and `ProjectID=00000000000000000000000000000000`;
+- **and the ~30-line AssetManager comment block was deleted** — the one documenting
+  BLOCKER-005, why the `GameFeatureData` rule exists at all, and why `bIsEditorOnly=True`
+  is load-bearing rather than cosmetic (a `code-reviewer` finding from CORE-001).
+
+The functional settings survived; only the reasoning was destroyed. That is the
+dangerous shape of this failure. The config still works, the diff looks like harmless
+tool noise, and the next person to touch that rule has lost the explanation of why
+changing it breaks a packaged build. It would very plausibly be committed by accident.
+
+Unreal's config writer does not preserve comments — it serialises the in-memory config
+object. Nothing in the project can prevent it. The control is procedural: after any
+`UnrealEditor-Cmd` run that is not read-only, diff `Config/` and `git checkout --` any
+file the ticket did not intend to change.
+
 ### Cook/package
 
 **VERIFIED 2026-08-12 — `BUILD SUCCESSFUL`, `AutomationTool exiting with

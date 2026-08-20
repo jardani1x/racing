@@ -6,6 +6,7 @@
 #include "GameFramework/Actor.h"
 #include "Core/RacingSimBuildId.h"
 #include "Race/TrackCenterline.h"
+#include "Race/TrackCheckpointGate.h"
 #include "TrackDefinitionActor.generated.h"
 
 class USplineComponent;
@@ -25,18 +26,24 @@ class USplineComponent;
  *   [x] grid and start poses
  *   [x] safe reset poses sampled along the legal route
  *   [x] total length and version hash
- *   [ ] ordered checkpoint IDs                     -> TRACK-002
- *   [ ] start/finish plane and valid crossing dir  -> TRACK-002
- *   [ ] track width / boundary splines             -> TRACK-002 or later
+ *   [x] ordered checkpoint IDs                     -> TRACK-002
+ *   [x] start/finish plane and valid crossing dir  -> TRACK-002
+ *   [ ] track width / boundary splines             -> later
  *   [ ] surface metadata and track-limit zones     -> later
  *
- * THIS CLASS CANNOT AUTHORISE A LAP AND MUST NEVER BE MADE ABLE TO. CLAUDE.md
- * requires ordered checkpoint gates plus a valid crossing direction, and
- * Docs/03-TrackRaceUI.md rule 6 says continuous spline distance "never replaces
- * ordered checkpoint validation". Everything here is progress, ranking and
- * placement. TRACK-002 adds the gates that authorise; RACE-002 adds the rules that
- * validate. A future edit that adds a "crossed the line" query to this file is a
- * design error, not a convenience.
+ * THIS CLASS STILL CANNOT AUTHORISE A LAP, AND MUST NEVER BE MADE ABLE TO.
+ * TRACK-002 added the ordered gates and the crossing-direction test, which is half
+ * of what CLAUDE.md requires -- "ordered checkpoint gates PLUS a valid crossing
+ * direction". The other half is ORDER ENFORCEMENT: tracking which gate each car is
+ * expected to take next, invalidating a lap on a skipped or out-of-order gate, and
+ * counting the lap at the finish line. That state is per-car, not per-track, and it
+ * belongs to RACE-002.
+ *
+ * So: this class can now tell you that a car crossed gate 3 forwards, legally, 40%
+ * of the way through the tick. It still cannot tell you whether that completed a
+ * lap, and Docs/03-TrackRaceUI.md rule 6's "continuous spline distance never
+ * replaces ordered checkpoint validation" is unchanged. A future edit that adds a
+ * lap counter, a timer, or an ERaceState reference to this file is a design error.
  *
  * ===========================================================================
  * The start/finish origin is the centerline's distance zero, by definition
@@ -89,12 +96,61 @@ public:
 	 *
 	 * 1 = TRACK-001: centerline spline, sector boundaries, generated grid, generated
 	 *     reset samples. No checkpoints.
+	 * 2 = TRACK-002: ordered checkpoint gates (authored or generated), per-gate legal
+	 *     crossing direction, and MinCornerRadiusCm. A version-1 result and a version-2
+	 *     result are not comparable even on identical geometry, because the gates decide
+	 *     which laps count at all.
 	 *
 	 * Any ticket that adds an authored field MUST bump this AND add the field to
 	 * ComputeContentHash(), or two genuinely different tracks will claim to be the
 	 * same one on a leaderboard.
 	 */
-	static constexpr int32 TrackSchemaVersion = 1;
+	static constexpr int32 TrackSchemaVersion = 2;
+
+	/**
+	 * Fewest BAKED checkpoint gates a track may have and still be publishable.
+	 * Enforced by Validate(); see the "Checkpoint gates" block there.
+	 *
+	 * WHY A FLOOR EXISTS AT ALL, and why it is not 1 (code-reviewer, TRACK-002 pass 1,
+	 * finding H1). Validate()'s only gate-count check used to be
+	 * FRacingCheckpointGateSet::IsValid(), i.e. "at least one gate". With exactly one
+	 * gate there is no ORDER to enforce: every crossing is a crossing of the only gate,
+	 * RACE-002's expected-checkpoint sequence degenerates to a single element, and no
+	 * shortcut whatsoever is detectable. Such a track validated green, and the HUD would
+	 * have looked perfectly healthy while counting laps for a car that drove across the
+	 * infield.
+	 *
+	 * THAT SET WAS REACHABLE WITHOUT AUTHORING IT. MakeGeneratedGateSpecs() clamps its
+	 * own count down to what the baked centerline can separate (two gates inside one
+	 * polyline segment share a plane normal and cannot be ordered). At the coarsest bake
+	 * Validate() permits -- CenterlineSampleSpacingCm >= LengthCm/3, which floors the bake
+	 * at three samples and therefore ~L/3 segments -- that clamp yields
+	 * floor(L / (2 * L/3)) == 1. A large MinCornerRadiusCm then shrinks the sagitta below
+	 * the gate half-width so the gate bake succeeds, and the whole track validated with a
+	 * single gate. So the cause is a COARSE BAKE silently degrading the gate set, not an
+	 * author typing 1.
+	 *
+	 * WHY 4. Two thresholds are in play and they are different numbers:
+	 *
+	 *   - >= 2 is where an ORDER exists at all (one gate cannot be out of order);
+	 *   - >= 4 is where a shortcut across the middle of a circuit becomes detectable,
+	 *     which is the whole reason gates exist. With gates at 0 and L/2 only, a car can
+	 *     drive to the L/2 gate, turn round across the infield, cross the line forwards
+	 *     and be credited a lap half the length of the circuit.
+	 *
+	 * No finite count forbids every shortcut -- N gates bound the longest undetectable cut
+	 * to roughly the chord across one inter-gate arc -- so the floor is a policy choice,
+	 * and 4 is chosen because it is the number this class ALREADY documented (see
+	 * NumGeneratedCheckpointGates) and ships as the generator default. Raising the floor
+	 * to match the documentation removes a contradiction; inventing a third number would
+	 * have added one.
+	 *
+	 * This is deliberately NOT enforced inside FRacingCheckpointGateSet::Build(): a
+	 * two-gate set is well-formed GEOMETRY, and Build() owns geometry. "Enough gates to
+	 * run a race on" is a RACE rule, and race rules live in Validate() -- the same split
+	 * the Reverse-only start/finish check is made on.
+	 */
+	static constexpr int32 MinCheckpointGateCount = 4;
 
 	// =======================================================================
 	// Authored data
@@ -139,6 +195,70 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track",
 		meta = (ForceUnits = "cm"))
 	TArray<double> SectorStartDistancesCm;
+
+	// -- Checkpoint gates (TRACK-002) ---------------------------------------
+
+	/**
+	 * Ordered checkpoint gates, ascending in arc length, entry 0 at exactly 0.
+	 *
+	 * Docs/03-TrackRaceUI.md lists "ordered checkpoint IDs" and "start/finish plane and
+	 * valid crossing direction" among the things this actor owns, so they live here
+	 * rather than in a side asset: a gate set that can be swapped independently of the
+	 * centerline it is measured against is a gate set that can silently stop matching it.
+	 *
+	 * LEAVE THIS EMPTY TO GET GENERATED GATES. See NumGeneratedCheckpointGates. Both
+	 * paths are covered by ComputeContentHash(), so a generated set and an authored set
+	 * that happen to coincide are still distinguishable on a result.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints")
+	TArray<FRacingCheckpointGateSpec> CheckpointGateSpecs;
+
+	/**
+	 * How many evenly spaced gates to generate when CheckpointGateSpecs is empty.
+	 * Gate 0 is always the start/finish gate at distance 0.
+	 *
+	 * Generated rather than required-to-be-authored for the same reason the grid is
+	 * generated: a graybox track must be usable the moment its spline exists, and a
+	 * generated gate is guaranteed to stand square across the legal route facing the
+	 * direction that increases arc length. Hand-authoring is still available and takes
+	 * precedence; this is the floor, not the ceiling.
+	 *
+	 * Four (start/finish plus three) is the smallest count that makes a shortcut across
+	 * the middle of a circuit detectable, which is the point of having gates at all --
+	 * see MinCheckpointGateCount, which Validate() now enforces on the BAKED set.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "4", UIMin = "4", UIMax = "32"))
+	int32 NumGeneratedCheckpointGates = 4;
+
+	/** Half-width, cm, given to every generated gate. Should comfortably exceed the racing surface's half-width. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1.0", ForceUnits = "cm"))
+	double GeneratedGateHalfWidthCm = 900.0;
+
+	/** Half-height, cm, given to every generated gate. Finite so a car launched over the gate is not a clean crossing. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1.0", ForceUnits = "cm"))
+	double GeneratedGateHalfHeightCm = 500.0;
+
+	/**
+	 * Tightest corner radius the authored centerline contains, cm. Default 1500 cm (15 m).
+	 *
+	 * NOT COSMETIC, AND NOT A GUESS TO BE LEFT AT ITS DEFAULT. This is the number that
+	 * converts the baked centerline's MAXIMUM segment length into a real distance: the
+	 * sagitta, i.e. how far inside the true authored curve a baked position can sit
+	 * (FTrackCenterline::GetSagittaBoundCm). Every gate's half-width must exceed that
+	 * bound, so understating the radius here is the one input that can let a gate be
+	 * baked narrower than the model's own systematic error.
+	 *
+	 * The bias is one-directional -- always inward, never outward -- so it does not
+	 * average away over a lap. TRACK-001 recorded that as its strongest counter-case and
+	 * required TRACK-002 to assert it rather than inherit it; this field plus
+	 * RacingSim.Race.CenterlinePolylineBias is that assertion.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
+		meta = (ClampMin = "1.0", UIMin = "500.0", ForceUnits = "cm"))
+	double MinCornerRadiusCm = 1500.0;
 
 	// -- Grid ---------------------------------------------------------------
 	// Generated from the centerline rather than authored per slot: a generated slot
@@ -230,6 +350,70 @@ public:
 	/** Arc length of a sector, in centimetres. The last sector's length runs back to the start/finish origin. */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
 	double GetSectorLengthCm(int32 SectorIndex) const;
+
+	// -- Checkpoint gates (TRACK-002) ---------------------------------------
+
+	/**
+	 * The baked, ordered gate set. This is the surface RACE-002 consumes.
+	 *
+	 * Returned by const reference rather than by value: FRacingCheckpointGateSet holds a
+	 * TArray, and CLAUDE.md forbids per-frame allocation. A caller evaluating crossings
+	 * every tick must bind this once, not copy it.
+	 */
+	const FRacingCheckpointGateSet& GetCheckpointGates() const;
+
+	/** Number of baked checkpoint gates. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	int32 GetNumCheckpointGates() const;
+
+	/**
+	 * A gate by index. Returns false and leaves OutGate default-constructed when the
+	 * index is out of range, rather than returning a plausible-looking gate at the
+	 * origin that a caller would then test crossings against.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	bool GetCheckpointGate(int32 GateIndex, FRacingCheckpointGate& OutGate) const;
+
+	/** Index of a gate by its stable id, or INDEX_NONE. Not for per-frame use; it is a linear scan. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	int32 FindCheckpointGateIndexById(FName GateId) const;
+
+	/** Arc-length distance of a gate, cm, or InvalidDistanceCm when out of range. Same sentinel rule as the grid/reset accessors. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	double GetCheckpointGateDistanceCm(int32 GateIndex) const;
+
+	/** World pose of a gate: X along the direction of travel, Y right, Z the gate's own up. Identity when out of range. */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	FTransform GetCheckpointGateTransform(int32 GateIndex) const;
+
+	/**
+	 * Test one motion segment against one gate, and report WHICH WAY it was crossed.
+	 *
+	 * This is TRACK-002's central query and the crossing-direction half of
+	 * `.claude/rules/race-tests.md`'s "checkpoint order plus crossing direction
+	 * authorizes laps". A reverse crossing comes back as
+	 * ERacingGateCrossing::Reverse with bMatchesLegalDirection == false -- it is
+	 * REPORTED, not silently swallowed, so RACE-002 can invalidate the lap and say why.
+	 *
+	 * FromWorldCm/ToWorldCm are the vehicle's previous and current positions. They need
+	 * not be adjacent frames: the test is a segment/plane intersection, so a 300 km/h
+	 * pass or a 400 ms hitch cannot tunnel through the gate.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	FRacingGateCrossingResult EvaluateGateCrossing(int32 GateIndex, const FVector& FromWorldCm, const FVector& ToWorldCm) const;
+
+	/**
+	 * The gate this motion segment met EARLIEST, across every gate on the track.
+	 *
+	 * For the case a single evaluation step crosses more than one gate -- a hitch, a
+	 * teleport, or two gates through a chicane. Ordering by where along the motion each
+	 * plane was met is the order they physically happened in; ordering by gate index
+	 * would not be.
+	 *
+	 * @return the gate index, or INDEX_NONE when nothing crossed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track|Checkpoints")
+	int32 FindFirstGateCrossing(const FVector& FromWorldCm, const FVector& ToWorldCm, FRacingGateCrossingResult& OutResult) const;
 
 	/** Number of generated grid slots actually available. Matches NumGridSlots once the track is built. */
 	UFUNCTION(BlueprintCallable, Category = "Race|Track")
@@ -450,6 +634,36 @@ public:
 	int32 GetBakeAttemptCount() const { return BakeAttemptCount; }
 
 	/**
+	 * Whether the bake performed by PostLoad() -- the LOAD-TIME bake -- succeeded.
+	 *
+	 * False for an instance that was never loaded from a package (a CDO, or an actor
+	 * spawned at runtime): see HasPostLoadBakeRun() to tell "did not run" from "ran and
+	 * failed".
+	 *
+	 * WHY THIS IS NOT REDUNDANT WITH IsTrackDataBuilt(). A placed actor is baked more
+	 * than once on the way in: PostLoad bakes it, and then the editor initialises the
+	 * loaded world, registers components and re-runs OnConstruction, which bakes it
+	 * again. A PostLoad bake that FAILED -- because the spline component's own PostLoad
+	 * had not run yet, which the engine does not guarantee -- would therefore be repaired
+	 * silently, and IsTrackDataBuilt() would be true either way. This flag is the only
+	 * thing that distinguishes them, and TRACK-001 review finding M5 is precisely the
+	 * question it answers.
+	 */
+	bool DidPostLoadBakeSucceed() const { return bPostLoadBakeSucceeded; }
+
+	/** True once PostLoad() has run a bake on this instance, whatever its outcome. */
+	bool HasPostLoadBakeRun() const { return PostLoadBakeAttemptIndex != INDEX_NONE; }
+
+	/**
+	 * Which bake attempt PostLoad()'s was, 1-based, or INDEX_NONE if PostLoad has not run.
+	 *
+	 * 1 means nothing baked this instance before the load-time bake, which is what makes
+	 * DidPostLoadBakeSucceed() a statement about the load path rather than about whatever
+	 * happened to run first.
+	 */
+	int32 GetPostLoadBakeAttemptIndex() const { return PostLoadBakeAttemptIndex; }
+
+	/**
 	 * Number of centerline samples the last bake actually produced, and the step it
 	 * actually used, in centimetres.
 	 *
@@ -463,6 +677,19 @@ public:
 	 */
 	int32 GetEffectiveSampleCount() const { return EffectiveSampleCount; }
 	double GetEffectiveStepCm() const { return EffectiveStepCm; }
+
+	/**
+	 * Why the gate GENERATOR produced fewer gates than NumGeneratedCheckpointGates asked
+	 * for, or an empty string when it did not reduce the count.
+	 *
+	 * Non-empty means the baked gate set is NOT the authored intent: the centerline was
+	 * baked too coarsely to separate the requested gates, so the generator dropped some.
+	 * Validate() quotes this in its failure reason when the surviving count falls below
+	 * MinCheckpointGateCount; it is exposed here so a level-validation pass or an
+	 * automation test can see the degradation directly rather than by string-matching a
+	 * validation message.
+	 */
+	const FString& GetGeneratedGateClampNote() const { return GeneratedGateClampNote; }
 
 	/**
 	 * Returned by the arc-length accessors for an out-of-range index.
@@ -494,6 +721,35 @@ private:
 	/** Derived. Rebuilt from CenterlineSpline; never authored, never saved as truth. */
 	UPROPERTY(Transient)
 	FTrackCenterline BakedCenterline;
+
+	/** Derived. Ordered checkpoint gates baked from CheckpointGateSpecs (or generated). Never authored directly. */
+	UPROPERTY(Transient)
+	FRacingCheckpointGateSet BakedCheckpointGates;
+
+	/**
+	 * Derived. Why the last gate bake failed, empty when it succeeded.
+	 *
+	 * Kept so Validate() can report the REAL reason -- "gate 2 is inside one centerline
+	 * segment of gate 1" -- instead of the downstream symptom "the track has no gates",
+	 * which is the same class of misdirection TRACK-001's bake-failure branch was
+	 * corrected for.
+	 */
+	UPROPERTY(Transient)
+	FString CheckpointGateBakeError;
+
+	/**
+	 * Derived. Why the GENERATOR produced fewer gates than NumGeneratedCheckpointGates
+	 * asked for, empty when it produced exactly what was requested (and always empty on
+	 * the authored path, which the generator never runs on).
+	 *
+	 * Separate from CheckpointGateBakeError because the two are opposite outcomes: the
+	 * bake error means no gates exist, this means gates exist but fewer than were asked
+	 * for. Before H1 the second case had no record at all -- the clamp just quietly
+	 * returned a shorter array -- so a track that had lost three of its four gates to a
+	 * coarse bake was indistinguishable from one that was authored that way.
+	 */
+	UPROPERTY(Transient)
+	FString GeneratedGateClampNote;
 
 	/** Derived. World-space grid poses, index 0 = pole. */
 	UPROPERTY(Transient)
@@ -540,9 +796,32 @@ private:
 	UPROPERTY(Transient)
 	bool bBakeFailureLogged = false;
 
+	/**
+	 * One-shot guard for the gate generator's clamp message, re-armed by a bake that
+	 * places every requested gate.
+	 *
+	 * Separate from bBakeFailureLogged because the clamp fires on bakes that SUCCEED. A
+	 * freshly placed actor's default two-point 200 cm spline bakes fine and supports
+	 * exactly one gate, so without this the actor warns on every OnConstruction and every
+	 * property edit for as long as it takes somebody to draw a circuit -- the same flood
+	 * bBakeFailureLogged exists to prevent, in a case its own condition never sees.
+	 *
+	 * Suppresses only the LOG. GeneratedGateClampNote is recorded on every bake.
+	 */
+	UPROPERTY(Transient)
+	bool bGateClampLogged = false;
+
 	/** Number of times RebuildTrackData() has run. Automation reads this; nothing else should. */
 	UPROPERTY(Transient)
 	int32 BakeAttemptCount = 0;
+
+	/** Outcome of the bake PostLoad() ran. See DidPostLoadBakeSucceed(). */
+	UPROPERTY(Transient)
+	bool bPostLoadBakeSucceeded = false;
+
+	/** 1-based index of PostLoad()'s bake among this instance's bakes, INDEX_NONE until PostLoad runs. */
+	UPROPERTY(Transient)
+	int32 PostLoadBakeAttemptIndex = INDEX_NONE;
 
 	/** Sample count the last SUCCESSFUL bake produced. Hashed; see ComputeContentHash. */
 	UPROPERTY(Transient)
@@ -565,6 +844,28 @@ private:
 
 	/** Generate GridSlotTransforms from the baked centerline. Requires a valid centerline. */
 	void RebuildGridSlots();
+
+	/**
+	 * Bake BakedCheckpointGates from CheckpointGateSpecs, or from the generator when
+	 * that array is empty. Requires a valid centerline.
+	 *
+	 * Records CheckpointGateBakeError instead of returning a bool, because a gate bake
+	 * can fail on a track whose CENTERLINE is perfectly good, and failing the whole
+	 * centerline bake for a mis-authored gate would take progress and ranking down with
+	 * it. Validate() is where a bad gate set stops a session.
+	 */
+	void RebuildCheckpointGates();
+
+	/**
+	 * Fill OutSpecs with evenly spaced generated gates, gate 0 at distance 0. Used when
+	 * CheckpointGateSpecs is empty.
+	 *
+	 * NON-CONST because it records GeneratedGateClampNote. It used to be const and to
+	 * clamp its own count SILENTLY, which is how a coarse bake could degrade a four-gate
+	 * request to one gate with nothing anywhere saying so (finding H1). The note is the
+	 * clamp's testimony; Validate() quotes it, and the clamp also logs once per bake.
+	 */
+	void MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateSpec>& OutSpecs);
 
 	/** Generate ResetSampleTransforms/Distances from the baked centerline. Requires a valid centerline. */
 	void RebuildResetSamples();
