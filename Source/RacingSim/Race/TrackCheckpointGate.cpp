@@ -275,6 +275,34 @@ bool FRacingCheckpointGateSet::Build(
 		NewGates.Add(Gate);
 	}
 
+	// M1 (code-reviewer, TRACK-002 pass 1), fixed at RACE-002: THE SEPARATION INVARIANT
+	// MUST ALSO HOLD ACROSS THE LOOP CLOSURE.
+	//
+	// The per-gate check above compares each gate with InSpecs[Index - 1], which leaves
+	// exactly one pair unchecked on a closed circuit: the LAST gate and gate 0. Nothing
+	// stopped an authored last gate from sitting one centimetre before the line -- the
+	// near-identical-plane case the check exists to prevent, at the one place on the
+	// track where getting the order wrong costs a lap rather than a checkpoint.
+	//
+	// Gate 0 is pinned to distance 0 (validated above), so the wrap gap is simply the
+	// distance from the last gate to the end of the lap. Only meaningful on a closed
+	// loop: an open centerline has no wrap, and its last gate is followed by nothing.
+	if (Centerline.IsClosedLoop() && NewGates.Num() > 1)
+	{
+		const double WrapSeparationCm = LengthCm - NewGates.Last().DistanceAlongCm;
+		if (WrapSeparationCm <= NewMaxSegmentLengthCm)
+		{
+			OutError = FString::Printf(
+				TEXT("Checkpoint gate %d ('%s') at %f cm is %f cm before the start/finish gate across the loop "
+					 "closure, within one centerline segment (%f cm). Two gates inside one segment share a plane "
+					 "normal and cannot be ordered reliably, and this pair straddles the lap boundary; move the "
+					 "gate back or bake the centerline finer."),
+				NewGates.Num() - 1, *NewGates.Last().GateId.ToString(), NewGates.Last().DistanceAlongCm,
+				WrapSeparationCm, NewMaxSegmentLengthCm);
+			return false;
+		}
+	}
+
 	// Commit.
 	Gates = MoveTemp(NewGates);
 	MaxSegmentLengthCm = NewMaxSegmentLengthCm;

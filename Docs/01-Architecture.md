@@ -71,9 +71,32 @@ Proposed types:
   rationale for the split from `ARaceDirector`.
 - `URaceRulesetDataAsset` (**RACE-001, shipped**): typed countdown length and other
   state-machine tunables, per `CLAUDE.md`'s "no magic numbers" rule.
-- `ATrackDefinitionActor`: centerline spline, track length, sectors, start/finish, grid, reset samples.
-- `ATrackCheckpoint`: ordered trigger gate with crossing direction and width/height.
-- `URaceProgressComponent`: expected checkpoint, lap, spline distance, progress, validity, penalties.
+- `ATrackDefinitionActor` (**TRACK-001/TRACK-002, shipped**): centerline spline, track
+  length, sectors, start/finish, grid, reset samples, and the baked ordered gate set.
+- `FRacingCheckpointGate` / `FRacingCheckpointGateSet` (**TRACK-002, shipped** — this
+  section previously specified an `ATrackCheckpoint` actor; corrected at RACE-002,
+  closing TRACK-002 finding M5): a checkpoint gate is a **world-free `USTRUCT`**, not an
+  actor with a trigger volume. It is a bounded rectangle standing across the track at a
+  fixed arc length, with a plane normal derived from the centerline's direction of travel
+  and an authored legal crossing direction (`ERacingGateDirection`). Crossings are tested
+  as a **segment-versus-plane intersection** over the vehicle's previous/current position
+  (`FRacingCheckpointGateSet::EvaluateCrossings`), never as a volume overlap — at 300 km/h
+  a car covers 139 cm per 60 Hz tick and over 800 cm in a 100 ms hitch, so a gate thin
+  enough to be a line is a gate an overlap steps straight over. The extent test is applied
+  to the intersection point, which is what distinguishes "went through the gate" from
+  "went round the outside of it" (`ERacingGateCrossing::OutsideExtent`). The set publishes
+  the ORDER; it holds no per-car cursor. See
+  `Source/RacingSim/Race/TrackCheckpointGate.h`.
+- `URaceLapTracker` (**RACE-002, shipped** — sketched in earlier drafts of this document
+  as `URaceProgressComponent`): expected checkpoint, lap count, sector splits, spline
+  progress and per-lap validity, one instance per competitor. A plain `UObject` rather
+  than a `UActorComponent`, for the reason `URaceStateMachine` gives and one more:
+  `Docs/Environment.md` records that a `SmokeFilter` automation test in this project
+  cannot construct a non-template actor at all, so a component would have made every
+  lap-ordering rule testable only through a `Product` gate that cannot complete on the
+  reference machine. It consumes a **copy** of the baked gate set taken once at
+  configuration, so per-tick evaluation never re-enters the track actor's
+  game-thread-only lazy bake. See `Source/RacingSim/Race/RaceLapTracker.h`.
 - `FRaceClock` (**RACE-001, shipped**): monotonic timing via timestamp subtraction, not
   accumulation — see `Source/RacingSim/Race/RaceClock.h`. Shipped as a plain struct, not
   a `UObject`/`URaceClock`: it has a mutating accessor and is internal race truth, not a
@@ -181,12 +204,21 @@ Input device/browser
     -> telemetry component
     -> race progress + HUD view model + recorder
 
-Track trigger/spline
-    -> race progress validation
-    -> race clock/state machine
+Vehicle position (previous, current)
+    -> FRacingCheckpointGateSet::EvaluateCrossings   (direction, per gate)
+    -> URaceLapTracker                                (order, lap, sector, validity)
+    -> URaceStateMachine's monotonic clock            (durations only, never wall time)
     -> immutable result
-    -> HUD + backend submission
+    -> HUD view model + backend submission
 ```
+
+Two rules constrain that chain and neither is negotiable. **Ordered checkpoint gates
+plus a valid crossing direction authorise a lap; continuous spline distance never
+does** — distance ranks cars, drives a progress bar and splits sectors inside a lap the
+gates already authorised, and a car that is reset, teleported or driven backwards past
+the line will wrap its distance without having driven a lap. And **durations are
+stored, never formatted**: `Race/` produces seconds as `double` from one monotonic
+source, and `UI/` is the only layer that turns 83.456 into "1:23.456".
 
 ## Future multiplayer boundary
 
