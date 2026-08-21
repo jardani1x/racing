@@ -48,6 +48,10 @@ Source/
       RacingSimLog.*                <- CORE-001
       RacingSimTypes.h              <- CORE-002: shared enums, penalty summary
       RacingSimUnits.h              <- CORE-002: cm/SI conversion policy, header-only
+      RacingSimUrl.h                <- RACE-003: RFC 3986 percent-encoding for URL query
+                                       values, header-only. Closes CORE-003 C3-4: a build
+                                       ID legally contains '+', which a query-string
+                                       decoder turns into a space.
       RacingSimBuildId.*            <- CORE-002: build ID + version stamp contract
       RacingSimSettings.*           <- CORE-002: UDeveloperSettings, config=Game
       RacingTelemetry.*             <- CORE-002: telemetry data contracts
@@ -82,7 +86,12 @@ Source/
                                         `URaceProgressComponent`; a UObject, not a
                                         component, for the testability reason
                                         RaceStateMachine.* records.
-      RaceResult.*                   <- planned, RACE-003
+      RaceResult.*                   <- RACE-003: FRacingRaceResult (the frozen result, a
+                                        USTRUCT value) + URaceResultRecorder (freezes it
+                                        once at Finished, performs the complete reset at
+                                        Restart, and gates submission on build/track/tune
+                                        metadata). Docs/01-Architecture.md records why the
+                                        result is a struct and the behaviour is a UObject.
     UI/
       RaceHUDViewModel.*
       RaceHUDController.*
@@ -101,7 +110,9 @@ Source/
       RacingSimUnitsSpec.cpp           <- CORE-002
       RacingSimVersionSpec.cpp         <- CORE-002: build ID + version stamp
       RacingSimSettingsSpec.cpp        <- CORE-002
-      RacingTelemetrySpec.cpp          <- CORE-002
+      RacingTelemetrySpec.cpp          <- CORE-002 (+ RACE-003: AreSectorsConsistent's
+                                          zero-sector meaning, closing RACE-002 L2)
+      RacingSimUrlSpec.cpp             <- RACE-003: percent-encoding, CORE-003 C3-4
     Race/
       RaceClockSpec.cpp                <- RACE-001
       RaceStateMachineSpec.cpp         <- RACE-001
@@ -112,7 +123,14 @@ Source/
                                           ProductFilter, not Smoke -- it instantiates an
                                           actor. See Docs/Environment.md.
       RaceLapTrackerSpec.cpp           <- RACE-002: lap order, sector timing, reset,
-                                          restart, clock-fault validity
+                                          restart, clock-fault validity.
+                                          RACE-003 adds: the no-ordered-gate lap
+                                          (R2-M1), the three sector-split shapes (M2),
+                                          and direct assertions for TRACK-002 L4/L5 (L6).
+      RaceResultSpec.cpp               <- RACE-003: freeze-once, submission gate,
+                                          full session -> results -> restart -> session
+                                          cycle, and the track-validity gate driven
+                                          through a real gate-bake failure.
     Tests/                        <- TEST-001: tests about the test infrastructure
       AutomationTestPlacementSpec.cpp  <- no registered test defined under Source/RacingSim/
       NonShippingArtifactSpec.cpp      <- Game link inputs (.rsp) + DirectoriesToNeverCook

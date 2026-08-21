@@ -161,8 +161,13 @@ void ATrackDefinitionActor::BeginPlay()
 	// override from a construction script or a spawn-time setter could apply.
 	RebuildTrackData();
 
+	// Through the CACHE rather than through Validate() directly, so the load path leaves
+	// the cache warm for whoever asks next. A race director deciding whether to go green
+	// then pays a content hash, not a second full validation -- which is the whole point
+	// of TRACK-001 M7's fix, and it would be a poor one if the first in-project caller
+	// bypassed it.
 	FString Reason;
-	if (!Validate(Reason))
+	if (!GetCachedValidation(Reason))
 	{
 		// Loud, once, at the only moment where it can still be acted on. Not an
 		// ensure: a graybox level with a half-authored track must still open.
@@ -550,11 +555,29 @@ void ATrackDefinitionActor::MakeGeneratedGateSpecs(TArray<FRacingCheckpointGateS
 		// no information is lost: Validate() quotes it and GetGeneratedGateClampNote()
 		// exposes it. Only the LOG LINE is suppressed, and only for an object that can
 		// never be raced on.
-		if (!bGateClampLogged && !IsTemplate())
+		// LATCH FIRST, LOG SECOND (restructured at RACE-003, closing RACE-002 finding L6).
+		//
+		// This used to read `if (!bGateClampLogged && !IsTemplate())`, so a CDO never
+		// latched the flag at all -- and the only test fixture this project can build for
+		// this actor IS the CDO (see TrackDefinitionActorSpec's header for why: a
+		// SmokeFilter test cannot construct a non-template Actor). R1-L3's re-arm
+		// behaviour was therefore unobservable in every environment that could test it,
+		// which is precisely why it shipped with no assertion.
+		//
+		// The latch now happens for a template too; only the LOG is suppressed, which is
+		// all R1-M2 ever asked for ("a template is not a track, so its clamp is not
+		// news"). Nothing else reads this flag, so for a real actor the behaviour is
+		// byte-identical and for a template the only change is that
+		// IsGeneratedGateClampReportArmed() now tells the truth.
+		if (!bGateClampLogged)
 		{
 			bGateClampLogged = true;
-			UE_LOG(LogRacingRace, Warning, TEXT("Track '%s': %s (further clamp reports for this track are "
-				"suppressed until a bake places every requested gate)"), *TrackId.ToString(), *GeneratedGateClampNote);
+
+			if (!IsTemplate())
+			{
+				UE_LOG(LogRacingRace, Warning, TEXT("Track '%s': %s (further clamp reports for this track are "
+					"suppressed until a bake places every requested gate)"), *TrackId.ToString(), *GeneratedGateClampNote);
+			}
 		}
 	}
 	else
@@ -1183,6 +1206,40 @@ bool ATrackDefinitionActor::Validate(FString& OutReason) const
 		return false;
 	}
 
+	// TRACK-002 FINDING M2, CLOSED HERE: KEEP MinCornerRadiusCm IN THE MONOTONIC RANGE.
+	//
+	// The full derivation is in the field's own comment. In one line: the placement
+	// tolerance GetSagittaBoundCm(R) peaks at R == MaxSegmentLengthCm / PI and DECREASES
+	// on both sides of it, so below that threshold an author who understates the radius --
+	// the direction Author-PrototypeGrayboxLevel.py correctly calls safe, and which is
+	// safe everywhere above the threshold -- gets the WEAKEST possible gate-width check
+	// instead of the strictest. Refusing the non-monotonic range is what makes "understate
+	// it" advice a reader can follow without a caveat.
+	//
+	// CHECKED AFTER THE BAKE BRANCHES ABOVE, deliberately. A radius small enough to reach
+	// this test usually makes the gate bake fail first (the tolerance exceeds the gate
+	// half-width), and "gate 2 is narrower than the 1500 cm placement tolerance" is a more
+	// actionable message than "your minimum corner radius is in the wrong range". This
+	// fires for the case that survives the bake: a coarse centerline whose segments are so
+	// long that even a plausible radius lands under S/PI.
+	{
+		const double MaxSegmentCm = BakedCenterline.GetMaxSegmentLengthCm();
+		const double MonotonicFloorCm = MaxSegmentCm / UE_DOUBLE_PI;
+
+		if (MaxSegmentCm > 0.0 && !(MinCornerRadiusCm > MonotonicFloorCm))
+		{
+			OutReason = FString::Printf(
+				TEXT("MinCornerRadiusCm is %f cm, at or below %f cm (the baked centerline's maximum segment of "
+					 "%f cm divided by PI). Below that threshold the derived gate placement tolerance stops "
+					 "increasing as the radius falls and starts SHRINKING with it, so a smaller authored radius "
+					 "produces a WEAKER gate-width check rather than a stricter one -- the opposite of what "
+					 "understating the radius is supposed to buy. Raise MinCornerRadiusCm above %f cm, or bake "
+					 "the centerline finer (lower CenterlineSampleSpacingCm) so the maximum segment shrinks."),
+				MinCornerRadiusCm, MonotonicFloorCm, MaxSegmentCm, MonotonicFloorCm);
+			return false;
+		}
+	}
+
 	// H1 (code-reviewer, TRACK-002 pass 1): A GATE SET THAT CANNOT ENFORCE ORDER IS NOT A
 	// PUBLISHABLE TRACK, AND "IT BAKED" IS NOT THE SAME QUESTION.
 	//
@@ -1298,4 +1355,57 @@ bool ATrackDefinitionActor::Validate(FString& OutReason) const
 	}
 
 	return true;
+}
+
+// ===========================================================================
+// Cached validity (TRACK-001 M7, extended to cover TRACK-002 M4)
+// ===========================================================================
+
+bool ATrackDefinitionActor::GetCachedValidation(FString& OutReason) const
+{
+	// Same rule and same reason as EnsureTrackDataBuilt()/RebuildTrackData(): the
+	// const_cast below writes five members, which is only sound because this class is
+	// game-thread-only. Asserted in code rather than promised in a comment.
+	check(IsInGameThread());
+
+	// THE KEY. ComputeContentHash() runs EnsureTrackDataBuilt() itself, so this also
+	// guarantees there IS a bake to validate -- and it folds in EffectiveSampleCount and
+	// EffectiveStepCm, so a re-bake that silently degraded the resolution moves the key
+	// even when no authored field changed. That is the case a naive "did anything get
+	// edited" cache would miss.
+	const uint32 CurrentHash = ComputeContentHash();
+
+	if (!bHasValidationCache || ValidatedContentHash != CurrentHash)
+	{
+		ATrackDefinitionActor* MutableThis = const_cast<ATrackDefinitionActor*>(this);
+
+		FString Reason;
+		const bool bValid = Validate(Reason);
+
+		// Committed together. A half-written cache (new hash, old answer) would be worse
+		// than no cache: it would hand out a stale verdict under a key that claims to be
+		// current, which is the failure mode a cache exists to make impossible.
+		MutableThis->bCachedValidationResult = bValid;
+		MutableThis->CachedValidationReason = MoveTemp(Reason);
+		MutableThis->ValidatedContentHash = CurrentHash;
+		MutableThis->bHasValidationCache = true;
+		++MutableThis->ValidationRunCount;
+
+		UE_LOG(LogRacingRace, Verbose,
+			TEXT("Track '%s' validation cache miss (hash %08x): %s%s%s"),
+			*TrackId.ToString(), CurrentHash, bValid ? TEXT("valid") : TEXT("INVALID"),
+			bValid ? TEXT("") : TEXT(" -- "), *CachedValidationReason);
+	}
+
+	// Always written, unlike Validate()'s out-parameter, which is left untouched on
+	// success. A caller reading a cache must not have to know what was in its FString
+	// before it asked.
+	OutReason = CachedValidationReason;
+	return bCachedValidationResult;
+}
+
+bool ATrackDefinitionActor::IsValidatedForRace() const
+{
+	FString UnusedReason;
+	return GetCachedValidation(UnusedReason);
 }

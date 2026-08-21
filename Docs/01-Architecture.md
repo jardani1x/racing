@@ -102,7 +102,24 @@ Proposed types:
   a `UObject`/`URaceClock`: it has a mutating accessor and is internal race truth, not a
   Blueprint-facing contract; `URaceStateMachine` exposes the two numbers Blueprint/UMG
   need.
-- `URaceResult`: immutable finish result and validation metadata.
+- `FRacingRaceResult` / `URaceResultRecorder` (**RACE-003, shipped** — this section
+  previously proposed a `URaceResult` UObject): the frozen finish result is a
+  **`USTRUCT`**, not a `UObject`. It is a value a view model copies and a submission
+  serialises, it owns no lifetime and has no identity beyond the session id it carries,
+  and making it a `UObject` would have meant a GC-rooted allocation per session for data
+  whose whole purpose is to be copied. The *behaviour* — freeze once at `Finished`, clear
+  everything at `Restart` — lives in `URaceResultRecorder`, which is the thing that needs
+  an identity and a delegate binding. `ARaceDirector` will own one, alongside the state
+  machine and the lap trackers. See `Source/RacingSim/Race/RaceResult.h`.
+
+  Two rules constrain it. **It assembles, it never derives**: every field is a copy of a
+  value `URaceLapTracker`, `FRaceClock`, `ATrackDefinitionActor` or
+  `FRacingSimVersionStamp` is already authoritative for. And **starting a session and
+  publishing a result are different bars**: a session needs a validated track and a
+  configured tracker; a submission additionally needs an authoritative build ID, complete
+  car/ruleset metadata and a clock that ran. A developer build must be able to race
+  without being able to publish, or the project cannot be tested on the machine that
+  develops it.
 
 State machine (**RACE-001, shipped** — collapses `Boot`/`Loading`/`Grid` into a single
 `PreRace`, since none of the three yet has an owner or a distinct entry action; split

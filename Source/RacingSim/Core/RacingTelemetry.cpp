@@ -12,11 +12,34 @@ double FRacingLapTiming::GetSectorTotalSeconds() const
 	return Total;
 }
 
-bool FRacingLapTiming::AreSectorsConsistent(const double ToleranceSeconds) const
+bool FRacingLapTiming::AreSectorsConsistent(const double ToleranceSeconds, const int32 ExpectedSectorCount) const
 {
-	if (!IsComplete() || SectorDurationsSeconds.Num() == 0)
+	if (!IsComplete())
+	{
+		// A lap still running has no final duration to check the splits against, so
+		// there is nothing to be consistent WITH. Unchanged by RACE-003.
+		return false;
+	}
+
+	// EXISTENCE, checked only when the caller supplies the track's authored count.
+	// Ordered before the vacuous-true branch below on purpose: a caller that DID say
+	// "this track has three sectors" must get false for a lap carrying none, which is
+	// SectorDurationsSeconds' shape 3 (splits withheld) and is a real fault the lap
+	// also reports through Validity.
+	if (ExpectedSectorCount != INDEX_NONE && SectorDurationsSeconds.Num() != ExpectedSectorCount)
 	{
 		return false;
+	}
+
+	if (SectorDurationsSeconds.Num() == 0)
+	{
+		// RACE-002 FINDING L2, CLOSED HERE. Vacuously true: no recorded sector fails to
+		// account for the lap when there are no recorded sectors. Reached by a sectorless
+		// track (a legal configuration) and, when the caller declined to pass a count, by
+		// a lap whose splits were withheld -- which is why the header is emphatic that
+		// this function answers "are the splits present consistent", never "are splits
+		// present". See the ExpectedSectorCount parameter for the stronger question.
+		return true;
 	}
 
 	// A negative or zero sector is impossible from a monotonic clock and means a

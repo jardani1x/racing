@@ -4,6 +4,7 @@
 
 #include "Core/RacingSimLog.h"
 #include "Core/RacingSimSettings.h"
+#include "Core/RacingSimUrl.h"
 // LexToString(EBuildConfiguration) and LexToString(EBuildTargetType) both return
 // const TCHAR*, so they are safe as %s arguments to FString::Printf. Verified in
 // Engine/Source/Runtime/Core/Public/GenericPlatform/GenericPlatformMisc.h:103,155.
@@ -57,6 +58,14 @@ namespace RacingSim::BuildIdPrivate
 			//       it in a query string. RacingSim.Core.BuildId asserts that every
 			//       ID either scheme produces matches [A-Za-z0-9._+-], so that rule
 			//       has exactly one character to worry about.
+			//
+			//       CLOSED AT RACE-003 (finding C3-4). That rule now has an
+			//       implementation rather than a reader: FRacingSimBuildId::
+			//       ToUrlQueryValue(), over RacingSim::Url::PercentEncodeQueryValue
+			//       (Core/RacingSimUrl.h). The project's one query-string consumer,
+			//       FRacingRaceResult::MakeSubmissionQueryString, calls it, and
+			//       RacingSim.Core.UrlEncoding asserts that a Derived ID's '+'
+			//       survives as %2B with no bare '+' anywhere in the output.
 			const bool bAllowed = FChar::IsAlnum(Ch)
 				|| Ch == TEXT('.')
 				|| Ch == TEXT('_')
@@ -205,6 +214,16 @@ FRacingSimBuildId FRacingSimBuildId::Current()
 	// string. That is exactly the case a leaderboard must not silently merge.
 	Result.bIsAuthoritative = false;
 	return Result;
+}
+
+FString FRacingSimBuildId::ToUrlQueryValue() const
+{
+	// CORE-003 C3-4. The whole substance of this function is that Value legally
+	// contains '+' and a query-string decoder turns a bare '+' into a space; see the
+	// header, and the MEDIUM-2 block in SanitiseComponent above that created the
+	// obligation. Everything else about the encoding is RFC 3986 boilerplate and lives
+	// in one place so no consumer has to re-derive it.
+	return RacingSim::Url::PercentEncodeQueryValue(Value);
 }
 
 FRacingSimVersionStamp FRacingSimVersionStamp::MakeCurrent()

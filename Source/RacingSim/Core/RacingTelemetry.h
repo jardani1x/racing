@@ -136,6 +136,25 @@ struct RACINGSIM_API FRacingLapTiming
 	 * Per-sector durations in SECONDS, in gate order. Length equals the track's
 	 * sector count once the lap completes, and is shorter while it is running --
 	 * a consumer must not assume a fixed length.
+	 *
+	 * THREE SHAPES A COMPLETED LAP MAY CARRY, and a results consumer must be able to
+	 * tell them apart without guessing (RACE-002 finding M2, decided at RACE-003).
+	 * FRacingRaceResult::TrackSectorCount is the number to compare Num() against:
+	 *
+	 *   1. Num() == track sector count. The complete set. The splits telescope to
+	 *      LapDurationSeconds and AreSectorsConsistent() proves it.
+	 *   2. Num() == 0 and the track authored NO sectors. A legitimate, non-error
+	 *      shape: a sectorless track counts laps and records no splits.
+	 *      AreSectorsConsistent() is VACUOUSLY TRUE here -- see below.
+	 *   3. Num() == 0 and the track authored N > 0 sectors. The splits were WITHHELD
+	 *      because the set would have been incomplete, and the lap therefore carries
+	 *      Validity == InvalidIncomplete (URaceLapTracker records
+	 *      ERaceLapInvalidReason::TimingUnavailable). Honest rather than partial.
+	 *
+	 * A PARTIAL SET IS NEVER EMITTED for a completed lap. That is a guarantee, not an
+	 * accident: a partial set sums to less than the lap and would fail a consistency
+	 * check silently at whichever consumer happened to run one, which is strictly worse
+	 * than publishing nothing and naming the fault.
 	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Racing|Timing")
 	TArray<double> SectorDurationsSeconds;
@@ -167,8 +186,38 @@ struct RACINGSIM_API FRacingLapTiming
 	 * same clock, so a mismatch beyond floating-point noise means a gate was
 	 * missed or double-counted. Intended for automation and for a check at lap
 	 * close, not for the HUD. Returns false on an incomplete lap.
+	 *
+	 * ===================================================================
+	 * ZERO SPLITS IS VACUOUSLY TRUE (RACE-002 finding L2, closed at RACE-003)
+	 * ===================================================================
+	 *
+	 * This used to return false for a lap carrying no splits at all, which made every
+	 * lap on a SECTORLESS TRACK read "inconsistent" to any consumer that checked --
+	 * and an empty sector table is a legal configuration
+	 * (URaceLapTracker::ConfigureTrack accepts one; RacingSim.Race.LapTrackerConfiguration
+	 * asserts it). The old answer was wrong in the ordinary way a vacuous quantifier is
+	 * wrong: the question this function asks is "do the recorded sectors ACCOUNT FOR the
+	 * lap", and with no recorded sectors there is nothing that fails to account for it.
+	 *
+	 * SO THIS FUNCTION CHECKS THE CONSISTENCY OF THE SPLITS PRESENT. IT DOES NOT CHECK
+	 * THAT SPLITS EXIST. Those are two different questions and this struct can only
+	 * answer the first: it does not know how many sectors the track authored. A consumer
+	 * that needs the second must pass ExpectedSectorCount, which is exactly why the
+	 * parameter exists rather than being left as an unwritten obligation on the caller.
+	 *
+	 * @param ToleranceSeconds   how far the split total may sit from LapDurationSeconds.
+	 * @param ExpectedSectorCount how many splits the TRACK authored, from
+	 *                            FRacingRaceResult::TrackSectorCount or
+	 *                            URaceLapTracker::GetNumSectors(). INDEX_NONE (the
+	 *                            default) means "do not check existence", which is the
+	 *                            vacuous answer above. Passing the real count is what
+	 *                            distinguishes shape 2 from shape 3 in
+	 *                            SectorDurationsSeconds' comment -- a withheld set on a
+	 *                            three-sector track then correctly reads false.
+	 * @return false on an incomplete lap, on a count mismatch when one is requested, on
+	 *         any non-positive split, or when the splits do not sum to the lap.
 	 */
-	bool AreSectorsConsistent(double ToleranceSeconds = 0.001) const;
+	bool AreSectorsConsistent(double ToleranceSeconds = 0.001, int32 ExpectedSectorCount = INDEX_NONE) const;
 };
 
 /**
