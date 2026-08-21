@@ -2682,9 +2682,13 @@ Scripts/Test/Run-Smoke.ps1                              # passedTotal=482 failed
 
 Logs: `Saved/BuildLogs/RACE-003-Editor-final.log`,
 `Saved/BuildLogs/RACE-003-Game-final.log`.
-Report: `Saved/Automation/RACE-003-Smoke-final/index.json`.
+Report: `Saved/Automation/RACE-003-Smoke-final/index.json`
+(`reportCreatedOn 2026.08.21-06.41.48`).
 
-**Smoke: 482 tests — 479 succeeded, 3 succeededWithWarnings, 0 failed, 0 notRun.** Up from
+**All four artifacts were produced from the COMMITTED tree** (`0b861a0`, working tree
+clean), not from the working copy that first went green.
+
+**Smoke: 482 tests — 480 succeeded, 2 succeededWithWarnings, 0 failed, 0 notRun.** Up from
 RACE-002's 472 by the ten new suites, all `Success` with `warnings=0 errors=0`:
 `RacingSim.Core.UrlEncoding`, `RacingSim.Race.LapNoGateProgress`,
 `RacingSim.Race.LapSectorSplitShape`, `RacingSim.Race.LapInheritedFixes`,
@@ -2694,10 +2698,15 @@ RACE-002's 472 by the ten new suites, all `Success` with `warnings=0 errors=0`:
 
 The warning baseline is unchanged from RACE-002 at **2 suites / 3 warnings**
 (`TrackFailedBakeIsNotRetried` 1, `TrackValidation` 2), both pre-existing and deliberate.
-An earlier run also showed `RacingSim.Tests.NonShippingArtifacts` at 1 warning; that is
-environmental and not this ticket's — it reports "Game linker response file not present",
-because the Game target had not yet been built in a fresh worktree. It clears once
-`RacingSim Win64 Development` has been built, which is recorded rather than hidden.
+
+Three earlier runs in this cycle also showed `RacingSim.Tests.NonShippingArtifacts` at 1
+warning, and it is recorded rather than hidden because it moved a bucket: its message is
+"Game linker response file not present at .../RacingSim.exe.rsp, so the Game-target half of
+the non-shipping check did not run", i.e. the Game target had never been built in a fresh
+worktree. It cleared in the final run once `RacingSim Win64 Development` had been built.
+Environmental, not this ticket's, and worth knowing because `succeeded` alone would have
+read 479 → 480 across two runs of identical code — exactly the bucket-shift misreading
+`Run-Smoke.ps1`'s own header warns about.
 
 **Three defects the new tests found in the first implementation, fixed before this report**
 
