@@ -119,11 +119,61 @@ bool FRacingTelemetryContractTest::RunTest(const FString& Parameters)
 			TestFalse(TEXT("A negative sector is rejected"), Negative.AreSectorsConsistent());
 		}
 
-		// No sectors recorded at all is not "consistent by vacuity".
+		// -- NO SECTORS AT ALL: VACUOUSLY TRUE -------------------------------
+		//
+		// THIS ASSERTION WAS INVERTED AT RACE-003, deliberately and under an approved
+		// ticket change (RACE-002 finding L2, routed to RACE-003's acceptance criteria).
+		// It previously read "A lap with no sectors is not consistent", asserting false.
+		//
+		// That was wrong, and the way it was wrong is instructive: an empty sector table is
+		// a LEGAL track configuration -- URaceLapTracker::ConfigureTrack accepts one and
+		// RacingSim.Race.LapTrackerConfiguration asserts that such a track still counts
+		// laps -- so every lap on a sectorless track reported "inconsistent" to any
+		// consumer that checked. The old answer confused two questions: "do the recorded
+		// sectors account for the lap" (this function's) and "should there have been
+		// sectors at all" (the track's). With nothing recorded, nothing fails to account
+		// for the lap.
 		{
 			FRacingLapTiming NoSectors = Lap;
 			NoSectors.SectorDurationsSeconds.Reset();
-			TestFalse(TEXT("A lap with no sectors is not consistent"), NoSectors.AreSectorsConsistent());
+			TestTrue(TEXT("A lap carrying no splits is VACUOUSLY consistent: nothing fails to add up"),
+				NoSectors.AreSectorsConsistent());
+
+			// ...and the stronger question is still available, which is the whole reason
+			// the answer above is safe to give. A caller that knows the track authored
+			// three sectors gets false for a lap carrying none -- that is
+			// SectorDurationsSeconds' "shape 3", splits withheld, and it is a real fault.
+			TestFalse(TEXT("...but NOT when the caller states the track authored 3 sectors"),
+				NoSectors.AreSectorsConsistent(0.001, 3));
+			TestTrue(TEXT("...while a genuinely sectorless track passes the same check with a count of 0"),
+				NoSectors.AreSectorsConsistent(0.001, 0));
+		}
+
+		// -- ExpectedSectorCount catches a set of the wrong LENGTH that still sums --
+		//
+		// The case the sum alone cannot see. Splitting one sector into two halves keeps the
+		// total exactly right and every split positive, so the value check and the total
+		// check both pass; only the count disagrees. Without the parameter a consumer had
+		// no way to ask.
+		{
+			FRacingLapTiming Resplit = Lap;
+			Resplit.SectorDurationsSeconds = { 28.100, 15.625, 15.625, 24.106 };
+			TestTrue(TEXT("Four splits that still sum to the lap pass the unqualified check"),
+				Resplit.AreSectorsConsistent());
+			TestFalse(TEXT("...and fail once the caller says the track has three sectors"),
+				Resplit.AreSectorsConsistent(0.001, 3));
+			TestTrue(TEXT("...while the correct three-split set passes the qualified check"),
+				Lap.AreSectorsConsistent(0.001, 3));
+		}
+
+		// An incomplete lap is still refused even when the count matches, because the lap
+		// duration it would be compared against is not final. The count check must not
+		// become a way round the completeness rule.
+		{
+			FRacingLapTiming RunningWithCount = Lap;
+			RunningWithCount.Validity = ERacingRunValidity::Pending;
+			TestFalse(TEXT("A running lap is refused even when the split count is right"),
+				RunningWithCount.AreSectorsConsistent(0.001, 3));
 		}
 
 		// An incomplete lap cannot be consistent -- the lap time is not final yet.

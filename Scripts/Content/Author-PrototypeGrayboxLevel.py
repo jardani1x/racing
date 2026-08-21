@@ -82,6 +82,23 @@ CENTERLINE_SAMPLE_SPACING_CM = 100.0
 # is therefore a deliberate UNDER-statement, which makes the derived tolerance larger and
 # the gate-width check stricter. Understating is the safe direction here; overstating
 # would shrink the tolerance and weaken the check.
+#
+# THAT LAST SENTENCE IS TRUE ONLY ABOVE A THRESHOLD, and this comment used to state it
+# unconditionally while ATrackDefinitionActor.h's comment stated the opposite -- also
+# unconditionally. Both were half right, and the disagreement was TRACK-002 finding M2,
+# reconciled at RACE-003. Writing S for the baked centerline's maximum segment length,
+# GetSagittaBoundCm peaks at R == S / pi and DECREASES on both sides of that:
+#
+#   * for R >  S / pi  the tolerance falls as R rises, so understating R is safe. This
+#     is the region every real track sits in, and it is what the paragraph above means.
+#   * for R <= S / pi  the tolerance collapses to exactly R and falls WITH it, so a very
+#     small authored radius buys the WEAKEST gate check, not the strictest.
+#
+# ATrackDefinitionActor::Validate() now refuses the second region outright, so a track
+# that validates is a track for which the advice above holds without a caveat. Here that
+# threshold is S / pi ~= 100 / pi ~= 32 cm at the 100 cm bake below, and 1500 cm clears it
+# by a factor of ~47 -- the two numbers are not close, and this comment exists so that a
+# future coarser bake cannot make them close without somebody noticing.
 MIN_CORNER_RADIUS_CM = 1500.0
 
 # Gate extents, cm. Half-width comfortably exceeds any plausible graybox racing surface

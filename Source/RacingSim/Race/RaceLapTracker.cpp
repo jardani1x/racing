@@ -662,6 +662,50 @@ FRaceLapTrackerUpdate URaceLapTracker::Advance(const FVector& WorldLocationCm, c
 
 				if (!bIsLapBoundary)
 				{
+					++Update.LineCrossingsRefusedAsBoundary;
+
+					// RACE-002 FINDING R2-M1, DECIDED AND CLOSED AT RACE-003.
+					//
+					// THE REFUSAL IS ALSO A VERDICT ON THE LAP. The H1 fix above stopped a
+					// no-progress line crossing manufacturing a lap boundary, which was right,
+					// but it left the lap in progress running: a car that drove a whole
+					// physical lap OUTSIDE every gate rectangle came back to the line, was
+					// refused a boundary, and simply kept going. If it then drove one clean
+					// physical lap, CloseLap() saw every gate satisfied and closed that lap
+					// **Valid** -- with a duration spanning TWO physical laps,
+					// GetLapsCompleted() under-reporting by one, and the ranking key sitting a
+					// lap low. Fail-safe in direction (the time is too slow, never too fast),
+					// but a valid lap whose duration is not one lap's time is exactly what a
+					// results screen and a leaderboard must never be handed.
+					//
+					// The finding offered two answers -- mark it invalid, or document that a
+					// valid lap may span more than one physical lap. The second was rejected:
+					// "valid" is the one word on a result that must not need a footnote, and
+					// every downstream consumer (best-lap comparison, delta, leaderboard)
+					// assumes a lap time is a lap's time. So the lap is marked invalid HERE, at
+					// the moment the car proves it has not driven the route, rather than left
+					// for CloseLap() to fail to notice a lap later.
+					//
+					// THE REASON NAMES THE LOWEST GATE NOT TAKEN -- the same answer CloseLap()'s
+					// own all-gates check gives, and the answer a driver needs ("you came back
+					// to the line without taking Gate.01"). Not a new enumerator:
+					// ERaceLapInvalidReason::MissedCheckpoint's own contract is "an ordered
+					// checkpoint gate was not crossed forward before the next one was, OR BEFORE
+					// THE FINISH LINE WAS REACHED", which is precisely this event.
+					//
+					// FIRST FAULT WINS, so this is a no-op for the two cases the H1 fix was
+					// written for. A spin on the line and a U-turn back to it both had to get
+					// BEHIND the line again, and the only ways to do that are a reverse crossing
+					// (already ReverseFinishCrossing) or a reset/teleport (already VehicleReset).
+					// The lap this newly invalidates is the one that drove all the way round
+					// outside the gates and never faulted at all.
+					const int32 MissedIndex = FindFirstMissedGateIndex();
+					const FRacingCheckpointGate* MissedGate = Gates.GetGate(MissedIndex);
+					MarkLapInvalid(
+						ERaceLapInvalidReason::MissedCheckpoint,
+						MissedIndex,
+						MissedGate != nullptr ? MissedGate->GateId : NAME_None);
+
 					// NOT a lap boundary: give the same answer the ordinary gates give,
 					// which is to (re-)satisfy the gate and move the cursor past it. The lap
 					// in progress keeps its open time, its sector cursor and its recorded
@@ -680,8 +724,9 @@ FRaceLapTrackerUpdate URaceLapTracker::Advance(const FVector& WorldLocationCm, c
 
 					UE_LOG(LogRacingRace, Verbose,
 						TEXT("Forward crossing of the start/finish gate on lap %d with no ordered gate held since it "
-							 "opened; re-triggering gate 0 rather than manufacturing a lap boundary."),
-						CurrentLapNumber);
+							 "opened; re-triggering gate 0 rather than manufacturing a lap boundary, and marking the "
+							 "lap invalid (%s)."),
+						CurrentLapNumber, *CurrentLapInvalidity.ToDebugString());
 					continue;
 				}
 
@@ -815,7 +860,12 @@ FRaceLapTrackerUpdate URaceLapTracker::Advance(const FVector& WorldLocationCm, c
 		// the ticket only requires the FINISH gate's reverse crossing to be reported as
 		// one. A car that spins and rejoins must still take every remaining gate in
 		// order to complete a valid lap, which the rewound cursor enforces.
-		const int32 ExpectedAfterThisGate = (GateIndex + 1) % Gates.NumGates();
+		// Finding L4, fixed on this touch: this computed the wrap inline as
+		// `(GateIndex + 1) % Gates.NumGates()` while the gate-0 branch above and
+		// ExpectedGateIndex's own advance both used GetNextGateIndex(). Two expressions
+		// for one question is one of them waiting to disagree, and the published answer
+		// is the set's -- it owns the order.
+		const int32 ExpectedAfterThisGate = Gates.GetNextGateIndex(GateIndex);
 		if (ExpectedGateIndex == ExpectedAfterThisGate && GateSatisfied[GateIndex])
 		{
 			GateSatisfied[GateIndex] = false;

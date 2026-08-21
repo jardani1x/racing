@@ -1105,7 +1105,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | TRACK-002 | Ordered checkpoint gates and crossing direction | race-systems-engineer | TRACK-001 | B | **DONE** 2026-08-20 — `code-reviewer` returned CHANGES REQUESTED against `dc96061` (1 HIGH + 7 MEDIUM + 5 LOW, four blocking); repair cycle 1 closed all four blocking findings (H1: `MinCheckpointGateCount = 4` enforced in `Validate()` against both the generated and hand-authored gate paths; M6, L1, L3: documentation/process corrections); re-review returned APPROVED WITH FOLLOW-UPS. `test-engineer` independently confirmed both targets build clean with zero warning/error matches, Smoke `passedTotal=466, failed=0, notRun=0` across 40 `RacingSim.*` suites, and all three level tests pass (3/0/0). Merged to `main` at `00ad83b` (merge of `5c3165b`). Non-blocking findings (M2–M5, M7, L2, L4–L6) and two open risks (gate-order floor bounds "no order" but not shortcut-proofing; graybox level has no drivable surface) tracked forward into `RACE-002`, `RACE-003`, `VEH-002`, `TEST-001` |
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | **DONE** 2026-08-21 — `code-reviewer` returned CHANGES REQUESTED against `6b92557` (2 HIGH blocking: `H1` phantom laps from a spin on the start/finish line, `H2` missing spin-on-the-line test); repair cycle 1 (`d4fded6`) closed both, verified by stashing the fix back out and re-running against the pre-fix tree; re-review independently hand-traced the fix and returned APPROVED WITH FOLLOW-UPS, plus three doc-only corrections (`3870be8`). `test-engineer` independently confirmed both targets build clean, Smoke `passedTotal=472, failed=0, notRun=0` (6 lap suites), and all three TRACK-002 placed-level tests still pass 3/0/0. Merged to `main` at `7f82e79` (merge of `3870be8`). Non-blocking findings (`M1`–`M3`, `L1`–`L9`, plus repair-cycle `R2-M1`/`R2-L1`/`R2-L2`) tracked forward into `RACE-003`/`VEH-005`/`UI-001` |
-| RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | ACCEPTANCE CRITERIA OPENED 2026-08-21, unblocked, ready for implementation |
+| RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **REVIEW APPROVED WITH FOLLOW-UPS 2026-08-21, awaiting `test-engineer` validation** — `code-reviewer` returned no HIGH/BLOCKER findings against `0b861a0`/`914f7c6`; independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `M1`–`M5`/`L1`–`L9` recorded as inherited findings for `UI-001`/`RACE-004` and folded into existing batch decisions, not fixed. `test-engineer` must run both targets, Smoke, **and** the three placed-level `ProductFilter` tests (this ticket added a new `Validate()` failure mode only those tests exercise). NOT merged |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
@@ -2566,7 +2566,7 @@ track version, car tune version, assist state, validity, and build ID"), and mak
 it. `UI-001`/`UI-002` (display) and `RACE-004` (the shortcut/reverse/double-trigger/reset
 automation matrix) are later, separate tickets that depend on this one.
 
-- [ ] A typed race result (director's naming call, implementer may propose — e.g.
+- [x] A typed race result (director's naming call, implementer may propose — e.g.
       `FRacingRaceResult`) populated once at the `Finished` transition and frozen
       thereafter: final time, best lap, last lap, all sector splits, overall validity
       (`ERacingRunValidity`, Core), track version, car tune version, assist state, and
@@ -2575,15 +2575,15 @@ automation matrix) are later, separate tickets that depend on this one.
       (`GetBestValidLap()`/`GetLastCompletedLap()`/`GetRunValidity()`) and `CORE-002`'s
       `FRacingSimVersionStamp`/`RacingSimBuildId.h` — do not re-derive any of these
       values, only assemble them.
-- [ ] `CORE-003` `C3-4` closed: wherever a build ID is written into a URL query string
+- [x] `CORE-003` `C3-4` closed: wherever a build ID is written into a URL query string
       (results submission, sharing, telemetry), it is percent-encoded first — the derived
       format legally contains `+`, which decodes to a space unencoded.
-- [ ] "Result submission rejects invalid build/track/tune metadata"
+- [x] "Result submission rejects invalid build/track/tune metadata"
       (`Docs/03-TrackRaceUI.md`'s functional-test list, verbatim): a result carrying a
       non-authoritative build ID (`bIsAuthoritative == false`, `CORE-002`) or an
       unvalidated/invalid track (see the next criterion) is refused, not silently
       accepted with a suspect field.
-- [ ] `TRACK-001` `M7` closed, extended to cover `TRACK-002` `M4`: `Validate()`'s result
+- [x] `TRACK-001` `M7` closed, extended to cover `TRACK-002` `M4`: `Validate()`'s result
       is cached against the content hash it was computed against (not re-run per frame,
       not trusted from the weaker `IsTrackDataBuilt()`), and the cache covers a **gate**
       bake failure as well as a centerline bake failure — `RebuildTrackData()` currently
@@ -2591,7 +2591,7 @@ automation matrix) are later, separate tickets that depend on this one.
       `CheckpointGateBakeError`, so a naive cache keyed only on the centerline would miss
       exactly the case TRACK-002 introduced. A session must be cheaply refusable to start
       on an invalid track using this cache, not a live `Validate()` call.
-- [ ] Restart performs the complete reset `Docs/03-TrackRaceUI.md`'s `Restart` state and
+- [x] Restart performs the complete reset `Docs/03-TrackRaceUI.md`'s `Restart` state and
       `.claude/rules/race-tests.md` both require: every `URaceLapTracker`'s
       `ResetForNewSession()` is called (it exists, from `RACE-002`, but nothing calls it
       from a state-machine transition yet), the frozen result from the previous session is
@@ -2599,43 +2599,43 @@ automation matrix) are later, separate tickets that depend on this one.
       no delegate/timer/input binding from the previous session survives — `RACE-001`'s
       `L3` (`Restart` from `PreRace` bumps no session id) is relevant context: if session
       identity doesn't change, this ticket must not rely on it changing to detect staleness.
-- [ ] `RACE-002` `R2-M1` decided and implemented: either a lap in which no ordered gate
+- [x] `RACE-002` `R2-M1` decided and implemented: either a lap in which no ordered gate
       was ever satisfied is now marked invalid rather than silently continuing into the
       next physical lap's duration (requires `RaceLapTracker` to expose the refused-close
       signal, per that finding's own note), or the results contract explicitly states a
       valid lap's duration may span more than one physical lap and this ticket's result
       struct/consumers are built to that stated contract rather than assuming otherwise.
       Do not leave this ambiguous a second time.
-- [ ] `RACE-002` `L9` closed: the `GetLapsCompleted()` vs. `GetCurrentLapNumber()`
+- [x] `RACE-002` `L9` closed: the `GetLapsCompleted()` vs. `GetCurrentLapNumber()`
       off-by-one convention (first line crossing opens lap 1, doesn't close anything) is
       written into this ticket's result/data contract explicitly, so `UI-001` reads a
       documented convention rather than inventing one.
-- [ ] `RACE-002` `M2` decided: a lap opened mid-step by the same crossing that closed the
+- [x] `RACE-002` `M2` decided: a lap opened mid-step by the same crossing that closed the
       finish line may legitimately carry no first-sector split — either fix it (carry the
       boundary forward) or state the "no splits on this lap" case as a documented,
       non-error result shape rather than something a results consumer must guess at.
-- [ ] `RACE-002` `L2` closed: `FRacingLapTiming::AreSectorsConsistent()` (`CORE-002`,
+- [x] `RACE-002` `L2` closed: `FRacingLapTiming::AreSectorsConsistent()` (`CORE-002`,
       `RacingTelemetry.h`) is given a defined meaning for zero authored sectors (vacuously
       true is the documented likely answer) so a sectorless track's results don't read
       "inconsistent" to every consumer that checks. This is a `Core` contract fix — do it
       where the contract lives, not by working around it in `Race`.
-- [ ] `TRACK-002` `M2` addressed: reconcile the two disagreeing in-repo comments about
+- [x] `TRACK-002` `M2` addressed: reconcile the two disagreeing in-repo comments about
       which direction of `MinCornerRadiusCm` is "safe" (`Author-PrototypeGrayboxLevel.py`
       vs. `TrackDefinitionActor.h`), and raise `ClampMin` or add a `Validate()` check per
       that finding's disposition — relevant here because this ticket's validity cache
       (above) is the first consumer that treats `Validate()`'s answer as load-bearing
       rather than advisory.
-- [ ] `RACE-002` `L6` closed: one direct assertion apiece for the three
+- [x] `RACE-002` `L6` closed: one direct assertion apiece for the three
       closed-by-construction fixes RACE-002 shipped without one (TRACK-002 `L4` near-miss
       direction, `L5` thread constraint, `R1-L3` clamp-log re-arm), or an explicit written
       record that "closed by construction" is this project's accepted standard for these
       three and why — not silently left as an open question a second time.
-- [ ] Automation coverage for restart specifically (`.claude/rules/race-tests.md` lists it
+- [x] Automation coverage for restart specifically (`.claude/rules/race-tests.md` lists it
       as a required test category alongside reverse/skip/double/spin/reset, all of which
       `RACE-002` already covers): a full session → results → restart → new session cycle
       with no stale state crossing the boundary, tested without a placed level where
       possible per this project's testability-first precedent.
-- [ ] Editor **and** Game targets build with zero new warnings.
+- [x] Editor **and** Game targets build with zero new warnings.
 
 **Deliberately excluded from this ticket's scope**, tracked forward rather than silently
 assumed: HUD/results-screen display (`UI-001`/`UI-002`); the full shortcut/reverse/
@@ -2643,6 +2643,238 @@ double-trigger/reset automation *matrix* as its own deliverable (`RACE-004` — 
 ticket's own restart coverage above is scoped to restart specifically, not a duplicate of
 that matrix); packaged-build result submission over a real network boundary (no such
 boundary exists yet — `STREAM-001`+).
+
+### RACE-003 — verification evidence, 2026-08-21
+
+Implementation branch `worktree-agent-a38e0d947a6033c09`, fast-forwarded onto `b169c72`.
+**Not merged**; `code-reviewer` and `test-engineer` have not run. Every number below was
+read out of the artifact named beside it, never from a process exit code
+(`Docs/Environment.md`, TRACK-002 `M7`).
+
+**Files changed**
+
+| File | Change |
+| --- | --- |
+| `Source/RacingSim/Race/RaceResult.h` | NEW. `FRacingRaceResult` (frozen result + submission gate), `URaceResultRecorder` (freeze at `Finished`, complete reset at `Restart`) |
+| `Source/RacingSim/Race/RaceResult.cpp` | NEW. Assembly, validity coarse-graining, query-string composition |
+| `Source/RacingSim/Core/RacingSimUrl.h` | NEW, header-only. RFC 3986 percent-encoding — CORE-003 `C3-4` |
+| `Source/RacingSim/Core/RacingSimBuildId.h/.cpp` | `FRacingSimBuildId::ToUrlQueryValue()`; the `SanitiseComponent` comment that recorded the C3-4 obligation now names its implementation |
+| `Source/RacingSim/Core/RacingTelemetry.h/.cpp` | RACE-002 `L2`: `AreSectorsConsistent()` is vacuously true for zero splits, plus an `ExpectedSectorCount` parameter for the stronger question. The three split shapes documented at `SectorDurationsSeconds` |
+| `Source/RacingSim/Race/RaceLapTracker.h/.cpp` | RACE-002 `R2-M1` (a refused line crossing now invalidates the lap); `LineCrossingsRefusedAsBoundary`; the `L9` convention written down; fix-on-next-touch `L4` (wrap arithmetic), `L8` (allocation comment), `R2-L1` (doc-comment prefix) |
+| `Source/RacingSim/Race/TrackDefinitionActor.h/.cpp` | TRACK-001 `M7` + TRACK-002 `M4` validity cache; TRACK-002 `M2` `MinCornerRadiusCm` range check and reconciled comment; `IsGeneratedGateClampReportArmed()` for `R1-L3` |
+| `Scripts/Content/Author-PrototypeGrayboxLevel.py` | TRACK-002 `M2`: the other half of the reconciled comment |
+| `Source/RacingSimTests/Race/RaceResultSpec.cpp` | NEW. Five suites |
+| `Source/RacingSimTests/Core/RacingSimUrlSpec.cpp` | NEW. One suite |
+| `Source/RacingSimTests/Race/RaceLapTrackerSpec.cpp` | Three new suites; RACE-002 `L5` loose expected-message substrings tightened |
+| `Source/RacingSimTests/Race/TrackDefinitionActorSpec.cpp` | One new suite (cache, `MinCornerRadiusCm`, `R1-L3`) |
+| `Source/RacingSimTests/Core/RacingTelemetrySpec.cpp` | The `L2` assertion inverted under this ticket's approved change, plus count-mismatch cases |
+| `Docs/01-Architecture.md`, `Docs/15-ProjectStructure.md` | The shipped result types replace the `URaceResult` sketch |
+
+No `Content/` change, so no `Docs/AssetOwnership.tsv` claim was needed or taken.
+
+**Commands run, and what they returned**
+
+```powershell
+Scripts/Test/Build-Target.ps1 -Target RacingSimEditor   # BUILD_EXITCODE=0, Result: Succeeded, WARNING_ERROR_MATCHES=0
+Scripts/Test/Build-Target.ps1 -Target RacingSim         # BUILD_EXITCODE=0, Result: Succeeded, WARNING_ERROR_MATCHES=0
+Scripts/Test/Run-Smoke.ps1                              # passedTotal=482 failed=0 notRun=0
+```
+
+Logs: `Saved/BuildLogs/RACE-003-Editor-final.log`,
+`Saved/BuildLogs/RACE-003-Game-final.log`.
+Report: `Saved/Automation/RACE-003-Smoke-final/index.json`
+(`reportCreatedOn 2026.08.21-06.41.48`).
+
+**All four artifacts were produced from the COMMITTED tree** (`0b861a0`, working tree
+clean), not from the working copy that first went green.
+
+**Smoke: 482 tests — 480 succeeded, 2 succeededWithWarnings, 0 failed, 0 notRun.** Up from
+RACE-002's 472 by the ten new suites, all `Success` with `warnings=0 errors=0`:
+`RacingSim.Core.UrlEncoding`, `RacingSim.Race.LapNoGateProgress`,
+`RacingSim.Race.LapSectorSplitShape`, `RacingSim.Race.LapInheritedFixes`,
+`RacingSim.Race.ResultFreeze`, `RacingSim.Race.ResultClockFault`,
+`RacingSim.Race.ResultSubmission`, `RacingSim.Race.ResultRestartCycle`,
+`RacingSim.Race.ResultTrackGate`, `RacingSim.Race.TrackValidationCache`.
+
+The warning baseline is unchanged from RACE-002 at **2 suites / 3 warnings**
+(`TrackFailedBakeIsNotRetried` 1, `TrackValidation` 2), both pre-existing and deliberate.
+
+Three earlier runs in this cycle also showed `RacingSim.Tests.NonShippingArtifacts` at 1
+warning, and it is recorded rather than hidden because it moved a bucket: its message is
+"Game linker response file not present at .../RacingSim.exe.rsp, so the Game-target half of
+the non-shipping check did not run", i.e. the Game target had never been built in a fresh
+worktree. It cleared in the final run once `RacingSim Win64 Development` had been built.
+Environmental, not this ticket's, and worth knowing because `succeeded` alone would have
+read 479 → 480 across two runs of identical code — exactly the bucket-shift misreading
+`Run-Smoke.ps1`'s own header warns about.
+
+**Three defects the new tests found in the first implementation, fixed before this report**
+
+1. **The build ID was DOUBLE-encoded.** `MakeSubmissionQueryString` passed
+   `ToUrlQueryValue()`'s already-encoded output into a helper that encoded again, so
+   `%2B` became `%252B` — which decodes to the literal text `%2B`, not to `+`. Caught
+   because `RacingSim.Race.ResultSubmission` asserts the exact expected substring
+   (`build=ci-2026.08.21%2B4417`) rather than only asserting that no bare `+` survived;
+   the weaker check passes happily on a double-encoded string. The helper is now split
+   into encoding and non-encoding halves with the reason at both.
+2. **A clock-faulted result was SUBMITTABLE.** `ERacingRunValidity::InvalidIncomplete` is
+   a *terminal* validity, so `FRacingSimVersionStamp::IsPublishable()` accepted it — which
+   is correct for an ordinarily invalid run (a shortcut has real times and a void verdict,
+   and a leaderboard may record it struck through) but wrong for a run whose clock never
+   started, where every duration is `0.000` rather than a void measurement. That is
+   precisely RACE-001 `M4`'s "zero-duration lap reaching a leaderboard as the fastest ever
+   driven". `IsSubmittable()` gained a separate clock gate; the test was NOT weakened to
+   match, and a control asserts an ordinary invalid run is still submittable so the new
+   gate cannot quietly become "refuse anything not Valid".
+3. **Two gate-bake-failure fixtures did not fail.** Both used a literal `HalfWidthCm = 1.0`
+   as "surely narrow enough", but the fixture's placement tolerance is **sub-centimetre**
+   (~0.83 cm at a 100 cm max segment and a 1500 cm minimum radius), so the gates baked
+   fine and the tests asserted nothing. Both now derive the width from
+   `GetSagittaBoundCm()` so a change to the bake resolution cannot make them stop testing.
+
+**How each criterion was met**
+
+1. `FRacingRaceResult`, frozen once at the `Finished` transition via
+   `URaceResultRecorder::HandleRaceStateChanged`. `RacingSim.Race.ResultFreeze` asserts
+   every committed field and — the part that matters — compares best/last lap and the
+   final time against readings taken from `URaceLapTracker`/`FRaceClock` *before* the
+   transition, so a re-derivation would show up as a difference. Freeze-once is asserted
+   three ways: a second `FinishRace()` is `Redundant`, an explicit second `FreezeResult()`
+   returns false, and entering `Results` 30 s later does not move the time.
+2. `C3-4` closed at `RacingSim::Url::PercentEncodeQueryValue` +
+   `FRacingSimBuildId::ToUrlQueryValue()`, consumed by
+   `FRacingRaceResult::MakeSubmissionQueryString`. `RacingSim.Core.UrlEncoding` pins the
+   encoding; `RacingSim.Race.ResultSubmission` pins it at the call site and asserts no
+   bare `+`, `#`, `@` or space survives, and that exactly eleven `&` separators join
+   twelve fields (so no value smuggled one).
+3. Submission refusal is **structural**: `MakeSubmissionQueryString` clears `OutQuery` and
+   returns false, so an ignored return value yields an empty string rather than a
+   submittable-looking one. Four refusal cases plus a positive control in
+   `RacingSim.Race.ResultSubmission`; a fifth (clock fault) in `ResultClockFault`.
+4. `TRACK-001 M7` closed by `GetCachedValidation()`/`IsValidatedForRace()`, keyed on
+   `ComputeContentHash()`. `RacingSim.Race.TrackValidationCache` asserts 25 further calls
+   run `Validate()` **zero** more times (via `GetValidationRunCount()`, counting rather
+   than timing), that a content edit forces exactly one re-validation, and — closing
+   `TRACK-002 M4` — that `RebuildTrackData()` returns **true** on a gate-bake failure
+   while the cache refuses the track and names the gate bake.
+   `RacingSim.Race.ResultTrackGate` drives the same failure end-to-end through a real
+   `ATrackDefinitionActor` into `CanStartSession()` and `IsSubmittable()`.
+5. `ClearForNewSession()` calls `ResetForNewSession()` on **every** registered tracker
+   (asserted over two, since one cannot distinguish "every" from "the primary"), drops the
+   frozen result, and prunes collected entries. The single delegate binding is
+   per-object rather than per-session, so a restart cannot accumulate one;
+   `GetStateChangeNotificationCount()` makes that assertable and
+   `RacingSim.Race.ResultRestartCycle` pins it. There are no timers and no input bindings
+   to leak — the clock is pull-based.
+6. `R2-M1` **implemented, not documented away**: a forward line crossing refused as a lap
+   boundary now marks the lap invalid, naming the lowest ordered gate not taken.
+   `RacingSim.Race.LapNoGateProgress` drives a full lap outside every gate, asserts the lap
+   was clean beforehand (which is the defect's setup), and asserts the following clean
+   physical lap closes **uncounted** where it previously closed Valid with a two-lap
+   duration. The residual — that duration really does span two laps — is asserted too,
+   rather than left as prose.
+7. `L9` written into `FRacingRaceResult`'s contract and `URaceLapTracker`'s accessors, with
+   the one documented case that breaks the `N - 1` relation stated explicitly. Asserted in
+   both `LapNoGateProgress` and `ResultFreeze`.
+8. `M2` decided by **documenting the shape**, and the documentation is asserted:
+   `RacingSim.Race.LapSectorSplitShape` exercises all three shapes and proves a partial set
+   is never emitted. It also records a fact worth knowing — on an evenly sectored track the
+   case is **unreachable**, because the step needed to hit it exceeds `Advance()`'s
+   quarter-lap teleport bound, so it takes a deliberately short first sector to reach at all.
+9. `L2` closed in `RacingTelemetry.h/.cpp` where the contract lives. Zero splits are
+   vacuously true; `ExpectedSectorCount` gives a consumer the stronger question, which is
+   what makes the vacuous answer safe.
+10. `TRACK-002 M2`: the two comments are reconciled with the actual algebra — the tolerance
+    peaks at `MaxSegment / PI` and falls away on **both** sides, so "understate the radius"
+    is safe only above that threshold — and `Validate()` now enforces the range.
+    `ClampMin` was deliberately **not** raised, because the threshold is data (it depends
+    on the baked max segment), not a constant. The non-monotonicity itself is asserted.
+11. `L6`: direct assertions for `L4` (the near-miss sign convention, pinned by a
+    forward/reverse **pair** — either alone would pass under the opposite convention) and
+    `L5` (the gate-set copy, proved by rebuilding the source set and showing the tracker's
+    snapshot is untouched). `R1-L3` is asserted in `TrackValidationCache`; it required
+    making the latch observable, because its only previous observable was a log line that
+    is deliberately suppressed for the CDO — the only actor this project's Smoke gate can
+    construct. None of the three is left as "closed by construction".
+12. `RacingSim.Race.ResultRestartCycle`: a full session → results → restart → new session
+    cycle, level-free, asserting no stale result, no stale tracker state, no duplicate
+    delegate, a re-zeroed clock, and that configuration (track, trackers) survives.
+13. Both targets, `WARNING_ERROR_MATCHES=0`.
+
+**Open risks and unresolved edge cases**
+
+- **`LapsCompleted` still under-reports for a lap driven outside every gate.** `R2-M1`'s
+  fix makes that lap *invalid*; it does not make it *close* at the line, because closing it
+  would re-open `H1` and manufacture laps during a spin. The lap that eventually closes
+  spans more than one physical lap. Documented in the result contract and asserted.
+- **`ATrackDefinitionActor::Validate()` is only as good as its checks.** The cache
+  faithfully memoises whatever `Validate()` decides; it does not make `Validate()` complete.
+  Track width, surface metadata and track-limit zones are still unowned.
+- **The submission format has no consumer.** `MakeSubmissionQueryString` defines a format
+  rather than talking to a backend (`STREAM-001`+ owns the boundary), so it is testable
+  today but unproven against a real decoder.
+- **Penalties are structurally absent.** `Version.Penalties` is left clean because nothing
+  in the project issues a penalty; the first ticket that does owns wiring it in.
+- **`bBakeAttempted` is still a has-been-baked flag, not a dirty flag.** A track whose
+  spline is mutated without a rebuild can present a stale bake, and the validity cache is
+  keyed on a hash that reads that stale bake's effective values. Pre-existing, recorded at
+  TRACK-002, and unchanged here.
+
+**Strongest counter-case against this design.** `URaceResultRecorder` binds a delegate,
+and this project spent RACE-001 and RACE-002 arguing that it should not — `URaceLapTracker`
+subscribes to nothing on the explicit grounds that a missed unbind is the stale-delegate
+failure the rules name. The counter-argument is that "freeze the result once, at the
+`Finished` transition" is a statement about an *instant*: a poll answers a frame late, and
+an owner that stops polling between `Finished` and `Restart` never freezes at all — a
+result that silently fails to exist is worse than a delegate that might leak. The risk is
+mitigated three ways (`AddUObject` so the invocation list drops a collected recorder, an
+explicit stored handle removed in `BeginDestroy()`, and a binding whose lifetime is the
+object's rather than the session's) and the third is asserted. But it *is* a delegate,
+and if a future owner creates a recorder per session instead of per director, the
+accumulation this design prevents by construction comes straight back.
+
+**Rollback.** The two new runtime files (`RaceResult.*`, `RacingSimUrl.h`) are purely
+additive — deleting them and their two spec files restores RACE-002's behaviour exactly.
+The inherited-finding fixes are independent of them and of each other: reverting
+`RaceLapTracker.*` re-opens `R2-M1` only, reverting `TrackDefinitionActor.*` re-opens
+`M7`/`M4`/`M2` only, and reverting `RacingTelemetry.*` re-opens `L2` only. Each has a
+suite that fails on revert, which is the intended tripwire.
+
+### RACE-003 — review findings, pass 1
+
+`code-reviewer` returned **APPROVED WITH FOLLOW-UPS** against `0b861a0`/`914f7c6`. No
+HIGH or BLOCKER findings; nothing here blocks merge from the review gate. Independently
+verified: the three self-reported defects (double-encoded build ID, submittable
+clock-faulted result, two gate-bake fixtures that asserted nothing) are genuinely fixed;
+`R2-M1`'s fix does not re-open `H1` (traced — every path that un-satisfies gate 0 already
+records a fault, so the new call is a no-op for the spin/U-turn cases `H1` closed); the
+delegate-binding design in `URaceResultRecorder` is a deliberate, adequately mitigated
+departure from RACE-001/RACE-002's no-delegates pattern, accepted rather than a defect.
+
+| ID | Sev | Finding | Disposition |
+| --- | --- | --- | --- |
+| M1 | MEDIUM | `CanStartSession()` reads the recorder's cached snapshot `bTrackValidated`, refreshed only by `SetTrack()`/`SetTrackSnapshot()`/`FreezeResult()` — not by the cheap actor-side cache `FreezeResult()` itself uses for exactly this reason. A track edited/re-baked after `SetTrack()` starts a session on a stale `true`, even though the criterion this closes is specifically "cheaply refuse to start a session on an invalid track" | **Routed to `UI-001`** — the first ticket to wire an `ARaceDirector`. One-line fix: `CanStartSession()` reads the actor's cache directly when `Track != nullptr` |
+| M2 | MEDIUM | `FRacingRaceResult`'s read surface (`GetValidity`, `HasValidLap`, `IsSubmittable`, `MakeSubmissionQueryString`, `ToString`) is plain C++ on a `USTRUCT(BlueprintType)` — none of it is Blueprint/UMG-reachable, same class of gap as CORE-002 `M-3` | **Routed to `UI-001`, batched with CORE-002 `M-3`** — one function library closes both |
+| M3 | MEDIUM | `AreSectorsConsistent()`'s default (`ExpectedSectorCount = INDEX_NONE`) reads `true` unqualified for splits withheld on an N-sector track, weakening the reachable case to fix the one `Validate()` already refuses outright (a sectorless track) | **Routed to `UI-001`** — require `ExpectedSectorCount` at call sites that have it, or accept the weak default explicitly |
+| M4 | MEDIUM | Every session-state field on `URaceResultRecorder` is a non-`Transient` `UPROPERTY` — third file with the same defect | **No new owner — folded into the existing `RACE-001` `L4` / `RACE-002` `L3` batch decision below**, not answered separately |
+| M5 | evidence | The three placed-level `ProductFilter` tests (`TrackPrototypeLevelPostLoad`/`Identity`/`Gates`) were not run for this ticket, and this ticket added a new `Validate()` failure mode (`MinCornerRadiusCm` range check) that only those tests exercise against the real graybox asset | **Not a code finding — a test-gate instruction.** `test-engineer` must run the three `ProductFilter` level tests in addition to Smoke before this ticket can merge |
+| L1 | LOW | The RACE-002 `M2` "unreachable on an evenly sectored track" claim holds only for ≤4 evenly spaced sectors, not in general — at N≥5 sectors the case is reachable by an ordinary large step, inside the teleport guard's bound | Fix wording on next touch: "≤ 4 evenly spaced sectors" |
+| L2 | LOW | `RacingSimUrl.h`'s reserved buffer size (`Len * 3`) undershoots for non-ASCII `TCHAR`s (up to 9 UTF-8 output bytes each); correctness unaffected (`FString` grows), but the "allocation-free" comment is false for non-ASCII input | Fix on next touch: reserve `Len * 9`, or soften the comment |
+| L3 | LOW | `FindFirstMissedGateIndex()` scans from gate index 0, which could nominally name the start/finish gate as "missed" — unreachable today only because every path reaching it already recorded a different fault first (first-fault-wins), a coupling nothing asserts | Fix on next touch: scan from `StartFinishGateIndex + 1` to match the predicate that gates this call, or assert the coupling |
+| L4 | LOW | `DetachFromStateMachine()`'s header comment implies re-attach is possible ("call it early to hand a session over"), but binding only happens in `Create()` — a detached recorder is permanently inert | Fix on next touch: add `AttachToStateMachine()`, or correct the comment |
+| L5 | LOW | `BeginDestroy()` dereferences `StateMachine` during GC — safe today (the `AddUObject` binding is weak, and `URaceStateMachine::BeginDestroy` already clears its own delegate, making the call a no-op), but a cross-object touch inside a destruction callback | **Accepted as-is, recorded so it is not re-litigated.** Guard with `IsValid(StateMachine)` only if this pattern recurs somewhere less safe |
+| L6 | LOW | `MinCornerRadiusCm`'s `ClampMin` stays at `1.0` while `Validate()` now carries the real (data-dependent) threshold check, and `PostEditChangeProperty` rebuilds without validating — so the editor details panel gives no feedback on an unsafe value until `BeginPlay` or a cache read | Fix on next touch: raise `ClampMin` to a conservative static floor (e.g. `100.0` — far above any plausible bake's real threshold, far below any sane authored radius) to close the editor-UI half at zero cost, without pretending it's the real check |
+| L7 | LOW | TRACK-001 `M7`'s pass-2 `L-c` clause (`ComputeContentHash()` still hashes a failed bake, so `GetContentVersion().IsPopulated()` reads `true` for an unbakeable track) was dropped when `M7` was restated into this ticket's table. Substantively closed at the submission boundary (`Validate()`/`IsSubmittable()` both refuse it), but the `IsPopulated()` claim itself is unchanged and could still mislead a consumer other than submission (e.g. telemetry stamping) | **Routed to `UI-001`/`RACE-004`** — record explicitly rather than let the clause vanish between tables a second time |
+| L8 | LOW | `RegisterLapTracker()` returns `false` for a documented no-op (already registered), conflating "failed" with "already true"; a `meta = (ClampMin=…)` on a `BlueprintReadOnly` non-editable property has no effect | Cosmetic; fix on next touch |
+| L9 | LOW | No `check(IsInGameThread())` anywhere in `RaceResult.cpp`, despite being game-thread-only by construction | **No new owner — folded into the existing `RACE-001` `L8` / `RACE-002` `L7` batch decision below** |
+
+**`RACE-003` `M4` and `L9` have no new owner**: they are the same two defects (non-`Transient`
+session `UPROPERTY`s; missing `IsInGameThread` guard) in a **third** file, and are folded
+into the existing `RACE-001` `L4`/`RACE-002` `L3` and `RACE-001` `L8`/`RACE-002` `L7`
+batch decisions respectively rather than answered a third time separately.
+
+**`RACE-003` `L1`, `L2`, `L3`, `L4`, `L6` and `L8` are fix-on-next-touch**, added to the
+running list alongside RACE-002's `L4`/`L5`/`L8`/`R2-L1`/`R2-L2`.
 
 ### VEH-005 — findings inherited from TRACK-001
 
@@ -2655,6 +2887,18 @@ boundary exists yet — `STREAM-001`+).
 | ID | Finding | What UI-001 must do |
 | --- | --- | --- |
 | L3 (TRACK-001 pass 1) | `FTrackCenterline` and `FTrackCenterlineQuery` (`Source/RacingSim/Race/TrackCenterline.h`) are `USTRUCT(BlueprintType)` but every query is a plain-C++ member function, and a `USTRUCT` member function cannot be a `UFUNCTION` — so none of the centerline query API is reachable from Blueprint or UMG. Same class of gap as CORE-002's M-3 | Extend the same fix: a `BlueprintPure` function library wrapping the query surface the HUD actually needs (progress distance, lateral offset, sector). Keep it beside the type it wraps (`Source/RacingSim/Race/`), not in `UI/`, for the reason CORE-002's M-3 row gives |
+
+### UI-001 — findings inherited from RACE-003
+
+Raised by `code-reviewer` against RACE-003 (`0b861a0`), all marked non-blocking and
+routed here. Read before writing `UI-001`'s acceptance criteria.
+
+| ID | Finding | What UI-001 must do |
+| --- | --- | --- |
+| M1 (RACE-003 pass 1) | `URaceResultRecorder::CanStartSession()` reads a cached snapshot of track validity, refreshed only by `SetTrack()`/`SetTrackSnapshot()`/`FreezeResult()` — not by the cheap actor-side validity cache RACE-003 built for exactly this purpose. A track edited/re-baked after `SetTrack()` starts a session on a stale `true`, which is the opposite of what "cheaply refuse to start a session on an invalid track" (TRACK-001 `M7`) was meant to guarantee once a real `ARaceDirector` calls it | `CanStartSession()` must read `Track->GetCachedValidation()` directly when a track reference is held, falling back to the stored snapshot only on the level-free/no-actor path. Add an assertion that mutating the track after `SetTrack()` flips `CanStartSession()`'s answer without a redundant re-`SetTrack()` call |
+| M2 (RACE-003 pass 1) | `FRacingRaceResult`'s entire read surface (`GetValidity`, `HasValidLap`, `IsSubmittable`, `MakeSubmissionQueryString`, `ToString`) is plain C++ on a `USTRUCT(BlueprintType)` — none of it is reachable from Blueprint or UMG, the same class of gap as CORE-002's `M-3` and TRACK-001's `L3` (above) | One `BlueprintPure` function library closes all three — CORE-002's telemetry frame, TRACK-001's centerline query surface, and RACE-003's frozen result. Keep it beside `Race/`, not `UI/` |
+| M3 (RACE-003 pass 1) | `FRacingLapTiming::AreSectorsConsistent()`'s default parameter (`ExpectedSectorCount = INDEX_NONE`) reads `true` unqualified for a lap that withheld splits on an N-sector track — the fix for RACE-002's `L2` (a legally sectorless track) weakened the answer for the reachable case (splits dropped mid-session) by leaving the default permissive | Pass `ExpectedSectorCount` explicitly at every HUD/results call site that has the track's real sector count in scope; do not rely on the permissive default |
+| L7 (RACE-003 pass 1) | `ComputeContentHash()` (`TrackDefinitionActor`) still hashes a failed bake, so `GetContentVersion().IsPopulated()` reads `true` for a track that cannot actually be raced. Closed at the submission boundary (`Validate()`/`IsSubmittable()` both correctly refuse it), but the `IsPopulated()` claim itself is unchanged and could mislead a consumer other than submission — telemetry stamping being the obvious one | Do not treat `IsPopulated()` as "safe to race" anywhere in the HUD/telemetry path; use `Validate()`/the cached validity result for that question. Shared obligation with `RACE-004` |
 
 ---
 

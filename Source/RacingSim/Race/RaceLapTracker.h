@@ -246,6 +246,20 @@ struct RACINGSIM_API FRaceLapTrackerUpdate
 	UPROPERTY(BlueprintReadOnly, Category = "Race|Lap")
 	bool bTeleportDetected = false;
 
+	/**
+	 * Forward, legal crossings of the START/FINISH gate during this step that were
+	 * REFUSED as lap boundaries because the lap in progress held no ordered gate beyond
+	 * the line (Advance()'s rule 7).
+	 *
+	 * RACE-002 finding R2-M1 asked for this signal by name: "requires RaceLapTracker to
+	 * expose that refusal, which it currently does not". A refusal is not an error -- it
+	 * is what stops a spin on the line manufacturing laps -- but it IS the moment the lap
+	 * in progress is marked invalid, so a caller reconciling lap counts against line
+	 * crossings can now see why the two differ instead of inferring it.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Race|Lap")
+	int32 LineCrossingsRefusedAsBoundary = 0;
+
 	/** The lap that closed during this step. LapNumber == 0 when none did. */
 	UPROPERTY(BlueprintReadOnly, Category = "Race|Lap")
 	FRacingLapTiming ClosedLap;
@@ -379,14 +393,26 @@ public:
 	 *      NEVER authorises a lap;
 	 *   7. a forward crossing of the line is a LAP BOUNDARY only when an ordered gate
 	 *      beyond the line is held (HasOrderedGateProgress()); otherwise it re-triggers
-	 *      gate 0 and the lap in progress continues untouched, so a spin on the line or a
-	 *      U-turn back to it cannot manufacture laps. Reverse crossings of the line rewind
-	 *      gate 0 the same way an ordinary gate is rewound, so the net this class derives
-	 *      from an oscillating crossing stream is the SAME net TRACK-002 derives from it.
+	 *      gate 0 and the lap in progress KEEPS ITS OPEN TIME, its sector cursor and its
+	 *      recorded fault, so a spin on the line or a U-turn back to it cannot manufacture
+	 *      laps. Reverse crossings of the line rewind gate 0 the same way an ordinary gate
+	 *      is rewound, so the net this class derives from an oscillating crossing stream is
+	 *      the SAME net TRACK-002 derives from it;
+	 *   8. a refusal under rule 7 MARKS THE LAP IN PROGRESS INVALID, naming the lowest
+	 *      ordered gate it has not taken (RACE-002 finding R2-M1, decided at RACE-003).
+	 *      Without this, a lap driven entirely outside every gate rectangle continued
+	 *      silently into the next physical lap and closed VALID one crossing later with a
+	 *      two-lap duration. First-fault-wins means this changes nothing for a spin or a
+	 *      U-turn, both of which are already invalid by then from the reverse crossing
+	 *      that got the car back behind the line.
 	 *
-
-	 * Allocation-free in the steady state. Crossing results are collected into an inline
-	 * buffer; only a lap CLOSE allocates, once, for that lap's sector array.
+	 * ALLOCATION. Free in the steady state on the INPUT side: crossing results are
+	 * collected into an inline buffer sized for a hitch through a chicane. A lap CLOSE is
+	 * not free and the earlier version of this comment understated it (finding L8): the
+	 * closing lap's sector array is copied into LastCompletedLap, possibly into
+	 * BestValidLap, and into the returned Update.ClosedLap -- three or four arrays for one
+	 * lap boundary, once per lap rather than once per frame. CORE-002's M-4 (an inline
+	 * allocator sized to the real sector count) is the fix and is routed to UI-001.
 	 *
 	 * @param WorldLocationCm      the car's position now, centimetres.
 	 * @param CenterlineDistanceCm its arc-length position now, centimetres. Progress and
@@ -428,15 +454,52 @@ public:
 	// Reads
 	// =======================================================================
 
-	/** Laps completed VALIDLY this session. This is the number a result publishes. */
+	/**
+	 * ===========================================================================
+	 * THE LAP-NUMBER CONVENTION (RACE-002 finding L9, written down at RACE-003)
+	 * ===========================================================================
+	 *
+	 * These are THREE DIFFERENT NUMBERS and conflating any two of them is a bug. The
+	 * convention was correct and deliberate from RACE-002 and recorded nowhere, which is
+	 * how a HUD ends up inventing its own; it is now part of the published data contract
+	 * (see FRacingRaceResult in Race/RaceResult.h, which carries all three).
+	 *
+	 * THE FIRST FORWARD CROSSING OF THE LINE **OPENS** LAP 1 AND CLOSES NOTHING. There is
+	 * no lap before it -- the car rolls off a grid that sits BEHIND the line, so the
+	 * out-lap is not a lap and has no time. Every later forward crossing that qualifies
+	 * as a lap boundary closes one lap and opens the next in the same instant.
+	 *
+	 * The direct consequence, and the off-by-one L9 is about: while lap N is being timed,
+	 *
+	 *     GetCurrentLapNumber()  == N          (the lap on the HUD's "LAP" readout)
+	 *     GetLapsCompleted()     == N - 1      (laps that ended at the line, valid or not)
+	 *     GetValidLapsCompleted() <= N - 1     (laps that ended CLEAN)
+	 *
+	 * and before the first crossing all three are 0. GetLapsCompleted() is therefore the
+	 * one to use in the ranking key `lap * trackLength + splineDistance`
+	 * (Docs/03-TrackRaceUI.md rule 7) -- using GetCurrentLapNumber() there would rank a
+	 * car a full lap ahead of where it is.
+	 *
+	 * ONE DOCUMENTED CASE BREAKS THE `N - 1` RELATION, and a consumer must not assume it
+	 * cannot happen: a lap driven entirely outside every gate rectangle produces a
+	 * forward line crossing that is REFUSED as a boundary (Advance()'s rule 7), so the
+	 * lap in progress continues rather than closing. GetLapsCompleted() then sits one
+	 * lower than the number of physical laps driven, and the lap that eventually closes
+	 * spans more than one physical lap. RACE-003 made that lap INVALID rather than
+	 * leaving it publishable -- see the refusal branch in Advance() and
+	 * FRaceLapTrackerUpdate::LineCrossingsRefusedAsBoundary -- so it can never reach
+	 * GetBestValidLap(), but it can reach GetLastCompletedLap() and a HUD.
+	 */
+
+	/** Laps completed VALIDLY this session. This is the number a result publishes. See the convention above. */
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	int32 GetValidLapsCompleted() const { return ValidLapsCompleted; }
 
-	/** Laps that ended at the line this session, valid or not. Ranking and HUD only. */
+	/** Laps that ended at the line this session, valid or not. Ranking and HUD only. See the convention above. */
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	int32 GetLapsCompleted() const { return LapsCompleted; }
 
-	/** 1-based ordinal of the lap in progress, 0 before the first line crossing. */
+	/** 1-based ordinal of the lap in progress, 0 before the first line crossing. See the convention above. */
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	int32 GetCurrentLapNumber() const { return CurrentLapNumber; }
 

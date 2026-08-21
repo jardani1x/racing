@@ -1917,3 +1917,317 @@ bool FTrackDefinitionFixtureRestoreTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+// ===========================================================================
+// RACE-003: the cached validity, the MinCornerRadiusCm range, and R1-L3
+// ===========================================================================
+//
+// Three inherited findings converge on this file and are asserted together because they
+// share one fixture and one bake:
+//
+//   TRACK-001 M7  -- Validate()'s answer must be CACHED against the content hash it was
+//                    computed against, so a session start can cheaply refuse an invalid
+//                    track instead of re-running ~25 branches and formatting FStrings.
+//   TRACK-002 M4  -- and that cache must cover a GATE-bake failure, not just a centerline
+//                    one, because RebuildTrackData() returns true either way.
+//   TRACK-002 M2  -- MinCornerRadiusCm's guard is non-monotonic, two in-repo comments
+//                    disagreed about which direction is safe, and Validate() must now
+//                    enforce the range in which the safe direction is actually safe.
+//   RACE-002 L6   -- plus the third of the three closed-by-construction fixes RACE-002
+//                    shipped without an assertion: R1-L3's clamp-report re-arm.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTrackDefinitionValidationCacheTest,
+	"RacingSim.Race.TrackValidationCache",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FTrackDefinitionValidationCacheTest::RunTest(const FString& Parameters)
+{
+	using namespace TrackDefinitionSpecPrivate;
+
+	FTrackSpecCircleFixture Fixture;
+	ATrackDefinitionActor* Track = Fixture.Track;
+	if (!Track)
+	{
+		AddError(TEXT("Class default object for ATrackDefinitionActor is unavailable."));
+		return false;
+	}
+
+	SetThreeSectors(*Track);
+	Track->RebuildTrackData();
+
+	// =======================================================================
+	// TRACK-001 M7: the cache is a cache
+	// =======================================================================
+	{
+		const int32 RunsBefore = Track->GetValidationRunCount();
+
+		FString Reason;
+		TestTrue(FString::Printf(TEXT("The fixture track validates: %s"), *Reason),
+			Track->GetCachedValidation(Reason));
+		TestTrue(TEXT("...with no reason recorded"), Reason.IsEmpty());
+
+		const int32 RunsAfterFirst = Track->GetValidationRunCount();
+		TestEqual(TEXT("M7: the first call runs Validate() exactly once"), RunsAfterFirst, RunsBefore + 1);
+
+		TestTrue(TEXT("M7: the cache is populated"), Track->HasValidationCache());
+		TestTrue(TEXT("M7: ...and keyed on the content hash it was computed against"),
+			Track->GetValidatedContentHash() == Track->ComputeContentHash());
+
+		// THE ASSERTION THAT MAKES IT A CACHE. Counting runs is the only honest way to
+		// state this -- timing it would measure the machine, and this project's automation
+		// gate shares a build host with other agents. Same reasoning
+		// GetBakeAttemptCount() records for RacingSim.Race.TrackFailedBakeIsNotRetried.
+		for (int32 Call = 0; Call < 25; ++Call)
+		{
+			Track->IsValidatedForRace();
+		}
+
+		TestEqual(TEXT("M7: twenty-five further calls run Validate() ZERO more times"),
+			Track->GetValidationRunCount(), RunsAfterFirst);
+	}
+
+	// =======================================================================
+	// M7: and it NOTICES a content change, rather than going stale
+	// =======================================================================
+	//
+	// A cache that never invalidates is worse than no cache: it would let a track edited
+	// into an invalid state keep reporting the answer it gave before the edit, which is
+	// exactly the failure a session-start check exists to prevent.
+	{
+		const int32 RunsBefore = Track->GetValidationRunCount();
+		const uint32 HashBefore = Track->GetValidatedContentHash();
+
+		// A hashed authored field that does not break anything, so the ANSWER stays true
+		// and only the KEY moves -- isolating "did the cache notice" from "did the verdict
+		// change".
+		Track->ResetSampleSpacingCm = 3000.0;
+		Track->RebuildTrackData();
+
+		TestTrue(TEXT("M7: the track still validates after a harmless edit"), Track->IsValidatedForRace());
+		TestEqual(TEXT("M7: ...but the edit forced exactly one re-validation"),
+			Track->GetValidationRunCount(), RunsBefore + 1);
+		TestTrue(TEXT("M7: ...and the cache is now keyed on the NEW hash"),
+			Track->GetValidatedContentHash() != HashBefore);
+
+		Track->ResetSampleSpacingCm = 2500.0;
+		Track->RebuildTrackData();
+		TestTrue(TEXT("M7: reverting the edit still validates"), Track->IsValidatedForRace());
+	}
+
+	// =======================================================================
+	// TRACK-002 M4: the cache covers a GATE-bake failure
+	// =======================================================================
+	//
+	// The case the finding is about, and the reason a cache keyed only on the centerline
+	// would have been useless: RebuildCheckpointGates() records CheckpointGateBakeError and
+	// returns VOID -- deliberately, so a mis-authored gate cannot take the centerline (and
+	// therefore progress and ranking) down with it -- so RebuildTrackData() returns TRUE.
+	// Neither IsTrackDataBuilt() nor DidPostLoadBakeSucceed() can see it, and gates are what
+	// decide which laps count.
+	{
+		const double LengthCm = Track->GetTrackLengthCm();
+		const TArray<FRacingCheckpointGateSpec> SavedSpecs = Track->CheckpointGateSpecs;
+
+		// DERIVED FROM THE BAKE, NOT HARD-CODED. Build() refuses a gate whose half-width is
+		// at or below the placement tolerance, which on this fixture is SUB-CENTIMETRE
+		// (a ~100 cm max segment at a 1500 cm minimum radius gives a sagitta under 1 cm).
+		// A literal "1.0 cm, surely narrow enough" silently PASSED the bake in the first
+		// draft of this test and the suite caught it -- so the number is derived, and a
+		// future change to the bake resolution cannot make this case stop testing anything.
+		const double ToleranceCm =
+			Track->GetCenterline().GetSagittaBoundCm(Track->MinCornerRadiusCm);
+		const double NarrowHalfWidthCm = ToleranceCm * 0.5;
+
+		TestTrue(TEXT("The derived narrow half-width is positive but under the placement tolerance"),
+			NarrowHalfWidthCm > 0.0 && NarrowHalfWidthCm < ToleranceCm);
+
+		TArray<FRacingCheckpointGateSpec> NarrowSpecs;
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			FRacingCheckpointGateSpec Spec;
+			Spec.GateId = (Index == 0)
+				? FName(TEXT("Gate.StartFinish"))
+				: FName(*FString::Printf(TEXT("Gate.%02d"), Index));
+			Spec.DistanceAlongCm = (Index == 0) ? 0.0 : LengthCm * static_cast<double>(Index) / 4.0;
+
+			// Half the placement tolerance: the gate's entire margin is consumed by the
+			// baked model's own systematic inward error, so it cannot be trusted to stand
+			// where the true curve is and FRacingCheckpointGateSet::Build refuses it.
+			Spec.HalfWidthCm = NarrowHalfWidthCm;
+			Spec.HalfHeightCm = 500.0;
+			Spec.LegalDirection = ERacingGateDirection::Forward;
+			NarrowSpecs.Add(Spec);
+		}
+
+		Track->CheckpointGateSpecs = NarrowSpecs;
+
+		TestTrue(TEXT("M4: RebuildTrackData() returns TRUE despite the gate bake failing"),
+			Track->RebuildTrackData());
+		TestTrue(TEXT("M4: ...and IsTrackDataBuilt() agrees, because the CENTERLINE baked fine"),
+			Track->IsTrackDataBuilt());
+		TestFalse(TEXT("M4: ...while the gate set did not build at all"),
+			Track->GetCheckpointGates().IsValid());
+
+		// THE CACHE IS NOT FOOLED. This is the criterion: the cached-validity flag covers
+		// the gate-bake-failed case as well as the centerline-bake-failed one.
+		FString Reason;
+		TestFalse(TEXT("M4+M7: the CACHED validity refuses the track"), Track->GetCachedValidation(Reason));
+		TestTrue(FString::Printf(TEXT("...naming the gate bake rather than a downstream symptom: %s"), *Reason),
+			Reason.Contains(TEXT("Checkpoint gates failed to bake")));
+
+		// The refusal is sticky under the cache too: a second read must give the same
+		// answer without re-running, or a caller polling it would see it flicker.
+		const int32 RunsAfterFailure = Track->GetValidationRunCount();
+		TestFalse(TEXT("M4: a second read is still a refusal"), Track->IsValidatedForRace());
+		TestEqual(TEXT("...served from the cache"), Track->GetValidationRunCount(), RunsAfterFailure);
+
+		// Repairing it flips the cached answer, which is the other half of "the cache
+		// notices". A cache that only ever went from valid to invalid would strand a track
+		// its author had just fixed.
+		Track->CheckpointGateSpecs = SavedSpecs;
+		Track->RebuildTrackData();
+		TestTrue(TEXT("M4: removing the bad gates re-validates the track"), Track->IsValidatedForRace());
+	}
+
+	// =======================================================================
+	// TRACK-002 M2: MinCornerRadiusCm's guard is non-monotonic, and the range
+	// Validate() now enforces is the one in which "understate it" is safe
+	// =======================================================================
+	{
+		const double SavedRadiusCm = Track->MinCornerRadiusCm;
+		const FTrackCenterline& Centerline = Track->GetCenterline();
+		const double MaxSegmentCm = Centerline.GetMaxSegmentLengthCm();
+		const double ThresholdCm = MaxSegmentCm / UE_DOUBLE_PI;
+
+		TestTrue(TEXT("The fixture bakes to a positive maximum segment length"), MaxSegmentCm > 0.0);
+
+		// -- THE NON-MONOTONICITY ITSELF, asserted rather than argued --------
+		//
+		// This is the fact the two in-repo comments disagreed about. The placement tolerance
+		// PEAKS at R == MaxSegment / PI and falls away on BOTH sides, so "a smaller radius
+		// gives a stricter check" is true above the peak and FALSE below it.
+		const double AtPeakCm = Centerline.GetSagittaBoundCm(ThresholdCm);
+		const double AboveCm = Centerline.GetSagittaBoundCm(ThresholdCm * 1.5);
+		const double BelowCm = Centerline.GetSagittaBoundCm(ThresholdCm * 0.5);
+
+		TestTrue(TEXT("M2: the tolerance peaks at MaxSegment/PI -- a LARGER radius gives a smaller one"),
+			AboveCm < AtPeakCm);
+		TestTrue(TEXT("M2: ...and a SMALLER radius ALSO gives a smaller one, which is the "
+					  "non-monotonicity the two comments disagreed about"),
+			BelowCm < AtPeakCm);
+		TestTrue(TEXT("M2: below the peak the tolerance IS the radius, so understating the radius "
+					  "directly weakens the gate-width check"),
+			FMath::IsNearlyEqual(BelowCm, ThresholdCm * 0.5, 1.0e-9));
+
+		// -- Validate() refuses the non-monotonic region ----------------------
+		Track->MinCornerRadiusCm = ThresholdCm * 0.9;
+		TestTrue(TEXT("A sub-threshold radius still BAKES: this is not a bake failure"),
+			Track->RebuildTrackData());
+		TestTrue(TEXT("...and the gates still build, so nothing else is what fails below"),
+			Track->GetCheckpointGates().IsValid());
+
+		FString BelowReason;
+		TestFalse(TEXT("M2: a radius at or below MaxSegment/PI does NOT validate"),
+			Track->GetCachedValidation(BelowReason));
+		TestTrue(FString::Printf(TEXT("...and the reason names the field: %s"), *BelowReason),
+			BelowReason.Contains(TEXT("MinCornerRadiusCm")));
+		TestTrue(TEXT("...explaining that a smaller radius makes the check WEAKER, not stricter"),
+			BelowReason.Contains(TEXT("WEAKER")));
+
+		// -- Just above the threshold is accepted: the boundary is where it says -
+		//
+		// Without this control the rejection above would be satisfied by a check that had
+		// simply started refusing every radius.
+		Track->MinCornerRadiusCm = ThresholdCm * 1.1;
+		Track->RebuildTrackData();
+
+		FString AboveReason;
+		TestTrue(FString::Printf(TEXT("M2: a radius just ABOVE the threshold validates: %s"), *AboveReason),
+			Track->GetCachedValidation(AboveReason));
+
+		// And the shipped default clears the threshold by a wide margin on a normally baked
+		// track -- the two numbers are not close, which is what makes the guard a tripwire
+		// for a degraded bake rather than a constraint on authoring.
+		Track->MinCornerRadiusCm = SavedRadiusCm;
+		Track->RebuildTrackData();
+		TestTrue(FString::Printf(TEXT("M2: the shipped default (%f cm) clears the threshold (%f cm) "
+			"by a wide margin"), SavedRadiusCm, ThresholdCm), SavedRadiusCm > ThresholdCm * 10.0);
+		TestTrue(TEXT("...and the track validates at it"), Track->IsValidatedForRace());
+	}
+
+	// =======================================================================
+	// RACE-002 L6 / TRACK-002 R1-L3: the clamp report is re-armed by the
+	// AUTHORED path, which never calls the generator
+	// =======================================================================
+	//
+	// R1-L3's fix was that bGateClampLogged is re-armed on TWO paths: a generated bake that
+	// places every requested gate, AND any bake that uses authored specs. Without the
+	// second, a generated -> authored -> generated round trip left the SECOND clamp
+	// unreported, and the header's own contract described something the code did not do.
+	//
+	// It shipped with no assertion because it was, in this environment, unassertable: the
+	// only observable was a log line, and the only actor a SmokeFilter test can obtain is
+	// the CDO, for which the log is deliberately suppressed (R1-M2 -- a template is not a
+	// track). RACE-003 made the latch itself observable
+	// (IsGeneratedGateClampReportArmed()) precisely so this can be pinned.
+	{
+		const double SavedSpacingCm = Track->CenterlineSampleSpacingCm;
+		const double LengthCm = Track->GetTrackLengthCm();
+		const TArray<FRacingCheckpointGateSpec> SavedSpecs = Track->CheckpointGateSpecs;
+
+		// 1. A clean generated bake places every requested gate, so the report is ARMED.
+		Track->CheckpointGateSpecs.Reset();
+		Track->CenterlineSampleSpacingCm = SavedSpacingCm;
+		Track->RebuildTrackData();
+		TestTrue(TEXT("R1-L3: a clean generated bake leaves the clamp report armed"),
+			Track->IsGeneratedGateClampReportArmed());
+		TestTrue(TEXT("...with nothing clamped away"), Track->GetGeneratedGateClampNote().IsEmpty());
+
+		// 2. A coarse bake clamps the generated set, which CONSUMES the one-shot report.
+		Track->CenterlineSampleSpacingCm = LengthCm * 10.0;
+		Track->RebuildTrackData();
+		TestFalse(TEXT("R1-L3: a clamped generated bake consumes the one-shot report"),
+			Track->IsGeneratedGateClampReportArmed());
+		TestFalse(TEXT("...and records what it threw away"), Track->GetGeneratedGateClampNote().IsEmpty());
+
+		// 3. THE FIX. An AUTHORED bake never calls the generator, so there is no clamp to
+		//    suppress a report of -- and it must therefore RE-ARM. Before R1-L3 this path
+		//    did not, and the round trip below swallowed the second clamp entirely.
+		TArray<FRacingCheckpointGateSpec> AuthoredSpecs;
+		for (int32 Index = 0; Index < 4; ++Index)
+		{
+			FRacingCheckpointGateSpec Spec;
+			Spec.GateId = FName(*FString::Printf(TEXT("Authored.%02d"), Index));
+			Spec.DistanceAlongCm = (Index == 0) ? 0.0 : LengthCm * static_cast<double>(Index) / 4.0;
+			Spec.HalfWidthCm = 900.0;
+			Spec.HalfHeightCm = 500.0;
+			Spec.LegalDirection = ERacingGateDirection::Forward;
+			AuthoredSpecs.Add(Spec);
+		}
+		Track->CheckpointGateSpecs = AuthoredSpecs;
+		Track->RebuildTrackData();
+
+		TestTrue(TEXT("R1-L3: an AUTHORED bake re-arms the clamp report, because the generator was "
+					  "never in play"),
+			Track->IsGeneratedGateClampReportArmed());
+		TestTrue(TEXT("...and clears any stale clamp note left by the generated path"),
+			Track->GetGeneratedGateClampNote().IsEmpty());
+
+		// 4. Back to generated, still coarse: the SECOND clamp is reported rather than
+		//    swallowed. This is the assertion that would have failed before R1-L3.
+		Track->CheckpointGateSpecs.Reset();
+		Track->RebuildTrackData();
+		TestFalse(TEXT("R1-L3: the SECOND clamp consumes the re-armed report -- it was NOT swallowed"),
+			Track->IsGeneratedGateClampReportArmed());
+		TestFalse(TEXT("...and is recorded again"), Track->GetGeneratedGateClampNote().IsEmpty());
+
+		Track->CenterlineSampleSpacingCm = SavedSpacingCm;
+		Track->CheckpointGateSpecs = SavedSpecs;
+		Track->RebuildTrackData();
+	}
+
+	return true;
+}

@@ -248,13 +248,53 @@ public:
 	 * converts the baked centerline's MAXIMUM segment length into a real distance: the
 	 * sagitta, i.e. how far inside the true authored curve a baked position can sit
 	 * (FTrackCenterline::GetSagittaBoundCm). Every gate's half-width must exceed that
-	 * bound, so understating the radius here is the one input that can let a gate be
-	 * baked narrower than the model's own systematic error.
+	 * bound, so this field sets the strictness of the gate-width check.
 	 *
 	 * The bias is one-directional -- always inward, never outward -- so it does not
 	 * average away over a lap. TRACK-001 recorded that as its strongest counter-case and
 	 * required TRACK-002 to assert it rather than inherit it; this field plus
 	 * RacingSim.Race.CenterlinePolylineBias is that assertion.
+	 *
+	 * =======================================================================
+	 * WHICH DIRECTION IS SAFE (TRACK-002 finding M2, reconciled at RACE-003)
+	 * =======================================================================
+	 *
+	 * TWO IN-REPO COMMENTS USED TO DISAGREE ABOUT THIS, and both were half right.
+	 * Scripts/Content/Author-PrototypeGrayboxLevel.py said understating the radius is the
+	 * safe direction because it makes the derived tolerance larger; the paragraph that
+	 * used to stand here said understating is "the one input that can let a gate be baked
+	 * narrower than the model's own systematic error". They are describing opposite sides
+	 * of a function that is NOT MONOTONIC, and neither said so.
+	 *
+	 * Write S for GetMaxSegmentLengthCm() and R for this field. GetSagittaBoundCm is
+	 *
+	 *     tolerance(R) = min( R * (1 - cos(min(S/R, PI) / 2)),  S/2 )
+	 *
+	 * and it has a single interior maximum at R = S/PI, where it equals S/PI:
+	 *
+	 *   - for R >  S/PI the theta cap is inactive, and tolerance(R) is STRICTLY
+	 *     DECREASING in R (to leading order S^2/(8R)). Understating R makes the tolerance
+	 *     LARGER and the gate-width check STRICTER. The .py comment is right HERE, and
+	 *     this is the region every real track sits in;
+	 *   - for R <= S/PI theta is capped at PI, so tolerance(R) collapses to exactly R and
+	 *     is STRICTLY INCREASING. Understating R now makes the tolerance SMALLER and the
+	 *     check WEAKER -- an author who types a very small radius gets the weakest
+	 *     possible placement check, not the strictest. The old paragraph here was right
+	 *     about THIS region and wrong to state it unconditionally.
+	 *
+	 * SO THE GUARD IS RANGE-CONDITIONAL, AND Validate() NOW ENFORCES THE RANGE: it
+	 * refuses a track with `MinCornerRadiusCm <= GetMaxSegmentLengthCm() / PI`. Inside the
+	 * validated range the function is monotonic, understating is unambiguously the safe
+	 * direction, and the .py comment is unconditionally true for any track that validates.
+	 *
+	 * WHY NOT JUST RAISE ClampMin. Because the threshold is DATA, not a constant: it is
+	 * S/PI, and S is whatever the centerline happened to bake to. A static ClampMin high
+	 * enough for a coarse bake would reject legitimate tight-radius authoring on a fine
+	 * one, and one low enough for a fine bake would not guard a coarse one at all. ClampMin
+	 * stays a floor against nonsense; the real check is in Validate(), where the baked
+	 * geometry is available. This matters more from RACE-003 on than it did before:
+	 * IsValidatedForRace() is the first consumer that treats Validate()'s answer as
+	 * load-bearing rather than advisory.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Track|Checkpoints",
 		meta = (ClampMin = "1.0", UIMin = "500.0", ForceUnits = "cm"))
@@ -591,10 +631,89 @@ public:
 	 * an editor-only module, and a WITH_EDITOR fork could not be exercised by the
 	 * commandlet the project's automation gate actually runs in.
 	 *
+	 * PREFER IsValidatedForRace()/GetCachedValidation() AT A CALL SITE. This function is
+	 * the computation; those are the cache. See the block below for why the difference
+	 * matters.
+	 *
 	 * @param OutReason set to a human-readable reason on failure; untouched on success.
 	 * @return true when this track may be used for a result that will be published.
 	 */
 	bool Validate(FString& OutReason) const;
+
+	// =======================================================================
+	// Cached validity (TRACK-001 finding M7, extended to cover TRACK-002 M4)
+	// =======================================================================
+	//
+	// WHY A CACHE AND NOT JUST Validate(). M7's complaint is precise: RebuildTrackData()
+	// and Validate() disagree BY DESIGN -- the bake substitutes fallbacks (100 cm
+	// spacing, 800 cm grid spacing, 2500 cm reset spacing, a clamped sample count) for
+	// exactly the values Validate() rejects outright -- so a track can bake
+	// "successfully" and still be unpublishable. IsTrackDataBuilt() is therefore a
+	// STRICTLY WEAKER claim than "this track may be raced on", and it is the claim a
+	// session-start path would naturally reach for. Validate() is the right question and
+	// the wrong function to ask repeatedly: it re-runs ~25 branches and formats FStrings
+	// on every call.
+	//
+	// AND IT MUST COVER THE GATE BAKE (TRACK-002 finding M4). RebuildTrackData() returns
+	// **true** even when RebuildCheckpointGates() fails -- that function records
+	// CheckpointGateBakeError and returns void, deliberately, because a mis-authored gate
+	// must not take the centerline (and therefore progress and ranking) down with it. So
+	// neither IsTrackDataBuilt() nor DidPostLoadBakeSucceed() can see a gate-bake failure,
+	// and gates are what decide which laps count. A cache keyed only on the centerline
+	// would miss exactly the case TRACK-002 introduced.
+	//
+	// This cache does not have that hole, and not by remembering to check: it memoises
+	// **Validate() itself**, which already refuses a failed gate bake, a gate set below
+	// MinCheckpointGateCount and a Reverse-only start/finish gate. Anything Validate()
+	// learns to refuse later is covered the day it is added, with no second list to keep
+	// in sync. RacingSim.Race.TrackValidationCache asserts the gate-bake case directly:
+	// RebuildTrackData() true, IsValidatedForRace() false.
+	//
+	// KEYED ON ComputeContentHash(), which is what the ticket asks for and is the only
+	// key that is right: it covers every authored field AND the effective bake resolution
+	// the bake actually used, so a re-bake at a different spacing, a nudged spline point,
+	// a retuned gate width or a changed MinCornerRadiusCm all move the key. The cost of a
+	// cache hit is that hash (a walk of the spline points) rather than the full
+	// validation. THIS IS A SESSION-START API, NOT A PER-FRAME ONE -- it is cheap enough
+	// to call when a race director decides whether to go green and when a result is
+	// frozen, and it is not cheap enough for Tick. Nothing in this project calls it per
+	// frame and nothing should.
+
+	/**
+	 * May a session be started, and a result published, on this track? Cache-backed.
+	 *
+	 * Re-runs Validate() only when the content hash has moved since the cached answer was
+	 * computed. GetValidationRunCount() is how automation proves that.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Race|Track")
+	bool IsValidatedForRace() const;
+
+	/**
+	 * As IsValidatedForRace(), but also yields the cached failure reason.
+	 *
+	 * @param OutReason the recorded reason, or an empty string when the track validates.
+	 *                  Always written, unlike Validate()'s out-parameter -- a caller
+	 *                  reading a cache should not have to know whether the previous
+	 *                  occupant of its FString was left there by a different call.
+	 */
+	bool GetCachedValidation(FString& OutReason) const;
+
+	/**
+	 * How many times the cache has actually run Validate().
+	 *
+	 * Exists for automation, on exactly the reasoning GetBakeAttemptCount() records:
+	 * "N calls produced one computation" cannot be asserted by timing (that measures the
+	 * machine, and this project's automation gate shares a build host), and counting is
+	 * the only honest alternative. Does NOT count direct Validate() calls -- it counts
+	 * cache misses.
+	 */
+	int32 GetValidationRunCount() const { return ValidationRunCount; }
+
+	/** True once a validation answer has been cached on this instance. */
+	bool HasValidationCache() const { return bHasValidationCache; }
+
+	/** The content hash the cached answer was computed against. Meaningless unless HasValidationCache(). */
+	uint32 GetValidatedContentHash() const { return ValidatedContentHash; }
 
 	/**
 	 * Re-bake the centerline, grid and reset poses from the authored data.
@@ -690,6 +809,28 @@ public:
 	 * validation message.
 	 */
 	const FString& GetGeneratedGateClampNote() const { return GeneratedGateClampNote; }
+
+	/**
+	 * Is the gate generator's one-shot clamp WARNING armed -- i.e. would the next clamp be
+	 * reported rather than suppressed?
+	 *
+	 * TRACK-002 finding R1-L3 shipped at RACE-002 with no direct assertion, and RACE-002's
+	 * own finding L6 routed that gap here. The fix was that the one-shot flag is re-armed
+	 * on TWO paths, not one -- by a generated bake that places every requested gate, AND
+	 * by any bake that uses AUTHORED specs, because the authored path never calls the
+	 * generator and so could never re-arm it. Without the second, a generated -> authored
+	 * -> generated round trip swallowed the second clamp report entirely. That is a
+	 * behaviour of a private bool, and the only observable it had was a log line the test
+	 * fixture (a CDO) is deliberately excluded from emitting -- so it was untestable in
+	 * practice. This accessor is the observable.
+	 *
+	 * Same justification GetBakeAttemptCount() and DidPostLoadBakeSucceed() record: the
+	 * shipping game is willing to carry one bool accessor, and "has this track's gate
+	 * degradation already been reported" is a question a level-validation pass has a
+	 * direct interest in. GeneratedGateClampNote is recorded unconditionally regardless;
+	 * this is only about the LOG.
+	 */
+	bool IsGeneratedGateClampReportArmed() const { return !bGateClampLogged; }
 
 	/**
 	 * Returned by the arc-length accessors for an out-of-range index.
@@ -840,6 +981,35 @@ private:
 	/** Step, cm, the last SUCCESSFUL bake used. Not necessarily CenterlineSampleSpacingCm. */
 	UPROPERTY(Transient)
 	double EffectiveStepCm = 0.0;
+
+	// -- Validation cache (TRACK-001 M7 / TRACK-002 M4). See IsValidatedForRace(). ----
+
+	/**
+	 * Content hash the cached answer was computed against.
+	 *
+	 * Paired with bHasValidationCache rather than using 0 as "no cache": 0 is a value
+	 * ComputeContentHash() can legitimately return, and a sentinel that collides with a
+	 * legal value is how a cache silently stops caching. The same mistake
+	 * FRacingContentVersion avoids by documenting 0 as "not computed" for a field nothing
+	 * compares.
+	 */
+	UPROPERTY(Transient)
+	uint32 ValidatedContentHash = 0;
+
+	UPROPERTY(Transient)
+	bool bHasValidationCache = false;
+
+	/** The cached answer itself. */
+	UPROPERTY(Transient)
+	bool bCachedValidationResult = false;
+
+	/** The cached failure reason, empty when the cached answer is "valid". */
+	UPROPERTY(Transient)
+	FString CachedValidationReason;
+
+	/** Cache MISSES, i.e. how many times Validate() actually ran. See GetValidationRunCount(). */
+	UPROPERTY(Transient)
+	int32 ValidationRunCount = 0;
 
 	/**
 	 * Build on first use if nothing else has, and NEVER more than once for a given

@@ -86,6 +86,10 @@ namespace RaceLapSpecPrivate
 		int32 SectorsClosed = 0;
 		int32 NearMisses = 0;
 		int32 Teleports = 0;
+
+		/** RACE-003: forward line crossings refused as lap boundaries (RACE-002 R2-M1). */
+		int32 RefusedBoundaries = 0;
+
 		TArray<FRacingLapTiming> ClosedLaps;
 
 		void Accumulate(const FRaceLapTrackerUpdate& Update)
@@ -97,6 +101,7 @@ namespace RaceLapSpecPrivate
 			SectorsClosed += Update.SectorsClosed;
 			NearMisses += Update.NearMissCount;
 			Teleports += Update.bTeleportDetected ? 1 : 0;
+			RefusedBoundaries += Update.LineCrossingsRefusedAsBoundary;
 
 			if (Update.bLapClosed)
 			{
@@ -125,7 +130,22 @@ namespace RaceLapSpecPrivate
 		/** Where the car is, in arc length. Monotonically increasing across laps; the tracker wraps it. */
 		double CurrentDistanceCm = 0.0;
 
-		bool Build(FAutomationTestBase& Test, const bool bResetInvalidatesLap = true, const bool bBrokenClock = false)
+		/**
+		 * @param InSectorStartsCm optional sector table. Without one the rig authors three
+		 *                         equal sectors. RACE-003 needs an UNEQUAL one -- a very
+		 *                         short first sector -- to reach RACE-002 finding M2's case
+		 *                         at all: with three equal sectors, a single step that
+		 *                         crosses the line and the next boundary together spans a
+		 *                         third of a lap, which Advance()'s own quarter-lap
+		 *                         plausibility guard rejects as a teleport first. That is
+		 *                         worth knowing on its own and is asserted in
+		 *                         RacingSim.Race.LapSectorSplitShape.
+		 */
+		bool Build(
+			FAutomationTestBase& Test,
+			const bool bResetInvalidatesLap = true,
+			const bool bBrokenClock = false,
+			const TArray<double>* InSectorStartsCm = nullptr)
 		{
 			GLapSpecNowSeconds = 5000.0;
 
@@ -176,9 +196,16 @@ namespace RaceLapSpecPrivate
 			}
 
 			SectorStartsCm.Reset();
-			SectorStartsCm.Add(0.0);
-			SectorStartsCm.Add(LapLengthCm / 3.0);
-			SectorStartsCm.Add(LapLengthCm * 2.0 / 3.0);
+			if (InSectorStartsCm != nullptr)
+			{
+				SectorStartsCm = *InSectorStartsCm;
+			}
+			else
+			{
+				SectorStartsCm.Add(0.0);
+				SectorStartsCm.Add(LapLengthCm / 3.0);
+				SectorStartsCm.Add(LapLengthCm * 2.0 / 3.0);
+			}
 
 			Ruleset.Reset(NewObject<URaceRulesetDataAsset>(GetTransientPackage()));
 			Ruleset->RulesetId = FName(TEXT("Ruleset.Test.LapTracker"));
@@ -811,9 +838,13 @@ bool FRaceLapResetAndRestartTest::RunTest(const FString& Parameters)
 {
 	using namespace RaceLapSpecPrivate;
 
-	AddExpectedMessage(TEXT("beyond the"), ELogVerbosity::Warning,
+	// RACE-002 finding L5, fixed on this touch: these were `"beyond the"` and
+	// `"non-finite"`, substrings loose enough to keep matching an unrelated future warning
+	// -- which would silently swallow a real one instead of failing the suite. Both are
+	// now anchored to a phrase unique to the message they are meant to expect.
+	AddExpectedMessage(TEXT("plausibility bounds; treating it as an unannounced teleport"), ELogVerbosity::Warning,
 		EAutomationExpectedMessageFlags::Contains, /*Occurrences=*/-1, /*IsRegex=*/false);
-	AddExpectedMessage(TEXT("non-finite"), ELogVerbosity::Warning,
+	AddExpectedMessage(TEXT("NotifyVehicleReset was given a non-finite pose"), ELogVerbosity::Warning,
 		EAutomationExpectedMessageFlags::Contains, /*Occurrences=*/-1, /*IsRegex=*/false);
 
 	// -- A reset re-seeds progress and, by default, voids the lap -------------
@@ -1344,6 +1375,475 @@ bool FRaceLapLineSpinTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("...opens none"), Back.LapsOpened, 0);
 		TestEqual(TEXT("...and leaves the car on lap 1"), Rig.Tracker->GetCurrentLapNumber(), 1);
 		TestEqual(TEXT("...with no lap recorded"), Rig.Tracker->GetLapsCompleted(), 0);
+
+		// RACE-003 (RACE-002 finding R2-M1): the refusal is now REPORTED and the lap is
+		// marked invalid. Before this, the U-turn left a perfectly clean lap running.
+		TestEqual(TEXT("U-turn: the refused forward crossing is reported on the update"),
+			Back.RefusedBoundaries, 1);
+		TestEqual(TEXT("...and the lap that went nowhere is now invalid, not silently clean"),
+			Rig.Tracker->GetCurrentLapInvalidity().Reason, ERaceLapInvalidReason::MissedCheckpoint);
+	}
+
+	return true;
+}
+
+// ===========================================================================
+// 7. RACE-002 R2-M1: a lap that took NO ordered gate cannot later close Valid
+// ===========================================================================
+//
+// THE DEFECT THIS PINS, in the words of the re-review that found it: after H1's fix, a
+// forward line crossing with no ordered gate held is refused as a lap boundary, so the lap
+// in progress "just continues". If the driver then completes one clean physical lap,
+// CloseLap() sees every gate satisfied and closes it **Valid** -- with a duration spanning
+// TWO physical laps. GetLapsCompleted() under-reports by one and the ranking key sits a lap
+// low. Direction-safe (the time is too SLOW, never too fast), but a lap marked Valid whose
+// duration is not one lap's time reaches RACE-003's frozen result and the UI-001 HUD, and
+// "valid" is the one word on a result that must not need a footnote.
+//
+// RACE-003 chose the first of the two answers the finding offered -- mark it invalid --
+// rather than the second (document that a valid lap may span more than one physical lap).
+// This suite is that decision, asserted.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRaceLapNoGateProgressTest,
+	"RacingSim.Race.LapNoGateProgress",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRaceLapNoGateProgressTest::RunTest(const FString& Parameters)
+{
+	using namespace RaceLapSpecPrivate;
+
+	FLapSpecRig Rig;
+	if (!Rig.Build(*this))
+	{
+		return false;
+	}
+
+	const double LapCm = Rig.LapLengthCm;
+	const double WideOffsetCm = LapSpecGateHalfWidthCm + 600.0;
+
+	Rig.StartRacing(-800.0);
+
+	// Lap 1 opens normally, on the centerline, so gate 0 is genuinely taken.
+	const FLapDriveSummary Opening = Rig.Drive(400.0, 8);
+	TestEqual(TEXT("Lap 1 opens on the grid crossing"), Opening.LapsOpened, 1);
+	TestEqual(TEXT("...putting the car on lap 1"), Rig.Tracker->GetCurrentLapNumber(), 1);
+	TestTrue(TEXT("...with the start/finish gate satisfied"), Rig.Tracker->IsGateSatisfied(0));
+
+	// -- A FULL PHYSICAL LAP OUTSIDE EVERY GATE RECTANGLE ---------------------
+	//
+	// The car drives the whole route but runs wide of gates 1, 2 and 3 -- through each
+	// plane, outside each rectangle, which TRACK-002 reports as OutsideExtent and this
+	// layer must treat as "not crossed". This is the excursion the finding describes; on
+	// the graybox it needs a full-lap off-track run, which is why it is reachable here and
+	// not by ordinary driving.
+	const FLapDriveSummary Wide = Rig.Drive(LapCm - 2000.0, LapSpecStepsPerLap,
+		/*WideFrom*/ 1000.0, /*WideTo*/ LapCm - 2000.0, WideOffsetCm);
+
+	TestTrue(TEXT("Running wide of every ordered gate registers near misses"), Wide.NearMisses > 0);
+	TestEqual(TEXT("...and advances no gate"), Wide.GatesAdvanced, 0);
+	TestFalse(TEXT("...leaving gate 1 unsatisfied"), Rig.Tracker->IsGateSatisfied(1));
+	TestFalse(TEXT("...gate 2 unsatisfied"), Rig.Tracker->IsGateSatisfied(2));
+	TestFalse(TEXT("...and gate 3 unsatisfied"), Rig.Tracker->IsGateSatisfied(3));
+
+	// THE SETUP FOR THE BUG: at this instant the lap is still CLEAN. Nothing has faulted
+	// it -- a near miss is not an invalidity, by design -- so if the line crossing below
+	// were to leave it running, it would close Valid a lap later. That is the whole defect
+	// in one assertion.
+	TestTrue(TEXT("Before returning to the line the lap is still recorded as clean"),
+		Rig.Tracker->GetCurrentLapInvalidity().IsClean());
+
+	// Rejoin the centerline over a gate-free stretch (nothing sits between 3L/4 and the
+	// line), so the return itself cannot be what crosses a gate.
+	Rig.Drive(LapCm - 500.0, 12);
+
+	// -- THE FORWARD LINE CROSSING THAT MUST NOT BE A BOUNDARY ----------------
+	const FLapDriveSummary AtLine = Rig.Drive(LapCm + 400.0, 12);
+
+	TestEqual(TEXT("The forward line crossing is refused as a lap boundary"), AtLine.RefusedBoundaries, 1);
+	TestEqual(TEXT("...so no lap closes"), AtLine.LapsClosed, 0);
+	TestEqual(TEXT("...none is counted"), AtLine.LapsCounted, 0);
+	TestEqual(TEXT("...none is opened"), AtLine.LapsOpened, 0);
+	TestEqual(TEXT("...and the car is still on lap 1"), Rig.Tracker->GetCurrentLapNumber(), 1);
+
+	// -- THE FIX: the refusal is also a verdict -------------------------------
+	{
+		const FRaceLapInvalidity Invalidity = Rig.Tracker->GetCurrentLapInvalidity();
+		TestFalse(TEXT("R2-M1: the lap is NO LONGER clean -- the refusal invalidated it"),
+			Invalidity.IsClean());
+		TestEqual(TEXT("...reported as a missed checkpoint"),
+			Invalidity.Reason, ERaceLapInvalidReason::MissedCheckpoint);
+		TestEqual(TEXT("...naming the LOWEST ordered gate not taken, by index"), Invalidity.GateIndex, 1);
+		TestEqual(TEXT("...and by stable id, so a driver is told which gate to take"),
+			Invalidity.GateId, FName(TEXT("Gate.01")));
+		TestEqual(TEXT("...mapping onto the Core shortcut validity"),
+			Invalidity.ToRunValidity(), ERacingRunValidity::InvalidShortcut);
+	}
+
+	// -- ONE CLEAN PHYSICAL LAP FROM HERE -------------------------------------
+	//
+	// This is the drive that used to produce the Valid two-lap time. It still closes the
+	// lap (every gate is taken this time round, so the line crossing IS a boundary), and
+	// the closed lap still spans two physical laps -- but it closes INVALID, so it cannot
+	// reach the best-lap slot, a leaderboard, or a delta.
+	const FLapDriveSummary CleanLap = Rig.Drive(LapCm * 2.0 + 400.0, LapSpecStepsPerLap);
+
+	TestEqual(TEXT("The following clean physical lap DOES close the lap in progress"), CleanLap.LapsClosed, 1);
+	TestEqual(TEXT("R2-M1: and it is NOT counted -- this is the number the defect got wrong"),
+		CleanLap.LapsCounted, 0);
+	TestEqual(TEXT("...so the session still has no valid lap"), Rig.Tracker->GetValidLapsCompleted(), 0);
+	TestEqual(TEXT("...and the best-lap slot is still empty, which is what a leaderboard reads"),
+		Rig.Tracker->GetBestValidLap().LapNumber, 0);
+
+	if (CleanLap.ClosedLaps.Num() == 1)
+	{
+		const FRacingLapTiming& Closed = CleanLap.ClosedLaps[0];
+		TestEqual(TEXT("The closed lap is lap 1"), Closed.LapNumber, 1);
+		TestEqual(TEXT("...invalid as a shortcut, carrying the fault recorded at the refusal"),
+			Closed.Validity, ERacingRunValidity::InvalidShortcut);
+
+		// THE RESIDUAL, ASSERTED RATHER THAN LEFT AS PROSE. The duration really does span
+		// two physical laps. RACE-003 did not remove that -- closing the lap at a refused
+		// boundary would re-open H1 and manufacture laps during a spin -- it made the lap
+		// carrying it unpublishable. The result contract (Race/RaceResult.h) documents this
+		// case explicitly, and this assertion is what stops a future edit quietly changing
+		// the shape the documentation describes.
+		const double OneLapSeconds = LapSpecStepsPerLap * LapSpecSecondsPerStep;
+		TestTrue(FString::Printf(
+			TEXT("...with a duration spanning ~2 physical laps (%.3fs vs ~%.3fs for one), which is exactly "
+				 "why it must not be Valid"), Closed.LapDurationSeconds, OneLapSeconds),
+			Closed.LapDurationSeconds > OneLapSeconds * 1.5);
+	}
+
+	// The session recovers: the lap that opened at that boundary is clean and counts.
+	const FLapDriveSummary Recovered = Rig.Drive(LapCm * 3.0 + 400.0, LapSpecStepsPerLap);
+	TestEqual(TEXT("The next lap counts normally: one ruined lap does not poison the session"),
+		Recovered.LapsCounted, 1);
+	TestEqual(TEXT("...taking the valid lap count to 1"), Rig.Tracker->GetValidLapsCompleted(), 1);
+
+	// -- THE LAP-NUMBER CONVENTION (RACE-002 finding L9), asserted ------------
+	//
+	// Written into Race/RaceResult.h and URaceLapTracker's accessors at RACE-003. Asserted
+	// here because a documented convention nothing checks is a convention that drifts.
+	TestEqual(TEXT("L9: two laps ended at the line, valid or not"), Rig.Tracker->GetLapsCompleted(), 2);
+	TestEqual(TEXT("L9: exactly one of them was valid"), Rig.Tracker->GetValidLapsCompleted(), 1);
+	TestEqual(TEXT("L9: and the car is on lap 3 -- CurrentLapNumber leads LapsCompleted by one"),
+		Rig.Tracker->GetCurrentLapNumber(), Rig.Tracker->GetLapsCompleted() + 1);
+
+	return true;
+}
+
+// ===========================================================================
+// 8. RACE-002 M2: the three shapes a completed lap's sector splits may take
+// ===========================================================================
+//
+// RACE-003 DECIDED M2 BY DOCUMENTING THE SHAPE RATHER THAN CARRYING THE BOUNDARY FORWARD,
+// and a documented shape has to be an asserted one or it is just prose. The contract is in
+// FRacingLapTiming::SectorDurationsSeconds and FRacingRaceResult:
+//
+//   1. Num() == track sector count   -> the complete set, telescoping to the lap;
+//   2. Num() == 0, track authored 0  -> a sectorless track. Legitimate, not an error;
+//   3. Num() == 0, track authored N  -> splits WITHHELD, lap marked InvalidIncomplete.
+//
+// A PARTIAL SET IS NEVER EMITTED. That is the guarantee this suite exists to hold.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRaceLapSectorSplitShapeTest,
+	"RacingSim.Race.LapSectorSplitShape",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRaceLapSectorSplitShapeTest::RunTest(const FString& Parameters)
+{
+	using namespace RaceLapSpecPrivate;
+
+	// -- Shape 2: a sectorless track ------------------------------------------
+	{
+		const TArray<double> NoSectors;
+
+		FLapSpecRig Rig;
+		if (!Rig.Build(*this, /*bResetInvalidatesLap*/ true, /*bBrokenClock*/ false, &NoSectors))
+		{
+			return false;
+		}
+
+		TestEqual(TEXT("A sectorless track reports zero sectors"), Rig.Tracker->GetNumSectors(), 0);
+
+		const double LapCm = Rig.LapLengthCm;
+		Rig.StartRacing(-800.0);
+		Rig.Drive(400.0, 8);
+		const FLapDriveSummary Lap = Rig.Drive(400.0 + LapCm, LapSpecStepsPerLap);
+
+		TestEqual(TEXT("...and still counts a clean lap"), Lap.LapsCounted, 1);
+
+		if (Lap.ClosedLaps.Num() == 1)
+		{
+			const FRacingLapTiming& Closed = Lap.ClosedLaps[0];
+			TestEqual(TEXT("Shape 2: the lap carries no splits"), Closed.SectorDurationsSeconds.Num(), 0);
+			TestEqual(TEXT("...and is VALID -- a sectorless track is a legal configuration"),
+				Closed.Validity, ERacingRunValidity::Valid);
+
+			// RACE-002 FINDING L2, CLOSED AT RACE-003. This assertion could not be written
+			// before the Core contract changed: AreSectorsConsistent() returned false for a
+			// lap with no splits, so every lap on a legally sectorless track read
+			// "inconsistent" to any consumer that checked.
+			TestTrue(TEXT("L2: a sectorless track's lap is VACUOUSLY consistent"),
+				Closed.AreSectorsConsistent());
+			TestTrue(TEXT("...and stays consistent when the caller states the real count of 0"),
+				Closed.AreSectorsConsistent(0.001, 0));
+		}
+	}
+
+	// -- Shape 1 and shape 3, on a track with a very short first sector -------
+	//
+	// WHY THE SECTOR TABLE IS UNEQUAL. Reaching M2's case needs ONE evaluation step that
+	// crosses the start/finish line AND the next sector boundary. With three equal sectors
+	// that step spans a third of a lap, which Advance()'s quarter-lap plausibility guard
+	// rejects as a teleport before any of this can happen -- so on an evenly sectored track
+	// M2 is unreachable without first tripping a different guard. That is a real and
+	// reassuring fact, and it is asserted below rather than assumed. A 2%-of-a-lap first
+	// sector is what makes the case reachable at all.
+	{
+		FLapSpecRig Probe;
+		if (!Probe.Build(*this))
+		{
+			return false;
+		}
+
+		const double EvenSectorArcCm = Probe.LapLengthCm / 3.0;
+		TestTrue(TEXT("On an evenly sectored track, M2's step exceeds the teleport bound -- so the "
+					  "plausibility guard fires first and M2 is unreachable there"),
+			EvenSectorArcCm > Probe.Tracker->GetImplausibleArcStepCm());
+	}
+
+	{
+		FLapSpecRig Rig;
+		{
+			// Built against the rig's own lap length, which needs the circle first. Build a
+			// throwaway to read the length, then build the real rig -- the circle is pure
+			// arithmetic, so the two agree exactly.
+			FLapSpecRig LengthProbe;
+			if (!LengthProbe.Build(*this))
+			{
+				return false;
+			}
+
+			const double LapCm = LengthProbe.LapLengthCm;
+			const TArray<double> TightFirstSector = { 0.0, LapCm * 0.02, LapCm * 0.5 };
+
+			if (!Rig.Build(*this, /*bResetInvalidatesLap*/ true, /*bBrokenClock*/ false, &TightFirstSector))
+			{
+				return false;
+			}
+		}
+
+		const double LapCm = Rig.LapLengthCm;
+		const double FirstBoundaryCm = LapCm * 0.02;
+
+		TestEqual(TEXT("The probe track has three sectors"), Rig.Tracker->GetNumSectors(), 3);
+
+		Rig.StartRacing(-800.0);
+		Rig.Drive(400.0, 8);
+
+		// -- Shape 1: an ordinary lap, driven in small steps, gets all three splits
+		const FLapDriveSummary Lap1 = Rig.Drive(LapCm - 100.0, LapSpecStepsPerLap);
+		TestEqual(TEXT("Lap 1 timed all three sector boundaries"), Lap1.SectorsClosed, 2);
+
+		// -- THE M2 STEP: one step across the line AND across boundary 1 ------
+		//
+		// From 100 cm before the line to 100 cm past the first boundary. Arc travel is ~2%
+		// of a lap, comfortably inside the plausibility guard, so this is driving rather
+		// than teleporting -- the case really is reachable, it simply needs a short sector.
+		const FRaceLapTrackerUpdate CrossingStep = Rig.Step(FirstBoundaryCm + 100.0);
+
+		TestFalse(TEXT("The line-and-boundary step is not treated as a teleport"),
+			CrossingStep.bTeleportDetected);
+		TestTrue(TEXT("...it closes lap 1"), CrossingStep.bLapClosed);
+		TestTrue(TEXT("...and opens lap 2 in the same step"), CrossingStep.bLapOpened);
+		TestEqual(TEXT("M2: the boundary the car physically passed AFTER the line is NOT timed"),
+			CrossingStep.SectorsClosed, 0);
+
+		if (CrossingStep.bLapClosed)
+		{
+			const FRacingLapTiming& Lap1Closed = CrossingStep.ClosedLap;
+			TestEqual(TEXT("Shape 1: lap 1 closed with the complete split set"),
+				Lap1Closed.SectorDurationsSeconds.Num(), 3);
+			TestEqual(TEXT("...and is Valid"), Lap1Closed.Validity, ERacingRunValidity::Valid);
+			TestTrue(TEXT("...with splits that telescope to the lap, checked against the real count"),
+				Lap1Closed.AreSectorsConsistent(0.001, 3));
+		}
+
+		// -- Shape 3: lap 2 therefore closes with its splits WITHHELD ---------
+		//
+		// ONE lap from here, not two. The car is already 2% of a lap past the line, so the
+		// target is LapCm + 400 (about 0.98 of a lap of travel) rather than 2 * LapCm + 400,
+		// which would cross the line twice and close two laps. The first draft of this case
+		// had the second, and the suite caught it -- worth recording, because "how far round
+		// is the car when this drive starts" is exactly the arithmetic a wrapped arc length
+		// makes easy to get wrong.
+		const FLapDriveSummary Lap2 = Rig.Drive(LapCm + 400.0, LapSpecStepsPerLap);
+		TestEqual(TEXT("Lap 2 still closes at the line, exactly once"), Lap2.LapsClosed, 1);
+
+		if (Lap2.ClosedLaps.Num() == 1)
+		{
+			const FRacingLapTiming& Closed = Lap2.ClosedLaps[0];
+
+			TestEqual(TEXT("Shape 3: NO partial set is published -- the array is empty, not short"),
+				Closed.SectorDurationsSeconds.Num(), 0);
+			TestEqual(TEXT("...and the lap says so: InvalidIncomplete, from TimingUnavailable"),
+				Closed.Validity, ERacingRunValidity::InvalidIncomplete);
+			TestEqual(TEXT("...so it is not counted as a valid lap"), Lap2.LapsCounted, 0);
+
+			// THE POINT OF THE DOCUMENTED CONTRACT: a consumer that passes the track's real
+			// sector count can distinguish this from a sectorless track, which is the
+			// question RACE-002 L2 left a results consumer unable to ask.
+			TestTrue(TEXT("Unqualified, shape 3 reads consistent -- there is nothing to fail to add up"),
+				Closed.AreSectorsConsistent());
+			TestFalse(TEXT("...but qualified with the track's real sector count, it correctly reads false"),
+				Closed.AreSectorsConsistent(0.001, 3));
+		}
+	}
+
+	return true;
+}
+
+// ===========================================================================
+// 9. RACE-002 L6: direct assertions for two fixes that shipped with none
+// ===========================================================================
+//
+// RACE-002 shipped three inherited-finding fixes closed "by construction" or by comment,
+// with no test: TRACK-002 L4 (near-miss direction), L5 (the gate-set copy that discharges
+// the thread constraint) and R1-L3 (the clamp-log re-arm). A fix closed by construction is
+// a fix a future edit can silently reopen, so RACE-003 was asked for one assertion apiece.
+//
+// Two of the three are here. R1-L3 lives with the actor that owns it, in
+// RacingSim.Race.TrackValidationCache -- it is about ATrackDefinitionActor's bake, not
+// about lap tracking, and asserting it here would have needed this file to reach into a
+// track actor for no reason.
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRaceLapInheritedFixesTest,
+	"RacingSim.Race.LapInheritedFixes",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRaceLapInheritedFixesTest::RunTest(const FString& Parameters)
+{
+	using namespace RaceLapSpecPrivate;
+
+	FLapSpecRig Rig;
+	if (!Rig.Build(*this))
+	{
+		return false;
+	}
+
+	const double LapCm = Rig.LapLengthCm;
+
+	// -- TRACK-002 L4: the direction of a NEAR MISS ---------------------------
+	//
+	// ERacingGateCrossing::OutsideExtent carries no direction of its own. RaceLapTracker's
+	// near-miss log derives one from the signed-distance pair with the one-line rule
+	// "forward is: started BEHIND the plane" (SignedDistanceFromCm < 0), rather than adding
+	// an accessor to the crossing result. That derivation is the thing L4 is about, and it
+	// was closed by a comment. Asserted here at its source, against the gate set itself, so
+	// it holds for any future consumer that makes the same derivation.
+	{
+		const double Gate1Cm = LapCm * 0.25;
+		const double WideOffsetCm = LapSpecGateHalfWidthCm + 600.0;
+
+		auto FindNearMissAtGate1 = [&Rig, WideOffsetCm](const double FromCm, const double ToCm,
+			FRacingGateCrossingResult& OutResult) -> bool
+		{
+			bool bFound = false;
+			Rig.Gates.EvaluateCrossings(
+				Rig.PositionAt(FromCm, WideOffsetCm),
+				Rig.PositionAt(ToCm, WideOffsetCm),
+				[&bFound, &OutResult](const FRacingGateCrossingResult& Result)
+				{
+					if (!bFound && Result.GateIndex == 1 && Result.Crossing == ERacingGateCrossing::OutsideExtent)
+					{
+						OutResult = Result;
+						bFound = true;
+					}
+				});
+			return bFound;
+		};
+
+		FRacingGateCrossingResult ForwardMiss;
+		if (TestTrue(TEXT("L4: driving wide past gate 1 forwards produces an OutsideExtent result"),
+			FindNearMissAtGate1(Gate1Cm - 400.0, Gate1Cm + 400.0, ForwardMiss)))
+		{
+			TestTrue(TEXT("L4: a FORWARD near miss started BEHIND the plane (SignedDistanceFromCm < 0)"),
+				ForwardMiss.SignedDistanceFromCm < 0.0);
+			TestTrue(TEXT("...and ended in front of it"), ForwardMiss.SignedDistanceToCm > 0.0);
+		}
+
+		FRacingGateCrossingResult ReverseMiss;
+		if (TestTrue(TEXT("L4: driving wide past gate 1 backwards also produces an OutsideExtent result"),
+			FindNearMissAtGate1(Gate1Cm + 400.0, Gate1Cm - 400.0, ReverseMiss)))
+		{
+			// THE ASSERTION THAT MAKES THE RULE A RULE. If the sign convention were the
+			// other way round, the forward case above would still pass on its own -- only
+			// the pair pins it.
+			TestTrue(TEXT("L4: a REVERSE near miss started IN FRONT of the plane (SignedDistanceFromCm > 0)"),
+				ReverseMiss.SignedDistanceFromCm > 0.0);
+			TestTrue(TEXT("...and ended behind it"), ReverseMiss.SignedDistanceToCm < 0.0);
+		}
+	}
+
+	// -- TRACK-002 L5: the tracker holds a COPY of the gate set ---------------
+	//
+	// L5's substance is that per-step crossing evaluation must never re-enter
+	// ATrackDefinitionActor's game-thread-only lazy bake. RACE-002 discharged it by taking
+	// a COPY at ConfigureTrack() time -- "closed by construction rather than by comment".
+	// The observable consequence of a copy, and the one a future edit to a reference or a
+	// TSharedPtr would break, is that mutating the source cannot reach the tracker.
+	{
+		const int32 GatesBefore = Rig.Tracker->GetGates().NumGates();
+		TestEqual(TEXT("L5: the tracker was configured with four gates"), GatesBefore, 4);
+
+		// Rebuild the SOURCE set with a completely different shape.
+		TArray<FRacingCheckpointGateSpec> SixSpecs;
+		for (int32 Index = 0; Index < 6; ++Index)
+		{
+			FRacingCheckpointGateSpec Spec;
+			Spec.GateId = FName(*FString::Printf(TEXT("Rebuilt.%02d"), Index));
+			Spec.DistanceAlongCm = (Index == 0) ? 0.0 : LapCm * static_cast<double>(Index) / 6.0;
+			Spec.HalfWidthCm = LapSpecGateHalfWidthCm;
+			Spec.HalfHeightCm = LapSpecGateHalfHeightCm;
+			Spec.LegalDirection = ERacingGateDirection::Forward;
+			SixSpecs.Add(Spec);
+		}
+
+		FString RebuildError;
+		if (TestTrue(TEXT("L5: the source gate set rebuilds to six differently-named gates"),
+			Rig.Gates.Build(SixSpecs, Rig.Circle, LapSpecCircleRadiusCm, RebuildError)))
+		{
+			TestEqual(TEXT("L5: the SOURCE now has six gates"), Rig.Gates.NumGates(), 6);
+			TestEqual(TEXT("L5: ...and the tracker's snapshot still has four -- it holds a COPY"),
+				Rig.Tracker->GetGates().NumGates(), 4);
+
+			const FRacingCheckpointGate* SnapshotGate1 = Rig.Tracker->GetGates().GetGate(1);
+			if (TestNotNull(TEXT("L5: the snapshot's gate 1 is still there"), SnapshotGate1))
+			{
+				TestEqual(TEXT("L5: ...still carrying its ORIGINAL id, untouched by the source rebuild"),
+					SnapshotGate1->GateId, FName(TEXT("Gate.01")));
+			}
+
+			// AND IT IS A CORRECTNESS PROPERTY, NOT ONLY A THREADING ONE, which is the
+			// second half of what the class comment claims: a track re-baked mid-session
+			// cannot retroactively change which gates the lap in progress had to take.
+			Rig.StartRacing(-800.0);
+			Rig.Drive(400.0, 8);
+			const FLapDriveSummary Lap = Rig.Drive(400.0 + LapCm, LapSpecStepsPerLap);
+			TestEqual(TEXT("L5: a lap still validates against the four gates captured at configuration"),
+				Lap.LapsCounted, 1);
+			TestEqual(TEXT("...advancing exactly four gates, not six"), Lap.GatesAdvanced, 4);
+		}
 	}
 
 	return true;

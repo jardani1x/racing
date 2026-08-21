@@ -154,6 +154,27 @@ struct RACINGSIM_API FRacingSimBuildId
 	 */
 	static FRacingSimBuildId Current();
 
+	/**
+	 * Value, percent-encoded so it may be placed in a URL query string.
+	 *
+	 * CORE-003 finding C3-4, closed at RACE-003. SanitiseComponent() allows '+' in a
+	 * build ID -- the Derived scheme embeds one as the engine-changelist separator
+	 * ("5.8.1+56057345") -- and a literal '+' in a query string decodes to a SPACE
+	 * under `application/x-www-form-urlencoded`, which every HTTP stack applies. So
+	 * "dev-0.1.0-5.8.1+56057345-Development-Editor" would arrive at a leaderboard as a
+	 * DIFFERENT string, silently, and two builds differing only either side of the '+'
+	 * would collide -- the exact identity failure this struct exists to prevent.
+	 *
+	 * The obligation was recorded at SanitiseComponent as a rule for consumers to
+	 * follow. This is that rule with an implementation, so a consumer can no longer
+	 * follow it by accident. Use it at EVERY site that writes a build ID into a query
+	 * string; FRacingRaceResult::MakeSubmissionQueryString is the project's first.
+	 *
+	 * Never use the result as a filename or a path segment: it is the query-string
+	 * form. `Value` itself is already filename-safe by SanitiseComponent's allow-list.
+	 */
+	FString ToUrlQueryValue() const;
+
 	bool operator==(const FRacingSimBuildId& Other) const
 	{
 		return Value == Other.Value && Scheme == Other.Scheme;
