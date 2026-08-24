@@ -2969,17 +2969,26 @@ implementation. That gap is this ticket's reason to exist.
 - [x] `RACE-003` `L7` discharged as recorded in the inherited-findings table above —
       declared vacuous for this ticket **with its reason stated**, obligation left wholly
       with `UI-001`.
-- [ ] Editor **and** Game targets build with zero new warnings, using the verified command
-      forms in `Docs/Environment.md`. **NOT YET VERIFIED.** The implementing session was
-      denied permission to invoke `Build.bat`, so no build has been run against this suite.
-      This box must be ticked only by the session that actually inspects the build output.
-- [ ] `Smoke` filter run, with pass/fail/not-run counts read from
+- [x] Editor **and** Game targets build with zero new warnings, using the verified command
+      forms in `Docs/Environment.md`. **Verified 2026-08-24** — `RacingSimEditor Win64
+      Development`: `Result: Succeeded`, 0 `warning|error` matches. `RacingSim Win64
+      Development`: `Result: Succeeded`, 0 `warning|error` matches. Both built `-NoUBA`
+      (single-machine) after the default UBA distributed executor crashed with an internal
+      compiler error / access violation on `cl.exe` — reproduced once, then eliminated by
+      disabling UBA, so the failure is a distributed-build-worker fault, not a defect in
+      this ticket's code; recorded so a future UBA crash on this file is not re-diagnosed
+      from scratch.
+- [x] `Smoke` filter run, with pass/fail/not-run counts read from
       `Saved/Automation/Report/index.json`, never from a process exit code
-      (`Docs/Environment.md`; TRACK-002 `M7`). **NOT YET VERIFIED** — same permission
-      denial as the row above; `UnrealEditor-Cmd.exe` was never invoked. The five new
-      tests (`RacingSim.Race.FaultMatrix{Singles,OrderedPairs,SelfPairs,DoubleTrigger,
-      NegativeControl}`) are therefore **unexecuted**, and until they run the suite's
-      correctness is asserted only by reading, not by evidence.
+      (`Docs/Environment.md`; TRACK-002 `M7`). **Verified 2026-08-24**,
+      `reportCreatedOn 2026.08.24-08.52.01`: **succeeded=486, succeededWithWarnings=2,
+      failed=0, notRun=0**. All six new tests —
+      `RacingSim.Race.FaultMatrix{Singles,OrderedPairs,SelfPairs,DoubleTrigger,
+      NegativeControl,Restart}` — report `state: "Success"`, 0 warnings, 0 errors each.
+      (The acceptance criteria above named five tests; `FaultMatrixRestart` is the sixth,
+      covering the restart/reset axis, and is confirmed present and passing alongside the
+      other five.) Baseline at `RACE-003` was 482; the two `succeededWithWarnings` entries
+      predate this ticket and are unrelated to the new suite.
 
 **Deliberately excluded from this ticket's scope**, tracked forward rather than silently
 assumed:
