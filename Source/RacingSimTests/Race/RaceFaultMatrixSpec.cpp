@@ -493,10 +493,10 @@ namespace RaceFaultMatrixSpecPrivate
 {
 	void ExpectFaultMessages(FAutomationTestBase& Test)
 	{
-		// Announced resets and wide gate passes both log. Occurrences = -1 means "any
-		// number, including zero" is NOT what this flag does -- it means "any number, at
-		// least one" is not required either; the framework treats -1 as unbounded and does
-		// not fail when none arrive. Same call shape RaceLapTrackerSpec.cpp uses.
+		// Announced resets and wide gate passes both log. AutomationTest.cpp gates the
+		// occurrence check on ExpectedNumberOfOccurrences > 0; any value < 0 (as used here)
+		// is excluded from that check entirely, so zero occurrences never fails the test.
+		// Same call shape RaceLapTrackerSpec.cpp uses.
 		Test.AddExpectedMessage(TEXT("plausibility bounds; treating it as an unannounced teleport"),
 			ELogVerbosity::Warning, EAutomationExpectedMessageFlags::Contains,
 			/*Occurrences=*/-1, /*IsRegex=*/false);

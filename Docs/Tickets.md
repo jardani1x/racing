@@ -1106,7 +1106,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | **DONE** 2026-08-21 — `code-reviewer` returned CHANGES REQUESTED against `6b92557` (2 HIGH blocking: `H1` phantom laps from a spin on the start/finish line, `H2` missing spin-on-the-line test); repair cycle 1 (`d4fded6`) closed both, verified by stashing the fix back out and re-running against the pre-fix tree; re-review independently hand-traced the fix and returned APPROVED WITH FOLLOW-UPS, plus three doc-only corrections (`3870be8`). `test-engineer` independently confirmed both targets build clean, Smoke `passedTotal=472, failed=0, notRun=0` (6 lap suites), and all three TRACK-002 placed-level tests still pass 3/0/0. Merged to `main` at `7f82e79` (merge of `3870be8`). Non-blocking findings (`M1`–`M3`, `L1`–`L9`, plus repair-cycle `R2-M1`/`R2-L1`/`R2-L2`) tracked forward into `RACE-003`/`VEH-005`/`UI-001` |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
-| RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
+| RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
 valid laps count exactly once; 100 skipped/out-of-order/reverse/double-cross
@@ -2985,10 +2985,27 @@ implementation. That gap is this ticket's reason to exist.
       failed=0, notRun=0**. All six new tests —
       `RacingSim.Race.FaultMatrix{Singles,OrderedPairs,SelfPairs,DoubleTrigger,
       NegativeControl,Restart}` — report `state: "Success"`, 0 warnings, 0 errors each.
-      (The acceptance criteria above named five tests; `FaultMatrixRestart` is the sixth,
-      covering the restart/reset axis, and is confirmed present and passing alongside the
-      other five.) Baseline at `RACE-003` was 482; the two `succeededWithWarnings` entries
-      predate this ticket and are unrelated to the new suite.
+      Baseline at `RACE-003` was 482; the two `succeededWithWarnings` entries
+      (`RacingSim.Race.TrackFailedBakeIsNotRetried`, `RacingSim.Race.TrackValidation`) predate
+      this ticket, deliberately exercise an expected failed-bake warning, and are unrelated
+      to the new suite (`test-engineer`, 2026-08-24).
+
+### RACE-004 — review findings, pass 1, 2026-08-24
+
+Verdict: **APPROVED WITH FOLLOW-UPS**. No BLOCKER/HIGH findings. Coverage-only ticket, no
+production code changed, so no re-review is required to merge.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM-1 | `ERaceLapInvalidReason::TimingUnavailable` is the one fault axis this suite omits, and it has the sharpest composition semantics of the four — `ObserveClockFault()` runs at the top of every `Advance()` so it wins first-fault-wins against any later-step fault, and re-latches every lap via `OpenLap()` | **Routed forward** to the next ticket that touches `RaceLapTracker.cpp` — additive test coverage, not a defect |
+| MEDIUM-2 | The unannounced-teleport reset path (`RaceLapTracker.cpp:498-509`, a second `VehicleReset` producer distinct from `NotifyVehicleReset()`) is registered as an expected log message but never actually driven by any injector in this file | **Routed forward** alongside MEDIUM-1 — same ticket, additive |
+| MEDIUM-3 | Sections 3/4 (~190 lines) all converge on one four-line first-fault-wins guard in `RaceLapTracker.cpp:1050-1052`, disproportionate to what they falsify | **Accepted as-is** — kept rather than cut; a published behavioural contract with zero coverage is worse than an oversized one, and section framing corrected is not warranted for lines that are otherwise correct |
+| MEDIUM-4 | No restart cell exercises `Advance()`'s defensive "restart underneath us" branch (`RaceLapTracker.cpp:443-449`, the case where an owner *forgets* to call `ResetForNewSession()`) — every cell in section 6 calls it explicitly | **Routed forward** alongside MEDIUM-1/MEDIUM-2 — one additional matrix cell, additive |
+| LOW-1 | `RaceFaultMatrixSpec.cpp:496-499` comment on `Occurrences = -1` was self-contradictory prose | **Fixed** — corrected to state the actual `AutomationTest.cpp` gating (`ExpectedNumberOfOccurrences > 0`), traced into engine source by `code-reviewer` |
+| LOW-2 | Smoke-run acceptance-criteria bullet in this file said "the acceptance criteria above named five tests" while the criteria list already named all six | **Fixed** — stale parenthetical removed |
+| LOW-3 | `-NoUBA` build workaround recorded with no owner for re-testing the default distributed executor | **Accepted as a standing note** — not a code change; flagged here so it isn't silently promoted to the permanent build command |
+| LOW-4 | `GMatrixNowSeconds` (file-scope mutable clock) makes these six tests mutually unsafe under future parallel automation | **Accepted as-is**, matches existing `RaceLapTrackerSpec.cpp` precedent; not this project's current execution model |
+| LOW-5 | `InjectShortcut`'s comment undersold that its "wide line" is a 15 m single-step radial toggle, not a driveable path | **Accepted as-is** — geometrically correct and below all teleport-plausibility bounds; comment precision not required for merge |
 
 **Deliberately excluded from this ticket's scope**, tracked forward rather than silently
 assumed:
