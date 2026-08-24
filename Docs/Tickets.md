@@ -1106,7 +1106,7 @@ unbounded wheel state — Gate C treats these as test failures, not warnings.
 | RACE-001 | Race state machine and monotonic clock | race-systems-engineer | CORE-002 | B | **DONE** 2026-08-14 — `code-reviewer` approved across two passes at `7832d0a`; `test-engineer` independently confirmed both targets build clean from a from-scratch rebuild and 442/442 automation Smoke tests pass. Merged to `main` at `2c41989`. Two findings (M4, M1's accepted risk) tracked forward into `RACE-002` |
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | **DONE** 2026-08-21 — `code-reviewer` returned CHANGES REQUESTED against `6b92557` (2 HIGH blocking: `H1` phantom laps from a spin on the start/finish line, `H2` missing spin-on-the-line test); repair cycle 1 (`d4fded6`) closed both, verified by stashing the fix back out and re-running against the pre-fix tree; re-review independently hand-traced the fix and returned APPROVED WITH FOLLOW-UPS, plus three doc-only corrections (`3870be8`). `test-engineer` independently confirmed both targets build clean, Smoke `passedTotal=472, failed=0, notRun=0` (6 lap suites), and all three TRACK-002 placed-level tests still pass 3/0/0. Merged to `main` at `7f82e79` (merge of `3870be8`). Non-blocking findings (`M1`–`M3`, `L1`–`L9`, plus repair-cycle `R2-M1`/`R2-L1`/`R2-L2`) tracked forward into `RACE-003`/`VEH-005`/`UI-001` |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
-| RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | OPEN |
+| RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
 valid laps count exactly once; 100 skipped/out-of-order/reverse/double-cross
@@ -2875,6 +2875,154 @@ batch decisions respectively rather than answered a third time separately.
 
 **`RACE-003` `L1`, `L2`, `L3`, `L4`, `L6` and `L8` are fix-on-next-touch**, added to the
 running list alongside RACE-002's `L4`/`L5`/`L8`/`R2-L1`/`R2-L2`.
+
+### RACE-004 — findings inherited from RACE-003
+
+| ID | Finding | What RACE-004 must do |
+| --- | --- | --- |
+| L7 (RACE-003 pass 1) | `ComputeContentHash()` (`TrackDefinitionActor`) still hashes a failed bake, so `GetContentVersion().IsPopulated()` reads `true` for a track that cannot actually be raced. Closed at the submission boundary (`Validate()`/`IsSubmittable()` both refuse it), but the `IsPopulated()` claim itself is unchanged. Routed jointly to `UI-001` and `RACE-004` so the clause could not vanish between tables a third time | **Declared vacuous for this ticket, explicitly rather than silently.** RACE-004's deliverable is a level-free `URaceLapTracker` matrix (`RaceFaultMatrixSpec.cpp`): it constructs no `ATrackDefinitionActor`, calls neither `ComputeContentHash()` nor `IsPopulated()`, and therefore has no call site at which the finding could be honoured or violated. The substantive obligation — "use `Validate()`/the cached validation result, never `IsPopulated()`, to answer *is this track safe to race*" — remains **wholly with `UI-001`**, which is the first ticket to build a consumer (HUD/telemetry stamping) that can get it wrong. Recorded here so the joint routing is discharged on the record, not dropped |
+
+### RACE-004 — acceptance criteria, opened 2026-08-24
+
+Scope per the Epic 3 row: `Shortcut/reverse/double-trigger/reset automation matrix`.
+Owner `test-engineer + implementer`. Gate B. Depends on `RACE-003` (**DONE**, merged at
+`cc80624`) — unblocked. Read the inherited-findings table immediately above first.
+
+**This ticket is the combinational matrix, and nothing else.** `RACE-003`'s own scope note
+drew the boundary in advance: "the full shortcut/reverse/double-trigger/reset automation
+*matrix* as its own deliverable (`RACE-004` — this ticket's own restart coverage above is
+scoped to restart specifically, not a duplicate of that matrix)". Each individual axis is
+already covered and covered well, by suites this ticket must not duplicate or re-litigate:
+
+| Axis | Already owned by |
+| --- | --- |
+| Skipped/out-of-order gate | `RacingSim.Race.LapOrdering` (RACE-002) |
+| Reverse finish crossing | `RacingSim.Race.LapOrdering`, `RacingSim.Race.LapLineSpin` (RACE-002 + repair 1) |
+| Spin/oscillation at a gate | `RacingSim.Race.LapOrdering`, `RacingSim.Race.LapLineSpin` |
+| Reset / unannounced teleport | `RacingSim.Race.LapResetAndRestart` (RACE-002) |
+| Restart from a clean session | `RacingSim.Race.LapResetAndRestart`, `RacingSim.Race.ResultRestartCycle` (RACE-003) |
+| Per-gate crossing direction, high-speed single-tick, grazing | `RacingSim.Race.GateCrossingDirection`, `RacingSim.Race.GateCurvedTrack` (TRACK-002) |
+
+**What none of them do is drive two faults on one lap.** `FRaceLapInvalidity`'s entire
+published contract is *first fault wins* ("Which fault is reported must not depend on how
+much further the car happened to drive afterwards",
+`Source/RacingSim/Race/RaceLapTracker.h`), and a rule about which of two faults is
+reported is untested until two faults exist: with exactly one fault, "first" and "last"
+are the same value, so every existing suite would sit green over a last-fault-wins
+implementation. That gap is this ticket's reason to exist.
+
+- [x] A new, self-contained matrix suite at
+      `Source/RacingSimTests/Race/RaceFaultMatrixSpec.cpp`, built on the existing
+      `URaceLapTracker` (`Source/RacingSim/Race/RaceLapTracker.h/.cpp`),
+      `FRacingCheckpointGateSet` (`Source/RacingSim/Race/TrackCheckpointGate.h`) and
+      `FTrackCenterline` (`Source/RacingSim/Race/TrackCenterline.h`). **No production
+      behaviour change is in scope** — this ticket asserts the rules RACE-002/RACE-003
+      shipped, and any defect it finds is a new finding, not a licence to edit `Race/`
+      inside this ticket.
+- [x] Level-free, actor-free, `SmokeFilter`, mirroring `RaceLapTrackerSpec.cpp`'s
+      precedent and `Docs/Environment.md`'s two hard constraints: a `SmokeFilter` test in
+      this project cannot construct a non-template Actor, and a test carrying a filter no
+      recorded gate command uses will sit green and unexecuted.
+- [x] **Three fault axes, each proven potent alone** before any composition assertion is
+      made (`RacingSim.Race.FaultMatrixSingles`): shortcut → `MissedCheckpoint` naming the
+      skipped gate; reverse line crossing → `ReverseFinishCrossing` naming gate 0; announced
+      reset → `VehicleReset`. Without this, every first-fault-wins assertion below is
+      vacuous — an injector that silently did nothing would also "lose" to the first fault.
+- [x] **All six ordered pairs** of the three fault axes
+      (`RacingSim.Race.FaultMatrixOrderedPairs`), asserting that the first fault's
+      `Reason`, `GateIndex` **and** `GateId` all survive the second, and that the verdict is
+      explicitly *not* the second fault's reason.
+- [x] **The self-pairs** (`RacingSim.Race.FaultMatrixSelfPairs`): the same fault twice must
+      not re-latch onto the later instance. Discriminated on the **gate**, not the reason —
+      a "latch onto the most recent instance of the same reason" defect matches on the enum
+      either way and is only visible in `GateIndex`/`GateId`.
+- [x] **Double-triggering tested differentially**
+      (`RacingSim.Race.FaultMatrixDoubleTrigger`), not absolutely. Re-crossing an
+      already-satisfied gate must change *nothing*, and the interesting half of that claim
+      is that it changes nothing on a lap that is **already ruined** — which is only
+      testable as a difference. Every case runs twice, with and without an oscillation, and
+      the two verdicts are compared field by field; the zero-net-advance mechanism is pinned
+      separately so the comparison cannot pass by both arms missing the compared fields.
+- [x] **Restart crossed with every cell** (`RacingSim.Race.FaultMatrixRestart`): eleven
+      cells — three singles, **all six** ordered pairs, and two cells that additionally
+      oscillate across an already-taken gate — each restarted via `ResetForNewSession()`
+      called **twice** for idempotence, then checked end-to-end: the restarted session must
+      *score a clean lap `Valid`*, not merely present cleared fields. A reset that cleared
+      every field the test knows to look at but left one it does not is still caught.
+      The two `*+Reverse` pairs are included deliberately: a reverse must be driven at the
+      line, so those cells first sweep backwards from wherever the earlier fault left the
+      car, rewinding already-taken gates — the messiest pre-restart state in the matrix, and
+      therefore the last cells that should be dropped for being awkward. The double-trigger
+      cells are included because section 5 only proves an oscillation changes no *verdict*;
+      it says nothing about whether a benign rewind-and-re-satisfy leaves residue that
+      survives the restart, which is exactly the kind of residue nobody thinks to clear.
+- [x] **Negative controls, as their own suite**
+      (`RacingSim.Race.FaultMatrixNegativeControl`). Every assertion in the sections above
+      is satisfied by a tracker that refuses all laps, which is precisely how this project
+      has been bitten before (`Docs/Environment.md`: a test that sat green and unexecuted;
+      RACE-002 `H1`: a suite that only ever asserted the *valid* count and so missed three
+      phantom laps). Four controls pin the other direction: a clean lap counts and is
+      `Valid`; a *second* clean lap also counts (no one-lap-then-jam); a lap containing only
+      a double-trigger is still `Valid` (without which the differential comparisons could be
+      comparing two equally invalid verdicts); and `bResetInvalidatesLap = false` really does
+      change the reset verdict (without which "a reset invalidates" could be unconditional).
+- [x] `RACE-003` `L7` discharged as recorded in the inherited-findings table above —
+      declared vacuous for this ticket **with its reason stated**, obligation left wholly
+      with `UI-001`.
+- [x] Editor **and** Game targets build with zero new warnings, using the verified command
+      forms in `Docs/Environment.md`. **Verified 2026-08-24** — `RacingSimEditor Win64
+      Development`: `Result: Succeeded`, 0 `warning|error` matches. `RacingSim Win64
+      Development`: `Result: Succeeded`, 0 `warning|error` matches. Both built `-NoUBA`
+      (single-machine) after the default UBA distributed executor crashed with an internal
+      compiler error / access violation on `cl.exe` — reproduced once, then eliminated by
+      disabling UBA, so the failure is a distributed-build-worker fault, not a defect in
+      this ticket's code; recorded so a future UBA crash on this file is not re-diagnosed
+      from scratch.
+- [x] `Smoke` filter run, with pass/fail/not-run counts read from
+      `Saved/Automation/Report/index.json`, never from a process exit code
+      (`Docs/Environment.md`; TRACK-002 `M7`). **Verified 2026-08-24**,
+      `reportCreatedOn 2026.08.24-08.52.01`: **succeeded=486, succeededWithWarnings=2,
+      failed=0, notRun=0**. All six new tests —
+      `RacingSim.Race.FaultMatrix{Singles,OrderedPairs,SelfPairs,DoubleTrigger,
+      NegativeControl,Restart}` — report `state: "Success"`, 0 warnings, 0 errors each.
+      Baseline at `RACE-003` was 482; the two `succeededWithWarnings` entries
+      (`RacingSim.Race.TrackFailedBakeIsNotRetried`, `RacingSim.Race.TrackValidation`) predate
+      this ticket, deliberately exercise an expected failed-bake warning, and are unrelated
+      to the new suite (`test-engineer`, 2026-08-24).
+
+### RACE-004 — review findings, pass 1, 2026-08-24
+
+Verdict: **APPROVED WITH FOLLOW-UPS**. No BLOCKER/HIGH findings. Coverage-only ticket, no
+production code changed, so no re-review is required to merge.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM-1 | `ERaceLapInvalidReason::TimingUnavailable` is the one fault axis this suite omits, and it has the sharpest composition semantics of the four — `ObserveClockFault()` runs at the top of every `Advance()` so it wins first-fault-wins against any later-step fault, and re-latches every lap via `OpenLap()` | **Routed forward** to the next ticket that touches `RaceLapTracker.cpp` — additive test coverage, not a defect |
+| MEDIUM-2 | The unannounced-teleport reset path (`RaceLapTracker.cpp:498-509`, a second `VehicleReset` producer distinct from `NotifyVehicleReset()`) is registered as an expected log message but never actually driven by any injector in this file | **Routed forward** alongside MEDIUM-1 — same ticket, additive |
+| MEDIUM-3 | Sections 3/4 (~190 lines) all converge on one four-line first-fault-wins guard in `RaceLapTracker.cpp:1050-1052`, disproportionate to what they falsify | **Accepted as-is** — kept rather than cut; a published behavioural contract with zero coverage is worse than an oversized one, and section framing corrected is not warranted for lines that are otherwise correct |
+| MEDIUM-4 | No restart cell exercises `Advance()`'s defensive "restart underneath us" branch (`RaceLapTracker.cpp:443-449`, the case where an owner *forgets* to call `ResetForNewSession()`) — every cell in section 6 calls it explicitly | **Routed forward** alongside MEDIUM-1/MEDIUM-2 — one additional matrix cell, additive |
+| LOW-1 | `RaceFaultMatrixSpec.cpp:496-499` comment on `Occurrences = -1` was self-contradictory prose | **Fixed** — corrected to state the actual `AutomationTest.cpp` gating (`ExpectedNumberOfOccurrences > 0`), traced into engine source by `code-reviewer` |
+| LOW-2 | Smoke-run acceptance-criteria bullet in this file said "the acceptance criteria above named five tests" while the criteria list already named all six | **Fixed** — stale parenthetical removed |
+| LOW-3 | `-NoUBA` build workaround recorded with no owner for re-testing the default distributed executor | **Accepted as a standing note** — not a code change; flagged here so it isn't silently promoted to the permanent build command |
+| LOW-4 | `GMatrixNowSeconds` (file-scope mutable clock) makes these six tests mutually unsafe under future parallel automation | **Accepted as-is**, matches existing `RaceLapTrackerSpec.cpp` precedent; not this project's current execution model |
+| LOW-5 | `InjectShortcut`'s comment undersold that its "wide line" is a 15 m single-step radial toggle, not a driveable path | **Accepted as-is** — geometrically correct and below all teleport-plausibility bounds; comment precision not required for merge |
+
+**Deliberately excluded from this ticket's scope**, tracked forward rather than silently
+assumed:
+
+- **Any production code change in `Source/RacingSim/Race/`.** This is a coverage ticket.
+  If the matrix finds a defect, it is raised as a finding against the owning ticket, not
+  patched here — patching the code under test inside the ticket that tests it is how a
+  suite ends up asserting the bug.
+- **The `Product` gate / placed-level tests.** The matrix is level-free by construction and
+  adds no `ProductFilter` test, so it introduces no new `Product` obligation.
+  `RACE-003` `M5`'s standing instruction (run the three `TrackPrototypeLevel*` tests) is
+  unchanged and remains a `test-engineer` gate instruction, not a RACE-004 deliverable.
+- **High-latency input and simultaneous multi-car triggers** (`Docs/03-TrackRaceUI.md:46`).
+  No input pipeline and no opponent exist yet; both belong with `VEH-*`/`STREAM-*`.
+- **`RACE-003` fix-on-next-touch items** (`L1`–`L4`, `L6`, `L8`) — this ticket touches none
+  of the files they live in.
+- **Track-limits / off-surface penalties.** Not a checkpoint rule; no ticket owns it yet.
 
 ### VEH-005 — findings inherited from TRACK-001
 
