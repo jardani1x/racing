@@ -2876,6 +2876,128 @@ batch decisions respectively rather than answered a third time separately.
 **`RACE-003` `L1`, `L2`, `L3`, `L4`, `L6` and `L8` are fix-on-next-touch**, added to the
 running list alongside RACE-002's `L4`/`L5`/`L8`/`R2-L1`/`R2-L2`.
 
+### RACE-004 — findings inherited from RACE-003
+
+| ID | Finding | What RACE-004 must do |
+| --- | --- | --- |
+| L7 (RACE-003 pass 1) | `ComputeContentHash()` (`TrackDefinitionActor`) still hashes a failed bake, so `GetContentVersion().IsPopulated()` reads `true` for a track that cannot actually be raced. Closed at the submission boundary (`Validate()`/`IsSubmittable()` both refuse it), but the `IsPopulated()` claim itself is unchanged. Routed jointly to `UI-001` and `RACE-004` so the clause could not vanish between tables a third time | **Declared vacuous for this ticket, explicitly rather than silently.** RACE-004's deliverable is a level-free `URaceLapTracker` matrix (`RaceFaultMatrixSpec.cpp`): it constructs no `ATrackDefinitionActor`, calls neither `ComputeContentHash()` nor `IsPopulated()`, and therefore has no call site at which the finding could be honoured or violated. The substantive obligation — "use `Validate()`/the cached validation result, never `IsPopulated()`, to answer *is this track safe to race*" — remains **wholly with `UI-001`**, which is the first ticket to build a consumer (HUD/telemetry stamping) that can get it wrong. Recorded here so the joint routing is discharged on the record, not dropped |
+
+### RACE-004 — acceptance criteria, opened 2026-08-24
+
+Scope per the Epic 3 row: `Shortcut/reverse/double-trigger/reset automation matrix`.
+Owner `test-engineer + implementer`. Gate B. Depends on `RACE-003` (**DONE**, merged at
+`cc80624`) — unblocked. Read the inherited-findings table immediately above first.
+
+**This ticket is the combinational matrix, and nothing else.** `RACE-003`'s own scope note
+drew the boundary in advance: "the full shortcut/reverse/double-trigger/reset automation
+*matrix* as its own deliverable (`RACE-004` — this ticket's own restart coverage above is
+scoped to restart specifically, not a duplicate of that matrix)". Each individual axis is
+already covered and covered well, by suites this ticket must not duplicate or re-litigate:
+
+| Axis | Already owned by |
+| --- | --- |
+| Skipped/out-of-order gate | `RacingSim.Race.LapOrdering` (RACE-002) |
+| Reverse finish crossing | `RacingSim.Race.LapOrdering`, `RacingSim.Race.LapLineSpin` (RACE-002 + repair 1) |
+| Spin/oscillation at a gate | `RacingSim.Race.LapOrdering`, `RacingSim.Race.LapLineSpin` |
+| Reset / unannounced teleport | `RacingSim.Race.LapResetAndRestart` (RACE-002) |
+| Restart from a clean session | `RacingSim.Race.LapResetAndRestart`, `RacingSim.Race.ResultRestartCycle` (RACE-003) |
+| Per-gate crossing direction, high-speed single-tick, grazing | `RacingSim.Race.GateCrossingDirection`, `RacingSim.Race.GateCurvedTrack` (TRACK-002) |
+
+**What none of them do is drive two faults on one lap.** `FRaceLapInvalidity`'s entire
+published contract is *first fault wins* ("Which fault is reported must not depend on how
+much further the car happened to drive afterwards",
+`Source/RacingSim/Race/RaceLapTracker.h`), and a rule about which of two faults is
+reported is untested until two faults exist: with exactly one fault, "first" and "last"
+are the same value, so every existing suite would sit green over a last-fault-wins
+implementation. That gap is this ticket's reason to exist.
+
+- [x] A new, self-contained matrix suite at
+      `Source/RacingSimTests/Race/RaceFaultMatrixSpec.cpp`, built on the existing
+      `URaceLapTracker` (`Source/RacingSim/Race/RaceLapTracker.h/.cpp`),
+      `FRacingCheckpointGateSet` (`Source/RacingSim/Race/TrackCheckpointGate.h`) and
+      `FTrackCenterline` (`Source/RacingSim/Race/TrackCenterline.h`). **No production
+      behaviour change is in scope** — this ticket asserts the rules RACE-002/RACE-003
+      shipped, and any defect it finds is a new finding, not a licence to edit `Race/`
+      inside this ticket.
+- [x] Level-free, actor-free, `SmokeFilter`, mirroring `RaceLapTrackerSpec.cpp`'s
+      precedent and `Docs/Environment.md`'s two hard constraints: a `SmokeFilter` test in
+      this project cannot construct a non-template Actor, and a test carrying a filter no
+      recorded gate command uses will sit green and unexecuted.
+- [x] **Three fault axes, each proven potent alone** before any composition assertion is
+      made (`RacingSim.Race.FaultMatrixSingles`): shortcut → `MissedCheckpoint` naming the
+      skipped gate; reverse line crossing → `ReverseFinishCrossing` naming gate 0; announced
+      reset → `VehicleReset`. Without this, every first-fault-wins assertion below is
+      vacuous — an injector that silently did nothing would also "lose" to the first fault.
+- [x] **All six ordered pairs** of the three fault axes
+      (`RacingSim.Race.FaultMatrixOrderedPairs`), asserting that the first fault's
+      `Reason`, `GateIndex` **and** `GateId` all survive the second, and that the verdict is
+      explicitly *not* the second fault's reason.
+- [x] **The self-pairs** (`RacingSim.Race.FaultMatrixSelfPairs`): the same fault twice must
+      not re-latch onto the later instance. Discriminated on the **gate**, not the reason —
+      a "latch onto the most recent instance of the same reason" defect matches on the enum
+      either way and is only visible in `GateIndex`/`GateId`.
+- [x] **Double-triggering tested differentially**
+      (`RacingSim.Race.FaultMatrixDoubleTrigger`), not absolutely. Re-crossing an
+      already-satisfied gate must change *nothing*, and the interesting half of that claim
+      is that it changes nothing on a lap that is **already ruined** — which is only
+      testable as a difference. Every case runs twice, with and without an oscillation, and
+      the two verdicts are compared field by field; the zero-net-advance mechanism is pinned
+      separately so the comparison cannot pass by both arms missing the compared fields.
+- [x] **Restart crossed with every cell** (`RacingSim.Race.FaultMatrixRestart`): eleven
+      cells — three singles, **all six** ordered pairs, and two cells that additionally
+      oscillate across an already-taken gate — each restarted via `ResetForNewSession()`
+      called **twice** for idempotence, then checked end-to-end: the restarted session must
+      *score a clean lap `Valid`*, not merely present cleared fields. A reset that cleared
+      every field the test knows to look at but left one it does not is still caught.
+      The two `*+Reverse` pairs are included deliberately: a reverse must be driven at the
+      line, so those cells first sweep backwards from wherever the earlier fault left the
+      car, rewinding already-taken gates — the messiest pre-restart state in the matrix, and
+      therefore the last cells that should be dropped for being awkward. The double-trigger
+      cells are included because section 5 only proves an oscillation changes no *verdict*;
+      it says nothing about whether a benign rewind-and-re-satisfy leaves residue that
+      survives the restart, which is exactly the kind of residue nobody thinks to clear.
+- [x] **Negative controls, as their own suite**
+      (`RacingSim.Race.FaultMatrixNegativeControl`). Every assertion in the sections above
+      is satisfied by a tracker that refuses all laps, which is precisely how this project
+      has been bitten before (`Docs/Environment.md`: a test that sat green and unexecuted;
+      RACE-002 `H1`: a suite that only ever asserted the *valid* count and so missed three
+      phantom laps). Four controls pin the other direction: a clean lap counts and is
+      `Valid`; a *second* clean lap also counts (no one-lap-then-jam); a lap containing only
+      a double-trigger is still `Valid` (without which the differential comparisons could be
+      comparing two equally invalid verdicts); and `bResetInvalidatesLap = false` really does
+      change the reset verdict (without which "a reset invalidates" could be unconditional).
+- [x] `RACE-003` `L7` discharged as recorded in the inherited-findings table above —
+      declared vacuous for this ticket **with its reason stated**, obligation left wholly
+      with `UI-001`.
+- [ ] Editor **and** Game targets build with zero new warnings, using the verified command
+      forms in `Docs/Environment.md`. **NOT YET VERIFIED.** The implementing session was
+      denied permission to invoke `Build.bat`, so no build has been run against this suite.
+      This box must be ticked only by the session that actually inspects the build output.
+- [ ] `Smoke` filter run, with pass/fail/not-run counts read from
+      `Saved/Automation/Report/index.json`, never from a process exit code
+      (`Docs/Environment.md`; TRACK-002 `M7`). **NOT YET VERIFIED** — same permission
+      denial as the row above; `UnrealEditor-Cmd.exe` was never invoked. The five new
+      tests (`RacingSim.Race.FaultMatrix{Singles,OrderedPairs,SelfPairs,DoubleTrigger,
+      NegativeControl}`) are therefore **unexecuted**, and until they run the suite's
+      correctness is asserted only by reading, not by evidence.
+
+**Deliberately excluded from this ticket's scope**, tracked forward rather than silently
+assumed:
+
+- **Any production code change in `Source/RacingSim/Race/`.** This is a coverage ticket.
+  If the matrix finds a defect, it is raised as a finding against the owning ticket, not
+  patched here — patching the code under test inside the ticket that tests it is how a
+  suite ends up asserting the bug.
+- **The `Product` gate / placed-level tests.** The matrix is level-free by construction and
+  adds no `ProductFilter` test, so it introduces no new `Product` obligation.
+  `RACE-003` `M5`'s standing instruction (run the three `TrackPrototypeLevel*` tests) is
+  unchanged and remains a `test-engineer` gate instruction, not a RACE-004 deliverable.
+- **High-latency input and simultaneous multi-car triggers** (`Docs/03-TrackRaceUI.md:46`).
+  No input pipeline and no opponent exist yet; both belong with `VEH-*`/`STREAM-*`.
+- **`RACE-003` fix-on-next-touch items** (`L1`–`L4`, `L6`, `L8`) — this ticket touches none
+  of the files they live in.
+- **Track-limits / off-surface penalties.** Not a checkpoint rule; no ticket owns it yet.
+
 ### VEH-005 — findings inherited from TRACK-001
 
 | ID | Finding | What VEH-005 must do |
