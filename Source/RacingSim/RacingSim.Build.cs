@@ -91,7 +91,14 @@ public class RacingSim : ModuleRules
 			// lives in the DeveloperSettings module (not in Engine). Public rather
 			// than private because Core/RacingSimSettings.h exposes the base class
 			// to every dependent, including RacingSimTests.
-			"DeveloperSettings"
+			"DeveloperSettings",
+
+			// VEH-002: ARacingVehiclePawn's movement component and
+			// UPrototypeVehicleWheel both derive from ChaosVehicles types
+			// (UChaosWheeledVehicleMovementComponent, UChaosVehicleWheel). Public
+			// because PrototypeVehicleWheel.h exposes UChaosVehicleWheel to every
+			// dependent, including RacingSimTests.
+			"ChaosVehicles"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] { });

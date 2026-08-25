@@ -183,6 +183,19 @@ private:
 	FVehicleInputProcessor Processor;
 
 	/**
+	 * The mapping context this component itself last pushed onto the subsystem, so a
+	 * device switch removes THAT context rather than the incoming one.
+	 *
+	 * VEH-002 finding (routed from VEH-001 MEDIUM-1): re-initialising with a
+	 * RemoveMappingContext(Context) call on the NEW context only de-duplicates against
+	 * re-adding the same context; it does nothing about a PREVIOUS device's context,
+	 * which stays mapped at the same priority and keeps firing into PendingSample.
+	 * Weak, not strong: a subsystem-driven context removal (e.g. another system
+	 * clearing all contexts) must not keep this pointer alive past its owner's cleanup.
+	 */
+	TWeakObjectPtr<UInputMappingContext> PushedContext;
+
+	/**
 	 * Raw values accumulated by the handlers between Ticks.
 	 *
 	 * Enhanced Input fires Triggered/Completed callbacks within the frame; this
