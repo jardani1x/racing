@@ -1095,6 +1095,127 @@ architecture. Tunables live in typed DataAssets, never as magic numbers in `Tick
 `VEH-004` must detect NaN, infinity, explosive energy, persistent penetration and
 unbounded wheel state — Gate C treats these as test failures, not warnings.
 
+### VEH-001 — acceptance criteria, opened 2026-08-25
+
+Scope per the Epic 2 row: `Keyboard/gamepad input mappings`. Owner
+`vehicle-physics-engineer`. Gate B. Depends on `CORE-001` (**DONE**) — unblocked.
+
+**No findings have been routed forward into `VEH-001`.** Verified by grepping this file
+for `VEH-001`: it appears only in the Epic 2 row above and in this block. Every
+`### VEH-* — findings inherited from *` section in this file names `VEH-002` or
+`VEH-005`, never `VEH-001`. So unlike `RACE-002`/`RACE-003`/`RACE-004`, this ticket opens
+with a clean inbox and there is no inherited-findings table to read first.
+
+**This ticket is the input *contract*, and nothing else.** `VEH-002` owns the pawn, the
+Chaos `UChaosWheeledVehicleMovementComponent` and the first actor that can consume a
+command; `VEH-003` owns the tune; `VEH-005` owns the reset *pose*. VEH-001 must therefore
+be buildable and testable with **no placed pawn and no level**, which is this project's
+established precedent (`TEST-001`, `RACE-002`, `RACE-004` are all level-free). It must
+also not pre-empt those tickets: producing a normalised command is in scope, applying one
+to a vehicle is not.
+
+Two `Docs/Environment.md` constraints bind every choice below and are not negotiable:
+a `SmokeFilter` test in this project **cannot construct a non-template Actor or
+`UActorComponent`** (`FEngineLoop::PreInit` runs smoke tests before
+`RegisterEngineElements()`), and **a test carrying a filter that no recorded gate command
+uses will sit green and unexecuted**. Together these force the design: the decision logic
+must live somewhere that is not a component.
+
+- [x] **The command struct is the published contract.** `FVehicleInputCommand`
+      (`Source/RacingSim/Vehicle/VehicleInputTypes.h`) is what `VEH-002`, `VEH-004` and
+      `UI-001` consume. Normalised and dimensionless: throttle/brake/handbrake/clutch in
+      `[0,1]`, steer in `[-1,1]`, positive steer = right = +Z yaw in Unreal's left-handed
+      Z-up frame. **No centimetres, no newtons, no torque** — mapping a command onto a
+      Chaos axis is `VEH-002`'s job, and putting a physical unit in this struct would
+      commit VEH-001 to a drivetrain it cannot test.
+- [x] **All logic lives in a non-`UObject` processor.** `FVehicleInputProcessor`
+      (`Source/RacingSim/Vehicle/VehicleInputProcessor.h/.cpp`) holds every rule —
+      dead zone, saturation, response gamma, rate limiting, pedal-conflict policy,
+      speed-sensitive steering, shift edges, reset hold. It is a plain struct, so the
+      whole of this ticket's behaviour is reachable from a `SmokeFilter` test with no
+      actor, no world and no engine subsystem. `UVehicleInputComponent` must stay a thin
+      adapter over it with no decisions of its own.
+- [x] **Enhanced Input, and bindings are assets, never literals.**
+      `UVehicleInputConfigDataAsset` (`Source/RacingSim/Vehicle/VehicleInputConfig.h/.cpp`)
+      holds `TSoftObjectPtr<UInputMappingContext>` per device profile and a
+      slot→`TSoftObjectPtr<UInputAction>` map keyed by `EVehicleInputAction`. **No
+      `EKeys::` literal and no `FKey` may appear anywhere in `Source/RacingSim/Vehicle/`**,
+      so rebinding is an asset edit and never a recompile. A test asserts this by source
+      scan, because a review convention will not survive.
+- [x] **Both device classes are first-class, not one plus a fallback.** Keyboard is
+      digital and gamepad is analog, and the same dead zone/rate limit cannot serve both:
+      an analog trigger must not be rate-limited into mush, and a digital key must be
+      ramped or the car is undriveable. `FVehicleInputProfile` is therefore per
+      `ERacingInputDeviceType` (the `CORE-002` enum, reused — no second device enum), and
+      profile selection is tested for `Keyboard` and `Gamepad` explicitly.
+- [x] **Action slots cover the full Phase 1 control set** named in
+      `Docs/02-VehiclePhysics.md` items 6 and 8: throttle, brake, steer, handbrake,
+      clutch, shift up, shift down, and reset. Manual shifting **is** in scope as a
+      contract (item 6 says "automatic/manual shift policy, reverse"); the shift slots are
+      required when `ETransmissionInputMode::Manual` and optional otherwise, and that
+      conditional requirement is validated, not documented.
+- [x] **Frame-rate independence is proven, not asserted.** CLAUDE.md: "Keep gameplay
+      independent from frame rate". A digital key held for a fixed wall-clock duration must
+      reach the same axis value when stepped at 30 Hz, 60 Hz and 144 Hz, within a stated
+      tolerance; a reset hold must complete after the same wall time at every rate; and a
+      single pathological `DeltaSeconds` (hitch, or a paused-then-resumed stream) must be
+      clamped rather than teleporting an axis across its whole range.
+- [x] **Hostile input cannot escape the processor.** NaN, ±infinity and out-of-range
+      raw axes — all reachable over Pixel Streaming, where the browser supplies the axis
+      value — are rejected at the boundary and never reach a command. Every output of
+      every test path is checked finite and in range. A NaN steer that reaches Chaos is a
+      Gate C failure in `VEH-004`; it must not be `VEH-004`'s job to catch it.
+- [x] **Ranges and the curve are validated.** The DataAsset declares a
+      `RacingSim::Validation::FRacingPropertyRange` table and reuses `CORE-003`'s
+      `EnforceRanges`, per CLAUDE.md's "tunable parameters in typed DataAssets ... with
+      validation". The optional speed-sensitive steering `FRuntimeFloatCurve` is validated
+      for key count, finite keys, non-negative time domain and in-range values, and a
+      config that switches the curve **on** without supplying a usable one is a validation
+      failure, not a silent fall-back to full lock at 300 km/h.
+- [x] **The one real unit conversion is explicit and tested.** Speed-sensitive steering
+      consumes speed in the project's storage unit (cm/s, per `Core/RacingSimUnits.h`) and
+      the curve/threshold domain is km/h. That conversion goes through
+      `RacingSim::Units::CmsToKilometresPerHour` — never an inline `0.036` — and is
+      asserted against an independently known value.
+- [x] **Telemetry for the acceptance criteria exists.** `FVehicleInputCommand` carries the
+      monotonic sample timestamp, the *clamped* `DeltaSeconds` actually integrated, the
+      resolved device type and a `Corrections` bitmask of `EVehicleInputCorrection`
+      (`NonFinite`/`OutOfRange`/`DeltaClamped`/`PedalConflict`) read through
+      `WasCorrected()`/`HasCorrection()` -- a bitmask rather than the single
+      `bWasCorrected` flag this criterion was drafted with, because more than one
+      correction can apply to one sample and collapsing them would hide the interesting
+      combination. So `VEH-004`'s recorder and the
+      `Docs/02-VehiclePhysics.md` telemetry schema line "throttle, brake, clutch, steering,
+      gear" can be populated without VEH-002 re-deriving any of it.
+- [x] **Automation lives in `Source/RacingSimTests/Vehicle/`** (new folder), is
+      `SmokeFilter` with `EditorContext | CommandletContext`, and every new test is proven
+      discovered by a `RunFilter Smoke` run — never by `RunTests <name>`, which bypasses
+      filters. The `Smoke` `succeeded` count must rise from the `RACE-004` baseline of
+      **486**, and the counts are read from `Saved/Automation/Report/index.json`, never
+      from a process exit code. **Verified 2026-08-25**, `reportCreatedOn
+      2026.08.25-02.04.17`: **succeeded=495, succeededWithWarnings=2 (pre-existing,
+      unrelated), failed=0, notRun=0** — up from 486 by exactly the 9 new tests, all
+      `RacingSim.Vehicle.{InputConfigBindings,InputConfigRanges,InputControls,
+      InputFrameRateIndependence,InputHostileValues,InputNoHardcodedKeys,InputResetHold,
+      InputShaping,InputUnits}`, every one `state: "Success"`, 0 warnings, 0 errors,
+      confirmed by direct inspection of `index.json` — including the two tests
+      (`InputFrameRateIndependence`, `InputResetHold`) whose loop-premise defects were
+      caught and fixed mid-implementation.
+- [x] **Both targets build with zero new warnings** — `RacingSimEditor Win64 Development`
+      and `RacingSim Win64 Development` — using the verified command form in
+      `Docs/Environment.md`. No warning suppression without a documented reason.
+      **Verified 2026-08-25**, both `Result: Succeeded`, 0 `warning|error` matches. Built
+      `-NoUBA` (single-machine); the default UBA distributed executor is a known transient
+      crash risk in this environment (see `RACE-004`'s evidence), not exercised as a
+      failure here.
+
+**Explicitly out of scope, and must be stated in the completion report rather than
+quietly skipped:** authoring the `.uasset` `UInputMappingContext` and `UInputAction`
+objects themselves. CLAUDE.md forbids editing Unreal binary assets from a worktree and
+requires a serialized `Docs/AssetOwnership.tsv` claim; the soft-pointer fields and the
+validation that rejects an unbound slot are what VEH-001 owes. The assets are a content
+task for whichever ticket first needs a car to actually move.
+
 ---
 
 ## Epic 3 — track and race
