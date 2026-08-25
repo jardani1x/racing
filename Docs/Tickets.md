@@ -1356,17 +1356,23 @@ answers "what shape is it" belongs here.
       refuses a `Command` that fails `IsFiniteAndInRange()` wholesale and returns the safe
       coasting input. Asserted for NaN and +infinity, and for a plain out-of-`[0,1]`-range
       throttle, in `RacingSim.Vehicle.ChaosInputMapping`.
-- [x] **Physics timing is stated as a policy, and the ordering guarantee is real, not
-      merely probable.** `ARacingVehiclePawn`'s constructor sets `PrimaryActorTick.TickGroup
-      = TG_PrePhysics`, matching `UVehicleInputComponent`'s own tick group (VEH-001). **Repair
-      cycle 1 (`code-reviewer` MEDIUM-1):** same tick group alone does not order an actor's
-      `Tick` against its own component's `TickComponent` — `UActorComponent`'s tick
-      registration adds no prerequisite on the owning actor. Fixed two ways: the movement
-      component is now attached with `SetUpdatedComponent(ChassisCollision)` rather than a
-      direct `UpdatedComponent =` assignment (the setter itself adds a tick prerequisite),
-      and the pawn calls `AddTickPrerequisiteComponent(VehicleInputComp)` explicitly in the
-      constructor, so `VehicleInputComp::TickComponent` is now guaranteed to run before
-      `ARacingVehiclePawn::Tick` on every frame. No gameplay value is derived from
+- [x] **Physics timing is stated as a policy; one half of the ordering is now a real
+      guarantee, the other half is not (corrected on re-review).** `ARacingVehiclePawn`'s
+      constructor sets `PrimaryActorTick.TickGroup = TG_PrePhysics`, matching
+      `UVehicleInputComponent`'s own tick group (VEH-001). **Repair cycle 1 (`code-reviewer`
+      MEDIUM-1):** same tick group alone does not order an actor's `Tick` against its own
+      component's `TickComponent` — `UActorComponent`'s tick registration adds no
+      prerequisite on the owning actor. Fixed: `AddTickPrerequisiteComponent(VehicleInputComp)`
+      in the pawn's constructor now guarantees `VehicleInputComp::TickComponent` runs before
+      `ARacingVehiclePawn::Tick`, so the command is fresh when read. **Re-review correction:**
+      `SetUpdatedComponent(ChassisCollision)` (used in place of a direct assignment) does add
+      a prerequisite, but the wrong direction for this claim — it orders `ChassisCollision`
+      *after* `VehicleMovementComponent`, not the pawn *before* it. There is **no** prerequisite
+      ordering `ARacingVehiclePawn::Tick` (which calls `SetThrottleInput` etc.) before
+      `VehicleMovementComponent::TickComponent` consumes those setters. Practical impact is
+      low — Chaos marshals input to the physics thread at the step rather than reading it
+      synchronously mid-tick — but the guarantee is not complete, and is recorded honestly as
+      partial rather than re-claimed as fixed. No gameplay value is derived from
       `DeltaSeconds` in the pawn's `Tick`.
 - [x] **The transmission-mode agreement check the chassis DataAsset's own header promises
       now exists.** `VehicleChassisDataAsset.h`'s `bUseAutomaticGears` comment states
