@@ -1082,7 +1082,7 @@ acceptance criteria — do not rediscover these from scratch:
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
-| VEH-001 | Keyboard/gamepad input mappings | vehicle-physics-engineer | CORE-001 | B | OPEN |
+| VEH-001 | Keyboard/gamepad input mappings | vehicle-physics-engineer | CORE-001 | B | **DONE** 2026-08-25 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM — device-switch mapping-context bug, untested `ConfigureFromAsset`/steer-scale seam ×2, no stuck-input timeout — plus 3 LOW, all routed forward to `VEH-002`/`STREAM-001`, none blocking a contract-only ticket with no consumer yet). Independently confirmed the two loop-premise test fixes are genuine, the no-hard-coded-keys source scan is real, and the processor has no `UObject`/actor dependency. Both targets build clean and Smoke `succeeded=495` (baseline 486 + 9 new `RacingSim.Vehicle.Input*` tests, `failed=0, notRun=0`). Merged to `main`. |
 | VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | OPEN |
 | VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | OPEN |
 | VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002 | C | OPEN |
@@ -1215,6 +1215,22 @@ objects themselves. CLAUDE.md forbids editing Unreal binary assets from a worktr
 requires a serialized `Docs/AssetOwnership.tsv` claim; the soft-pointer fields and the
 validation that rejects an unbound slot are what VEH-001 owes. The assets are a content
 task for whichever ticket first needs a car to actually move.
+
+### VEH-001 — review findings, pass 1, 2026-08-25
+
+Verdict: **APPROVED WITH FOLLOW-UPS**. No BLOCKER/HIGH findings. No re-review required to
+merge — the untested seams named below have no consumer until `VEH-002` builds the pawn
+that calls them.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM-1 | `UVehicleInputComponent::InitialiseForController` (`VehicleInputComponent.cpp:107-110`) removes the **new** mapping context before adding it (de-dup against re-adding the same context), but its comment claims this prevents the **previous device's** context from staying stacked on a device switch. It does not — switching keyboard→gamepad leaves the keyboard `IMC` still mapped at the same priority, so both devices' bindings fire | **Routed forward to `VEH-002`** — real defect, but unreachable until a pawn actually possesses a controller and switches device profiles at runtime |
+| MEDIUM-2 | No test proves the processor actually applies the speed-sensitive steer scale in `Tick`, or that it is applied after rate limiting as documented. Every processor test uses the `Configure(profile,…)` overload (scale hard-wired to 1), never `ConfigureFromAsset`, so a regression deleting the multiply would pass all nine current tests | **Routed forward to `VEH-002`** — add a Smoke test using `ConfigureFromAsset` against a `NewObject`'d config, asserting the scale is applied and the ordering holds |
+| MEDIUM-3 | `ConfigureFromAsset` (`VehicleInputProcessor.cpp:145-182`) is entirely untested: device-recorded-on-failure, `TransmissionMode`/`MaxDeltaSeconds` sourced from the asset, `MaxDeltaSeconds` guarded to `[0.001, 1.0]`, neutral-profile fallback on a missing profile, and the `false` return contract | **Routed forward to `VEH-002`** alongside MEDIUM-2 — same seam, same fix |
+| MEDIUM-4 | No stuck-input mitigation at the browser trust boundary: `PendingSample` persists between Ticks and is only zeroed by an Enhanced Input `Completed` event, so a Pixel Streaming disconnect, tab backgrounding, or focus loss with no `Completed` leaves the last non-zero throttle/steer latched indefinitely | **Routed forward to `VEH-002`/`STREAM-001`** as an explicit requirement — a sample-staleness timeout or connection-loss hook that zeroes `PendingSample`. Correctly out of this ticket's scope (no connection exists yet), recorded here so it is not lost between tickets |
+| LOW-1 | `VehicleInputProcessor.cpp:340` selects steering rate by strict magnitude comparison; an equal-magnitude sign flip correctly takes `SteerRate`, but a flick to a *smaller* opposite magnitude takes `SteerCentringRate`, which is faster than `SteerRate` in the keyboard default (5.0 vs 2.5) — the comment's "conservative choice" claim covers only the exact-equality case | **Accepted as-is** — behaviour is defensible (centring rate winning on an ambiguous partial flick is not obviously wrong), comment precision not required for merge |
+| LOW-2 | `InitialiseForController`'s `bool` return conflates "content is broken" with "expected, not a local player" (normal for a remote pawn) | **Accepted as-is**, not blocking; a diagnosable return type is a `VEH-002` nicety once the possession path is real |
+| LOW-3 | The no-hard-coded-keys source-scan test (`VehicleInputConfigSpec.cpp:613`) hard-fails if it finds zero files, which is correct for editor/commandlet context but blocks ever running it in a packaged context | **Accepted as-is** — packaged automation is not this project's current execution model |
 
 ---
 
