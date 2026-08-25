@@ -12,6 +12,7 @@
 
 class UBoxComponent;
 class UVehicleInputComponent;
+class UVehicleTuneDataAsset;
 struct FVehicleInputCommand;
 
 /**
@@ -55,6 +56,17 @@ public:
 	/** The chassis asset in force. Set in the editor per-Blueprint; a null asset is refused at BeginPlay, not silently substituted. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle")
 	TObjectPtr<UVehicleChassisDataAsset> ChassisAsset;
+
+	/**
+	 * VEH-003 tune asset: engine, transmission, brakes, steering setup, suspension.
+	 *
+	 * Separate from ChassisAsset on purpose -- one car's geometry can carry several tunes
+	 * (and one tune is meaningless on different geometry), and the two answer different
+	 * questions. See UVehicleTuneDataAsset's header. A null tune is reported at BeginPlay
+	 * and leaves Chaos' own defaults in place; it is not silently substituted.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle")
+	TObjectPtr<UVehicleTuneDataAsset> TuneAsset;
 
 	/** Enhanced Input config, forwarded to the input component at possession. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle")
@@ -100,6 +112,19 @@ private:
 	 * bChassisApplied: PossessedBy must not re-apply the chassis on every possession.
 	 */
 	void ApplyChassisAsset();
+
+	/**
+	 * VEH-003: writes TuneAsset onto the movement component's EngineSetup,
+	 * TransmissionSetup and SteeringSetup, and maps EVehicleSteeringModel onto Chaos'
+	 * ESteeringType -- the second project-enum-to-Chaos-enum mapping this pawn owns.
+	 *
+	 * Called from ApplyChassisAsset() immediately BEFORE RecreatePhysicsState(), because
+	 * that call is what pushes the whole configuration into Chaos; a tune written after
+	 * it would not take effect until something else recreated the state. Suspension and
+	 * brake torques are NOT written here -- Chaos reads those from the wheel class default
+	 * object, so they are cross-checked instead (PrototypeVehicleWheel.h).
+	 */
+	void ApplyTuneAsset();
 
 	/** Maps FVehicleInputCommand onto the movement component's SetThrottleInput/SetBrakeInput/SetSteeringInput/SetHandbrakeInput. The one Tick-time consumer of VEH-001's contract. */
 	void ApplyInputCommand(const FVehicleInputCommand& Command);

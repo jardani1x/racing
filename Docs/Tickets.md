@@ -1470,6 +1470,188 @@ stand on. Coast-down, skidpad, step steer, braking, tunnelling, penetration and
 runaway-energy detection therefore belong to `VEH-004`/`VEH-006` and are **not** claimed
 here. VEH-002 proves configuration, contracts, conversions and wiring — not handling.
 
+### VEH-003 — acceptance criteria, opened 2026-08-25
+
+Scope per the Epic 2 row: `Engine/transmission/diff/brakes/steering/suspension tune
+data`. Owner `vehicle-physics-engineer`. Gate C. Depends on `VEH-002` (**DONE**, merged
+at `4e3aa58`) and `CORE-003` (**DONE**) — unblocked.
+
+#### Findings routed forward into this ticket
+
+Grepped `Docs/Tickets.md`, `Docs/15-ProjectStructure.md` and
+`Source/RacingSim/Core/RacingSimBuildId.h` for `VEH-003`. **One** obligation is routed
+here, and it is a contract hole rather than a review finding; the remainder of VEH-002's
+open items were explicitly routed to `VEH-004`, not here, which was checked rather than
+assumed.
+
+| Source | ID | Disposition in VEH-003 |
+|---|---|---|
+| CORE-002 / `Docs/Tickets.md:305`, `Docs/15-ProjectStructure.md:277`, `RacingSimBuildId.h:19,225` | `FRacingSimVersionStamp::CarSpecVersion` is documented as "Populated by VEH-003 from the car spec / tune asset. Empty here by design", and `IsPublishable()` refuses a stamp with the hole | **Closed here.** `UVehicleTuneDataAsset::GetContentVersion()` fills `AssetId`/`SchemaVersion`/`ContentHash` in the same shape `URaceRulesetDataAsset::GetContentVersion()` established, so a lap time can name the tune it was set on |
+
+Confirmed **not** routed here, checked rather than assumed: VEH-001 `MEDIUM-2`/`MEDIUM-3`
+(untested `ConfigureFromAsset`/steer-scale seam) and `MEDIUM-4` (stuck-input timeout) were
+re-routed by VEH-002 to "the next ticket that touches `VehicleInputProcessor.h/.cpp`
+(likely `VEH-004`)". **VEH-003 does not touch that file**, and deliberately does not: the
+tune is not the input layer. They stay with `VEH-004`.
+
+#### The scope boundary, in both directions
+
+VEH-002's chassis asset states the dividing question — a number answering "what SHAPE is
+it" is chassis, a number answering "how FAST is it" is tune. VEH-003 takes the second
+half and **must not re-declare the first**. Two consequences that are decisions, not
+oversights:
+
+- **The differential bias is NOT re-declared here.** `FVehicleDifferentialConfig` in UE
+  5.8.1 exposes exactly two fields, `DifferentialType` and `FrontRearSplit`
+  (`ChaosWheeledVehicleMovementComponent.h:194-198`), and VEH-002 already owns both via
+  `EVehicleDrivetrainLayout` and `FrontRearTorqueSplit` on the chassis asset — including
+  the "split is meaningless outside AWD" validation. Adding a second bias field here
+  would give one Chaos value two owners, which is exactly what the chassis header warns
+  against. **The "diff" in this ticket's title is therefore satisfied by cross-checking
+  and documenting the existing field, not by duplicating it**, and this must be stated in
+  the completion report rather than looking like a missed requirement.
+- **The mechanical steering lock stays on the chassis** (`MaxSteerAngleDegrees`, already
+  cross-checked against the front wheel CDO). VEH-003 owns the Chaos *steering setup* —
+  `ESteeringType`, `AngleRatio` and the speed-vs-steering curve.
+
+#### Verification status as committed — READ THIS BEFORE TICKING ANYTHING
+
+**No checkbox below is ticked, and that is accurate rather than pessimistic. The code in
+this commit has never been compiled.**
+
+The implementation is complete by *inspection* — every structural criterion below was
+read against the actual source before commit, and the design matches what the criterion
+describes. But the two gates that turn "it is written" into "it works" were **not run**:
+
+| Gate | Command form | Status |
+|---|---|---|
+| `RacingSimEditor Win64 Development` | `Docs/Environment.md` → *Compile editor target* | **NOT RUN — blocked** |
+| `RacingSim Win64 Development` | same, Game target | **NOT RUN — blocked** |
+| `Automation RunFilter Smoke` | `Docs/Environment.md` → *Run automation tests* | **NOT RUN** — moot without a build; the four new tests cannot exist in a stale binary, so a run would have reported the VEH-002 baseline of 500 and proved nothing |
+
+The build was attempted and was refused by the environment's command-permission layer,
+not by a compiler. Two invocation forms were tried (direct `Build.bat`, and via
+`cmd.exe /c`); both were denied before a compiler ran. No compiler output, warning count,
+or test count exists for VEH-003, and none is claimed anywhere in this section.
+
+**One real defect was found and fixed by inspection during this pass**, which is also the
+reason the build gate matters rather than being a formality:
+`VehicleTuneDataAsset.cpp` defined `bool AllFinite(const std::initializer_list<float>)`
+in its file-anonymous namespace, with a signature identical to the one
+`VehicleChassisDataAsset.cpp:43` already defines in the same module. Anonymous namespaces
+give internal linkage, so a non-unity build would link cleanly and hide it; a **Unity
+Build concatenates both translation units and the two definitions are a redefinition
+(C2084)** — the exact failure VEH-002 hit with `AddFailure` in its repair cycle 1. The
+file even carried a comment warning about this hazard on the helper directly above.
+Renamed to `AllTuneValuesFinite`, with the reasoning recorded at the definition.
+
+That fix is itself uncompiled. It is a rename with 8 call sites in one file, so the risk
+is low, but "low risk" is not "verified" and this ticket does not claim it is.
+
+**`VEH-003` therefore stays `OPEN`.** The next actor on this ticket must run both builds
+and the `Smoke` gate, confirm `succeeded` rises above **500** in
+`Saved/Automation/Report/index.json`, and only then tick these boxes.
+
+- [ ] **One new typed DataAsset owns the tune, and it declares no Chaos type.**
+      `UVehicleTuneDataAsset` (`Source/RacingSim/Vehicle/VehicleTuneDataAsset.h/.cpp`)
+      carries engine, transmission, brake, steering and suspension tune. It follows the
+      chassis asset's Phase 2 rule literally: **no ChaosVehicles include in the asset
+      header**, so `Docs/02-VehiclePhysics.md`'s promise that a project-owned tyre/
+      suspension layer can replace stock Chaos without rewriting the data contract stays
+      keepable. Chaos-facing enums (`ESteeringType`) are mirrored by a project enum and
+      mapped enumerator-for-enumerator in `ARacingVehiclePawn`, never `static_cast`ed.
+- [ ] **The engine is a curve plus an envelope, and the curve is required.**
+      Normalised torque `[0,1]` against RPM (`FRuntimeFloatCurve`), `MaxTorqueNm`,
+      `MaxRPM`, `IdleRPM`, engine braking, and the two rev-inertia terms Chaos exposes.
+      Chaos multiplies `MaxTorque` (N·m) by the normalised curve
+      (`FVehicleEngineConfig`, `ChaosWheeledVehicleMovementComponent.h:234-238`), so a
+      curve with no keys is a car with no torque at any RPM. Validation therefore
+      **requires** at least two keys, finite times/values, non-negative RPM domain, values
+      within `[0,1]`, and a non-zero peak — the same policy VEH-001 applied to its
+      steering curve (fail, never silently fall back).
+- [ ] **The gearbox is validated as a ratio set, not as independent numbers.** Forward
+      ratios must be non-empty, all finite and strictly positive, and **strictly
+      decreasing** (first gear is the shortest); reverse ratios likewise positive
+      magnitudes; final drive positive; `ChangeDownRPM < ChangeUpRPM <= MaxRPM` and
+      `IdleRPM < MaxRPM`; gear-change time non-negative; transmission efficiency in
+      `(0,1]`. A gearbox whose third gear is shorter than its second is individually
+      plausible and collectively impossible, which is the exact class of defect the
+      chassis relationship checks exist for.
+- [ ] **Brakes and suspension are declared here but written to the wheel CLASS, never to
+      a CDO at runtime, and the two are cross-checked.** VEH-002 established why
+      (`PrototypeVehicleWheel.h`): `SetupVehicle` reads
+      `WheelSetups[i].WheelClass.GetDefaultObject()`, so a per-instance write lands after
+      Chaos has already copied the CDO, and a CDO write is process-global. VEH-003 must
+      **replace, not extend**, the placeholder spring rate/preload/damping/travel/brake/
+      handbrake torques the VEH-002 wheel constructors carry. The single source of truth
+      is a `constexpr` block (`RacingSim::Vehicle::PrototypeTuneDefaults`) consumed by
+      **both** the wheel constructors and the DataAsset's property defaults, and
+      `ValidateTuneAgainstWheelClasses()` proves at runtime that an edited asset still
+      agrees with the classes Chaos actually reads. No silent write, exactly as with
+      radius/width/`MaxSteerAngleDegrees`.
+- [ ] **Speed-sensitive steering has exactly one owner, chosen explicitly, and the unit
+      trap is documented.** Chaos samples `SteeringSetup.SteeringCurve` with
+      `CmSToMPH(VehicleState.ForwardSpeed)` —
+      `ChaosWheeledVehicleMovementComponent.cpp:738` — i.e. the curve domain is **MILES
+      PER HOUR**, while VEH-001's `SteerScaleBySpeedKphCurve` is **KM/H**, and Chaos'
+      default curve already falls to 0.3 by 120 mph. Left alone the two multiply and the
+      car loses far more steering than either asset says. `EVehicleSteerSpeedAuthority`
+      names the owner: under `InputLayer` (the default) the pawn writes a flat unity curve
+      into Chaos so its default ramp cannot apply silently; under `ChaosCurve` the asset
+      supplies `SteerScaleBySpeedMphCurve` (named for its unit) and the input config must
+      be `ESteerSpeedScaleMode::Off`. Disagreement is a validated, named failure.
+- [ ] **Ranges are a CORE-003 table, validated in both directions.** A
+      `FRacingPropertyRange` table mirrors every `ClampMin`/`ClampMax` on the class,
+      enforced by `EnforceRanges` (metadata is compiled out when `WITH_METADATA` is 0, so
+      metadata can never be the enforcement path), and `VerifyRangesMatchMetadata` is
+      asserted by a test so a newly-added clamped property cannot be forgotten.
+      Replacements are declared for every property whose bound is not its safe value.
+- [ ] **Nothing non-finite survives validation.** NaN and ±infinity in any scalar, in any
+      curve key, or in any gear ratio are reported by name; relationship checks are
+      guarded so one non-finite value produces one issue rather than a misleading second
+      one (the chassis asset's `AllFinite` precedent).
+- [ ] **`FRacingSimVersionStamp::CarSpecVersion` is populated** — `GetContentVersion()`
+      returns `TuneId`/`TuneSchemaVersion`/`ComputeContentHash()`, with the hash combining
+      every tune value including the curve keys, so a retune is visible on a result. This
+      closes the one obligation routed into this ticket.
+- [ ] **The pawn consumes the asset through one function, guarded and idempotent.**
+      `ARacingVehiclePawn::ApplyTuneAsset()` runs before `RecreatePhysicsState()`, reports
+      validation issues without mutating the asset (`ValidateReadOnly`, VEH-002's policy),
+      logs by name when the asset is missing, and is the only place a project enum is
+      mapped onto a Chaos enum.
+- [ ] **Automation is `SmokeFilter`, level-free, DataAsset-and-CDO only.** This project's
+      harness cannot construct a non-template Actor or `UActorComponent` at any recorded
+      gate (`Docs/Environment.md`; `VehicleChassisSpec.cpp`'s file header), so tests touch
+      `UVehicleTuneDataAsset` and wheel-class CDOs only, exactly as VEH-002 did. The
+      `Smoke` `succeeded` count must rise from the VEH-002 baseline of **500**, read from
+      `Saved/Automation/Report/index.json`, never from an exit code.
+- [ ] **Both targets build with zero new warnings** — `RacingSimEditor Win64 Development`
+      and `RacingSim Win64 Development`, command form per `Docs/Environment.md`.
+
+**Explicitly out of scope, and stated rather than quietly skipped:** every validation
+manoeuvre in `Docs/02-VehiclePhysics.md` (coast-down, skidpad, step steer, braking
+distance), ABS/TCS, tyre friction tuning, and any claim that these numbers *handle* well.
+VEH-003 ships a validated, unit-explicit, telemetry-identifiable tune — proving it is a
+good tune needs a car driving on a surface, which is `VEH-006`. The values are original
+prototype envelopes invented for this project; no branded vehicle specification was
+consulted, per CLAUDE.md.
+
+#### Where this work lives — two worktrees, reconcile before merging
+
+VEH-003 was implemented in worktree `agent-ad1d630fd1f4682bd` and left **uncommitted**
+there when that session ended. The continuing session was isolated to a *different*
+worktree, `agent-aee66d15f8d1395a9`, and its tooling refused git operations against the
+other checkout — correctly, since a worktree-isolated agent must not commit into a
+checkout it does not own.
+
+The seven files were therefore **copied** into `agent-aee66d15f8d1395a9` (identical base
+commit `4e3aa58`, so the copy is exact and conflict-free), the `AllFinite` collision was
+fixed there, and the work was committed on branch `worktree-agent-aee66d15f8d1395a9`.
+
+**Consequence to handle:** the original uncommitted copy still sits in
+`agent-ad1d630fd1f4682bd` and is now *stale* — it lacks the `AllTuneValuesFinite` fix and
+this section. Discard it rather than merging it, or the collision returns.
+
 ---
 
 ## Epic 3 — track and race
