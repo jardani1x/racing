@@ -211,6 +211,17 @@ bool FRacingSimVehicleWheelClassesTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("Front (non-handbraked) wheel has zero handbrake torque"),
 		FrontCdo->MaxHandBrakeTorque, 0.0f);
 
+	// AxleType, not bAffectedByEngine, is what the differential actually reads --
+	// repair cycle 1 (code-reviewer HIGH-2): the first pass set only
+	// bAffectedByEngine, which the engine ignores once AxleType is defined, so
+	// DrivetrainLayout's mapping onto EVehicleDifferential had no effect at all.
+	// AxleType read directly (not via GetAxleType(), which is non-const) since these
+	// CDOs are held as const UChaosVehicleWheel* here.
+	TestEqual(TEXT("Front wheel's AxleType is Front, which the differential reads"),
+		FrontCdo->AxleType, EAxleType::Front);
+	TestEqual(TEXT("Rear wheel's AxleType is Rear, which the differential reads"),
+		RearCdo->AxleType, EAxleType::Rear);
+
 	return true;
 }
 
@@ -250,6 +261,22 @@ bool FRacingSimVehicleChassisWheelMatchTest::RunTest(const FString& Parameters)
 			bFound |= (Issue.PropertyName == TEXT("FrontWheelRadiusCm"));
 		}
 		TestTrue(TEXT("A chassis radius that disagrees with the wheel CDO is caught"), bFound);
+	}
+
+	// MaxSteerAngleDegrees is cross-checked the same way as radius/width -- repair
+	// cycle 1 (code-reviewer MEDIUM-2): the mechanical lock is the one geometry field
+	// the first pass declared but never validated or applied.
+	{
+		UVehicleChassisDataAsset* Chassis = MakeMatchingChassis();
+		Chassis->MaxSteerAngleDegrees = 55.0f; // CDO is 40.0f
+		const FRacingValidationResult Result = RacingSim::Vehicle::ValidateChassisAgainstWheelClasses(
+			Chassis, UPrototypeFrontWheel::StaticClass(), UPrototypeRearWheel::StaticClass());
+		bool bFound = false;
+		for (const FRacingValidationIssue& Issue : Result.Issues)
+		{
+			bFound |= (Issue.PropertyName == TEXT("MaxSteerAngleDegrees"));
+		}
+		TestTrue(TEXT("A chassis MaxSteerAngleDegrees that disagrees with the wheel CDO is caught"), bFound);
 	}
 
 	// Null inputs are reported as failures, never crash.

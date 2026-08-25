@@ -4,6 +4,7 @@
 
 #include "Components/BoxComponent.h"
 #include "Core/RacingSimLog.h"
+#include "EnhancedInputComponent.h"
 #include "GameFramework/PlayerController.h"
 #include "Vehicle/PrototypeVehicleWheel.h"
 #include "Vehicle/VehicleInputComponent.h"
@@ -33,9 +34,21 @@ ARacingVehiclePawn::ARacingVehiclePawn(const FObjectInitializer& ObjectInitializ
 
 	VehicleMovementComponent = CreateDefaultSubobject<UChaosWheeledVehicleMovementComponent>(TEXT("VehicleMovementComponent"));
 	VehicleMovementComponent->SetIsReplicated(false);
-	VehicleMovementComponent->UpdatedComponent = ChassisCollision;
+	// SetUpdatedComponent, not a direct UpdatedComponent assignment: the setter also
+	// adds a tick prerequisite from ChassisCollision onto this component
+	// (UMovementComponent::SetUpdatedComponent), which is half of what makes the
+	// "input before physics" ordering below actually hold rather than merely being
+	// probably-fine because both are TG_PrePhysics.
+	VehicleMovementComponent->SetUpdatedComponent(ChassisCollision);
 
 	VehicleInputComp = CreateDefaultSubobject<UVehicleInputComponent>(TEXT("VehicleInputComponent"));
+	// The other half: an actor's Tick and its components' TickComponent calls have no
+	// defined relative order within the same tick group (TG_PrePhysics for both, per
+	// VehicleInputComponent.h). Without this prerequisite, ARacingVehiclePawn::Tick
+	// could run before VehicleInputComp::TickComponent on a given frame and read a
+	// stale command -- not incorrect input, but a possible extra frame of latency
+	// that would vary run to run.
+	AddTickPrerequisiteComponent(VehicleInputComp);
 }
 
 void ARacingVehiclePawn::BeginPlay()
@@ -47,6 +60,14 @@ void ARacingVehiclePawn::BeginPlay()
 
 void ARacingVehiclePawn::ApplyChassisAsset()
 {
+	if (bChassisApplied)
+	{
+		// The guard the header promises: BeginPlay is the only caller today, but a
+		// second call (e.g. a future hot-reload or re-initialisation path) must not
+		// re-run SetNum/RecreatePhysicsState mid-session.
+		return;
+	}
+
 	if (ChassisAsset == nullptr)
 	{
 		// A pawn with no chassis is a content mistake, not a crash: it stands on
@@ -156,6 +177,26 @@ void ARacingVehiclePawn::PossessedBy(AController* NewController)
 
 	VehicleInputComp->Config = InputConfigAsset;
 
+	// VehicleChassisDataAsset.h's documented promise: "Must agree with the input
+	// config's ETransmissionInputMode ... ARacingVehiclePawn checks the two agree at
+	// possession and warns by name." Two independent sources of "manual" exist --
+	// the config's TransmissionMode (gates whether GearRequest is ever produced) and
+	// the chassis's bUseAutomaticGears (gates bManualTransmission in
+	// ApplyInputCommand) -- and a mismatch gives shift keys that silently do nothing.
+	if (ChassisAsset != nullptr && InputConfigAsset != nullptr)
+	{
+		const bool bConfigIsManual = InputConfigAsset->TransmissionMode == ETransmissionInputMode::Manual;
+		const bool bChassisIsManual = !ChassisAsset->bUseAutomaticGears;
+		if (bConfigIsManual != bChassisIsManual)
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s': InputConfigAsset '%s' TransmissionMode (%s) disagrees with ChassisAsset '%s' bUseAutomaticGears (%s) -- shift keys will not match the gearbox."),
+				*GetNameSafe(this), *GetNameSafe(InputConfigAsset),
+				*UEnum::GetValueAsString(InputConfigAsset->TransmissionMode),
+				*GetNameSafe(ChassisAsset), ChassisAsset->bUseAutomaticGears ? TEXT("true") : TEXT("false"));
+		}
+	}
+
 	if (APlayerController* PlayerController = Cast<APlayerController>(NewController))
 	{
 		VehicleInputComp->InitialiseForController(PlayerController, InitialInputDeviceType);
@@ -163,6 +204,35 @@ void ARacingVehiclePawn::PossessedBy(AController* NewController)
 	// A non-player controller (AI, or none) legitimately has no local player; the
 	// input component logs that at Verbose and keeps producing the safe standing-
 	// still command, per its own documented contract.
+}
+
+void ARacingVehiclePawn::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
+{
+	Super::SetupPlayerInputComponent(PlayerInputComponent);
+
+	// The missing half of VEH-001's own documented contract (VehicleInputComponent.h:
+	// "Bind the configured UInputAction assets to this component's handlers. Call
+	// from the pawn's SetupPlayerInputComponent."). Without this call PossessedBy
+	// still pushes the mapping context and configures the processor -- so the logs
+	// read as if everything is wired -- but no UInputAction is ever bound to a
+	// handler, PendingSample never leaves zero, and GetCommand() returns the default
+	// coasting command forever. Caught in code review before merge, not by any test:
+	// this project's harness cannot spawn a possessed pawn to exercise it directly.
+	if (VehicleInputComp == nullptr)
+	{
+		return;
+	}
+
+	if (UEnhancedInputComponent* EnhancedInput = Cast<UEnhancedInputComponent>(PlayerInputComponent))
+	{
+		VehicleInputComp->BindActions(EnhancedInput);
+	}
+	else
+	{
+		UE_LOG(LogRacingVehicle, Error,
+			TEXT("ARacingVehiclePawn '%s': PlayerInputComponent is not a UEnhancedInputComponent; no input is bound. Check the project's DefaultInputComponentClass."),
+			*GetNameSafe(this));
+	}
 }
 
 void ARacingVehiclePawn::UnPossessed()

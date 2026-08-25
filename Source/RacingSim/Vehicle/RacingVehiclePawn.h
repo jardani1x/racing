@@ -50,6 +50,7 @@ public:
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void PossessedBy(AController* NewController) override;
 	virtual void UnPossessed() override;
+	virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
 	/** The chassis asset in force. Set in the editor per-Blueprint; a null asset is refused at BeginPlay, not silently substituted. */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle")

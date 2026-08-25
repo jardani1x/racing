@@ -13,8 +13,16 @@ using namespace RacingSim::Validation;
 
 namespace
 {
-	/** Same shape as VehicleInputConfig.cpp's helper: a relationship failure, named by the property an author would edit to fix it. */
-	void AddFailure(FRacingValidationResult& Result, const FName PropertyName, FString Message)
+	/**
+	 * Same shape as VehicleInputConfig.cpp's helper: a relationship failure, named by
+	 * the property an author would edit to fix it. Named distinctly from that file's
+	 * `AddFailure` (not just "AddFailure" here too) because both are declared in a
+	 * file-anonymous namespace, and a Unity Build merges multiple .cpp files into one
+	 * translation unit -- two anonymous namespaces sharing an identical signature in
+	 * the same TU is a genuine duplicate-definition error, caught by this ticket's
+	 * repair cycle 1 build (`C2084`), not by anything a reviewer would spot by eye.
+	 */
+	void AddChassisValidationFailure(FRacingValidationResult& Result, const FName PropertyName, FString Message)
 	{
 		FRacingValidationIssue Issue;
 		Issue.PropertyName = PropertyName;
@@ -127,7 +135,7 @@ FRacingValidationResult UVehicleChassisDataAsset::ValidateReadOnly() const
 	if (Probe == nullptr)
 	{
 		FRacingValidationResult Result;
-		AddFailure(Result, TEXT("MassKg"),
+		AddChassisValidationFailure(Result, TEXT("MassKg"),
 			TEXT("Could not duplicate the asset to run a read-only validation pass"));
 		return Result;
 	}
@@ -155,7 +163,7 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 		}
 		else
 		{
-			AddFailure(Result, TEXT("MassKg"),
+			AddChassisValidationFailure(Result, TEXT("MassKg"),
 				TEXT("Could not duplicate the asset to run a read-only range pass"));
 		}
 	}
@@ -169,7 +177,7 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 	// 1. The front axle must be in front of the rear axle.
 	if (AllFinite({FrontAxleOffsetXCm, RearAxleOffsetXCm}) && !(GetWheelbaseCm() > 0.0f))
 	{
-		AddFailure(Result, TEXT("FrontAxleOffsetXCm"), FString::Printf(
+		AddChassisValidationFailure(Result, TEXT("FrontAxleOffsetXCm"), FString::Printf(
 			TEXT("FrontAxleOffsetXCm (%.2f cm) must exceed RearAxleOffsetXCm (%.2f cm); the derived wheelbase is %.2f cm"),
 			FrontAxleOffsetXCm, RearAxleOffsetXCm, GetWheelbaseCm()));
 	}
@@ -183,14 +191,14 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 	// saying the geometry was impossible.
 	if (AllFinite({FrontTrackWidthCm, FrontWheelWidthCm}) && FrontTrackWidthCm <= FrontWheelWidthCm)
 	{
-		AddFailure(Result, TEXT("FrontTrackWidthCm"), FString::Printf(
+		AddChassisValidationFailure(Result, TEXT("FrontTrackWidthCm"), FString::Printf(
 			TEXT("FrontTrackWidthCm (%.2f cm) must exceed FrontWheelWidthCm (%.2f cm) or the front wheels intersect each other"),
 			FrontTrackWidthCm, FrontWheelWidthCm));
 	}
 
 	if (AllFinite({RearTrackWidthCm, RearWheelWidthCm}) && RearTrackWidthCm <= RearWheelWidthCm)
 	{
-		AddFailure(Result, TEXT("RearTrackWidthCm"), FString::Printf(
+		AddChassisValidationFailure(Result, TEXT("RearTrackWidthCm"), FString::Printf(
 			TEXT("RearTrackWidthCm (%.2f cm) must exceed RearWheelWidthCm (%.2f cm) or the rear wheels intersect each other"),
 			RearTrackWidthCm, RearWheelWidthCm));
 	}
@@ -200,7 +208,7 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 		&& GetWheelbaseCm() > 0.0f
 		&& GetWheelbaseCm() <= (FrontWheelRadiusCm + RearWheelRadiusCm))
 	{
-		AddFailure(Result, TEXT("RearAxleOffsetXCm"), FString::Printf(
+		AddChassisValidationFailure(Result, TEXT("RearAxleOffsetXCm"), FString::Printf(
 			TEXT("Wheelbase (%.2f cm) must exceed the sum of the wheel radii (%.2f cm) or front and rear wheels intersect"),
 			GetWheelbaseCm(), FrontWheelRadiusCm + RearWheelRadiusCm));
 	}
@@ -216,7 +224,7 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 			|| FMath::Abs(CentreOfMassOffsetYCm) > ChassisHalfWidthCm
 			|| FMath::Abs(CentreOfMassOffsetZCm) > ChassisHalfHeightCm)
 		{
-			AddFailure(Result, TEXT("CentreOfMassOffsetZCm"), FString::Printf(
+			AddChassisValidationFailure(Result, TEXT("CentreOfMassOffsetZCm"), FString::Printf(
 				TEXT("Centre of mass (%.2f, %.2f, %.2f) cm lies outside the chassis half-extent (%.2f, %.2f, %.2f) cm"),
 				CentreOfMassOffsetXCm, CentreOfMassOffsetYCm, CentreOfMassOffsetZCm,
 				ChassisHalfLengthCm, ChassisHalfWidthCm, ChassisHalfHeightCm));
@@ -233,7 +241,7 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 	if (AllFinite({CentreOfMassOffsetZCm, WheelCentreHeightCm})
 		&& CentreOfMassOffsetZCm > WheelCentreHeightCm + FMath::Max(FrontWheelRadiusCm, RearWheelRadiusCm))
 	{
-		AddFailure(Result, TEXT("CentreOfMassOffsetZCm"), FString::Printf(
+		AddChassisValidationFailure(Result, TEXT("CentreOfMassOffsetZCm"), FString::Printf(
 			TEXT("Centre of mass height (%.2f cm) is above the top of the wheels (%.2f cm); the vehicle will roll over under lateral load"),
 			CentreOfMassOffsetZCm,
 			WheelCentreHeightCm + FMath::Max(FrontWheelRadiusCm, RearWheelRadiusCm)));
@@ -249,7 +257,7 @@ FRacingValidationResult UVehicleChassisDataAsset::Validate(const bool bCorrect)
 		&& FMath::IsFinite(FrontRearTorqueSplit)
 		&& !FMath::IsNearlyEqual(FrontRearTorqueSplit, 0.5f))
 	{
-		AddFailure(Result, TEXT("FrontRearTorqueSplit"), FString::Printf(
+		AddChassisValidationFailure(Result, TEXT("FrontRearTorqueSplit"), FString::Printf(
 			TEXT("FrontRearTorqueSplit is %.3f but DrivetrainLayout is not AllWheelDrive; Chaos ignores the split for this layout"),
 			FrontRearTorqueSplit));
 	}

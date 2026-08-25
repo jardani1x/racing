@@ -40,9 +40,23 @@ UPrototypeFrontWheel::UPrototypeFrontWheel(const FObjectInitializer& ObjectIniti
 	WheelRadius = 34.0f;
 	WheelWidth = 24.0f;
 	WheelMass = 18.0f;
+	// Must equal UVehicleChassisDataAsset::MaxSteerAngleDegrees's default -- see the
+	// same cross-check reasoning as radius/width, now extended to this field.
+	MaxSteerAngle = 40.0f;
 
 	bAffectedBySteering = true;
 	bAffectedByHandbrake = false;
+
+	// AxleType, not bAffectedByEngine, is what makes ARacingVehiclePawn's
+	// DifferentialSetup.DifferentialType mapping (RacingVehiclePawn.cpp) actually
+	// drive anything. Per ChaosVehicleWheel.h: "If left undefined then the
+	// bAffectedByEngine value is used, if defined then bAffectedByEngine is ignored
+	// and the differential setup on the vehicle defines which wheels get power." An
+	// earlier version of this file set only bAffectedByEngine, which left AxleType
+	// at its Undefined default -- the differential's DifferentialType was computed
+	// correctly and then silently had no effect, so DrivetrainLayout::FrontWheelDrive
+	// or AllWheelDrive produced exactly the same (rear-only) car as RearWheelDrive.
+	AxleType = EAxleType::Front;
 	bAffectedByEngine = false;
 }
 
@@ -57,12 +71,12 @@ UPrototypeRearWheel::UPrototypeRearWheel(const FObjectInitializer& ObjectInitial
 	bAffectedByHandbrake = true;
 	MaxHandBrakeTorque = 1600.0f;
 
-	// bAffectedByEngine is set true unconditionally: the Phase 1 default drivetrain
-	// is rear-wheel drive (EVehicleDrivetrainLayout::RearWheelDrive). ARacingVehiclePawn
-	// overrides this per-instance to match the chassis asset's actual layout for
-	// front- or all-wheel drive, since the CDO cannot express a per-instance choice
-	// (see the header's CDO-vs-instance discussion) -- but the default must itself be
-	// a coherent, drivable car, not an inert one.
+	// See UPrototypeFrontWheel's constructor: AxleType is what the differential
+	// actually reads. bAffectedByEngine is still set true so the CDO is a coherent,
+	// drivable car even in a hypothetical context where AxleType were ignored (e.g.
+	// direct construction outside SetupVehicle), but it is not the authoritative
+	// path under normal play.
+	AxleType = EAxleType::Rear;
 	bAffectedByEngine = true;
 }
 
@@ -126,6 +140,17 @@ namespace RacingSim::Vehicle
 			AddFailure(TEXT("RearWheelWidthCm"), FString::Printf(
 				TEXT("Chassis declares RearWheelWidthCm=%.2f but %s's WheelWidth is %.2f"),
 				Chassis->GetWheelWidthCm(EVehicleWheelIndex::RearLeft), *RearWheel->GetName(), RearCdo->WheelWidth));
+		}
+
+		// MaxSteerAngleDegrees is the mechanical lock -- geometry, not tune (the
+		// asset's own header) -- and Chaos reads it from the steered wheel's CDO the
+		// same way it reads radius/width, so it is subject to the identical
+		// CDO-vs-instance constraint and gets the same cross-check.
+		if (!FMath::IsNearlyEqual(FrontCdo->MaxSteerAngle, Chassis->MaxSteerAngleDegrees))
+		{
+			AddFailure(TEXT("MaxSteerAngleDegrees"), FString::Printf(
+				TEXT("Chassis declares MaxSteerAngleDegrees=%.2f but %s's MaxSteerAngle is %.2f"),
+				Chassis->MaxSteerAngleDegrees, *FrontWheel->GetName(), FrontCdo->MaxSteerAngle));
 		}
 
 		return Result;
