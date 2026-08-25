@@ -34,9 +34,16 @@ public class RacingSimTests : ModuleRules
 
 		// The module under test. Tests depend on the runtime module; nothing in the
 		// runtime module may ever depend on this one.
+		//
+		// ChaosVehicles is listed explicitly even though RacingSim already depends on
+		// it publicly: VEH-002's specs call UChaosVehicleWheel::StaticClass() directly
+		// (VehicleChassisSpec.cpp), and a module that directly references another
+		// module's exported symbols must depend on it directly rather than relying on
+		// a transitive re-export for linking.
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
-			"RacingSim"
+			"RacingSim",
+			"ChaosVehicles"
 		});
 	}
 }

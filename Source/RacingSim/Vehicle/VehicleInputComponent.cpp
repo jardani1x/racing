@@ -104,10 +104,18 @@ bool UVehicleInputComponent::InitialiseForController(
 		return false;
 	}
 
-	// Cleared first so re-initialising on a device change does not leave the previous
-	// device's context stacked underneath, where its bindings would still fire.
-	Subsystem->RemoveMappingContext(Context);
+	// Remove the PREVIOUS context this component pushed (VEH-002, fixing VEH-001
+	// MEDIUM-1): removing the incoming Context only de-duplicates against re-adding
+	// the same context and does nothing about a prior device's context, which would
+	// otherwise stay mapped at the same priority and keep firing into PendingSample
+	// after a device switch. IsValid() guards the case where nothing has been pushed
+	// yet, or where the previous context has already been GC'd/unloaded.
+	if (PushedContext.IsValid())
+	{
+		Subsystem->RemoveMappingContext(PushedContext.Get());
+	}
 	Subsystem->AddMappingContext(Context, MappingContextPriority);
+	PushedContext = Context;
 
 	UE_LOG(LogRacingVehicle, Log,
 		TEXT("Vehicle input initialised for device '%s' using context '%s' at priority %d."),

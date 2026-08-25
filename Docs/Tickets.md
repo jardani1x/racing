@@ -1083,7 +1083,7 @@ acceptance criteria — do not rediscover these from scratch:
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | VEH-001 | Keyboard/gamepad input mappings | vehicle-physics-engineer | CORE-001 | B | **DONE** 2026-08-25 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM — device-switch mapping-context bug, untested `ConfigureFromAsset`/steer-scale seam ×2, no stuck-input timeout — plus 3 LOW, all routed forward to `VEH-002`/`STREAM-001`, none blocking a contract-only ticket with no consumer yet). Independently confirmed the two loop-premise test fixes are genuine, the no-hard-coded-keys source scan is real, and the processor has no `UObject`/actor dependency. Both targets build clean and Smoke `succeeded=495` (baseline 486 + 9 new `RacingSim.Vehicle.Input*` tests, `failed=0, notRun=0`). Merged to `main`. |
-| VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | OPEN |
+| VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | **DONE** 2026-08-25 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: input never bound so the car could never actually be driven; drivetrain layout silently inert because `AxleType` was never set on the wheel classes — plus 5 MEDIUM); repair cycle 1 closed both HIGH and all 5 MEDIUM (tick-prerequisite ordering, `MaxSteerAngleDegrees` cross-validation, transmission-mode agreement check, idempotency guard, corrected a false VEH-001-findings-closure claim, and fixed a genuine Unity-Build duplicate-symbol collision surfaced by the rebuild); re-review returned APPROVED WITH FOLLOW-UPS, with one doc-wording overstatement corrected (the tick-ordering fix only closes half the claimed guarantee). `test-engineer` independently confirmed both targets build clean (0 warnings, verified via captured build logs and per-file `.sarif` diagnostics) and Smoke `succeeded=500, failed=0, notRun=0`, all five new `RacingSim.Vehicle.*` tests `Success` including the two that gained repair-cycle assertions. Merged to `main`. Two acceptance criteria (VEH-001 MEDIUM-4 stuck-input timeout; telemetry snapshot) explicitly left unclosed and routed forward to `VEH-004` rather than faked |
 | VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | OPEN |
 | VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002 | C | OPEN |
 | VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | OPEN |
@@ -1231,6 +1231,244 @@ that calls them.
 | LOW-1 | `VehicleInputProcessor.cpp:340` selects steering rate by strict magnitude comparison; an equal-magnitude sign flip correctly takes `SteerRate`, but a flick to a *smaller* opposite magnitude takes `SteerCentringRate`, which is faster than `SteerRate` in the keyboard default (5.0 vs 2.5) — the comment's "conservative choice" claim covers only the exact-equality case | **Accepted as-is** — behaviour is defensible (centring rate winning on an ambiguous partial flick is not obviously wrong), comment precision not required for merge |
 | LOW-2 | `InitialiseForController`'s `bool` return conflates "content is broken" with "expected, not a local player" (normal for a remote pawn) | **Accepted as-is**, not blocking; a diagnosable return type is a `VEH-002` nicety once the possession path is real |
 | LOW-3 | The no-hard-coded-keys source-scan test (`VehicleInputConfigSpec.cpp:613`) hard-fails if it finds zero files, which is correct for editor/commandlet context but blocks ever running it in a packaged context | **Accepted as-is** — packaged automation is not this project's current execution model |
+
+### VEH-002 — acceptance criteria, opened 2026-08-25
+
+Scope per the Epic 2 row: `Prototype chassis/wheels/collision, Chaos baseline`. Owner
+`vehicle-physics-engineer`. Gate C. Depends on `VEH-001` (**DONE**, merged at `d2505e8`)
+— unblocked.
+
+#### Findings routed forward into this ticket
+
+Grepped `Docs/Tickets.md` for `VEH-002`. Six routed items exist; each is closed or
+explicitly deferred by a criterion below, and two near-misses are confirmed *not* routed
+here rather than assumed.
+
+| Source | ID | Disposition in VEH-002 |
+|---|---|---|
+| VEH-001 review pass 1 | MEDIUM-1 — `InitialiseForController` removes the **new** mapping context, not the **previous** one, so a keyboard→gamepad switch leaves both contexts stacked and both devices' bindings firing | **Closed here.** This is the first ticket where a controller possesses a pawn and can switch device profiles at runtime, which is the only place the defect is reachable |
+| VEH-001 review pass 1 | MEDIUM-2 — no test proves the speed-sensitive steer scale is applied in `Tick`, or applied *after* rate limiting; every processor test uses `Configure(profile,…)`, never `ConfigureFromAsset` | **Corrected 2026-08-25, NOT closed.** An earlier version of this row claimed "Closed here" on the strength of `ARacingVehiclePawn` being a real consumer of the seam — but no test was ever added that exercises `ConfigureFromAsset` or asserts the steer-scale-after-rate-limiting ordering. `code-reviewer` caught the false claim (`VEH-002` pass 1, MEDIUM-4). **Re-routed forward, unclosed**, to the next ticket that touches `VehicleInputProcessor.h/.cpp` (likely `VEH-004`) |
+| VEH-001 review pass 1 | MEDIUM-3 — `ConfigureFromAsset` is entirely untested (device-on-failure, asset-sourced `TransmissionMode`/`MaxDeltaSeconds`, the `[0.001,1.0]` guard, neutral-profile fallback, the `false` return contract) | **Corrected 2026-08-25, NOT closed** — same false-claim correction as MEDIUM-2 above, same reviewer finding. **Re-routed forward, unclosed**, alongside MEDIUM-2 |
+| VEH-001 review pass 1 | MEDIUM-4 — `PendingSample` persists between Ticks and is only zeroed by an Enhanced Input `Completed` event, so a Pixel Streaming disconnect, tab backgrounding or focus loss latches the last non-zero throttle/steer indefinitely | **Not closed.** The acceptance-criteria list below already states this honestly ("NOT closed here, deferred honestly") — this row previously disagreed with that criterion by claiming a partial closure. Corrected to match: **re-routed forward, unclosed**, to the next ticket that touches `VehicleInputProcessor.h/.cpp` |
+| VEH-001 review pass 1 | LOW-2 — `InitialiseForController`'s `bool` return conflates "content broken" with "not a local player" | **Deferred, explicitly.** Recorded as accepted-as-is by the VEH-001 reviewer and described there as a "nicety". A diagnosable return type is a signature change on the published component API; it is not worth spending a Gate C ticket's risk budget on and is re-routed to `VEH-004`, which owns failure classification |
+| TRACK-002 review pass 1 | L2 — the graybox level `L_Meridian_Graybox.umap` has no geometry and no collision at all; "a Chaos-vehicle consumer is not" fine on that basis. Named as a **shared obligation with `VEH-002`** | **Acknowledged, and it is the reason this ticket's automation is level-free.** VEH-002 does not author level geometry: CLAUDE.md forbids editing `.umap` from a worktree and the level is owned elsewhere. The obligation is recorded as a blocker on any *driving* test (`VEH-006`), and this ticket must state plainly that no criterion below asserts a car standing on a surface |
+
+Confirmed **not** routed to VEH-002, checked rather than assumed:
+
+- TRACK-002 `M2` (`MinCornerRadiusCm` non-monotonic guard) — routed to `RACE-002` only.
+- RACE-003 `L7` (`ComputeContentHash()` hashes a failed bake, so `IsPopulated()` reads
+  `true` for an unraceable track) — routed as a shared obligation with `RACE-004` only.
+  Neither names VEH-002 and neither is inherited here.
+
+#### The scope boundary against VEH-003, VEH-004 and VEH-005
+
+`VEH-003` owns *tune data*: engine torque curve, gear ratios, differential bias, brake
+torques, steering ratio/curve, spring rates and damping. `VEH-004` owns telemetry and
+failure detection. `VEH-005` owns camera and the reset pose. **VEH-002 owns topology,
+geometry, mass and the Chaos wiring** — how many wheels there are, where they sit, what
+drives them, what the chassis collides with, and how a `FVehicleInputCommand` reaches a
+Chaos axis. A number that answers "how fast is it" belongs to VEH-003; a number that
+answers "what shape is it" belongs here.
+
+- [x] **The pawn is Chaos Vehicles, and the Chaos surface stops at the Vehicle layer.**
+      `ARacingVehiclePawn` (`Source/RacingSim/Vehicle/RacingVehiclePawn.h/.cpp`) owns a
+      `UChaosWheeledVehicleMovementComponent`, per CLAUDE.md hard constraint #2. No
+      Unity-style WheelCollider analogue is invented. Verified: `ChaosVehicles` is added
+      to `RacingSim.Build.cs`'s `PublicDependencyModuleNames`; no `Race/`, `UI/` or
+      `Streaming/` file includes a ChaosVehicles header (all such includes are under
+      `Source/RacingSim/Vehicle/`), and `VehicleChassisDataAsset.h` still declares no
+      Chaos type — the mapping onto `EVehicleDifferential` lives only in the pawn's
+      `ApplyChassisAsset()`, per the DataAsset's own header.
+- [x] **The chassis is an original unbranded blockout primitive, with no `.uasset`.**
+      Collision is a `UBoxComponent` sized from the DataAsset, simulating physics, and it
+      is the `UpdatedComponent`. No skeletal mesh, no imported car model, no
+      `Docs/13-AssetLicenseLedger.md` entry needed and no `Docs/AssetOwnership.tsv` claim
+      taken — the diff contains zero `.uasset`/binary files. Every dimension is an
+      **original prototype envelope** invented for this project, unchanged from the
+      chassis DataAsset's own defaults; no branded specification is used or implied.
+- [x] **The `BoneName` requirement is honoured**, but **not pinned by a test**. Caught by
+      reading `UChaosWheeledVehicleMovementComponent::CanCreateVehicle`
+      (`ChaosWheeledVehicleMovementComponent.cpp:1309`), which **refuses to create the
+      vehicle if any `FChaosWheelSetup::BoneName` is `NAME_None`** — a defect this
+      implementation shipped with on the first pass and caught only by reading engine
+      source before any test could have caught it. `ApplyChassisAsset()` now assigns
+      `Wheel_%d_Placeholder` per wheel. **The assertion this criterion asks for does not
+      exist**: this project's automation harness cannot construct `ARacingVehiclePawn` (a
+      real Actor with real components) at any recorded gate — see the "Explicitly out of
+      scope" note below and `VehicleChassisSpec.cpp`'s own file header. Recorded as an
+      honest gap rather than claimed closed; a future pawn-spawn test (once one exists)
+      should assert this directly.
+- [x] **Four wheels, RWD, and the layout choice is documented rather than assumed.**
+      `Docs/02-VehiclePhysics.md` item 7 requires "differential configuration" but does
+      **not** name a drivetrain for Phase 1. **Rear-wheel drive** is the default —
+      `UPrototypeRearWheel`'s constructor comment records the decision and its reasoning
+      (RWD failure modes are visible in telemetry rather than masked by the front axle).
+      `EVehicleDrivetrainLayout` maps onto `EVehicleDifferential` enumerator-for-enumerator
+      in `ApplyChassisAsset()` (not a `static_cast`, per `TRACK-002`/`CORE-002` precedent
+      against relying on two independently-versioned enums staying numerically aligned),
+      so switching to AWD/FWD is a data edit. **Repair cycle 1 (`code-reviewer` HIGH-2):**
+      the first pass mapped `DifferentialType` correctly but never set
+      `UChaosVehicleWheel::AxleType` on the wheel classes, and per the engine's own header
+      comment, `DifferentialType` has **no effect at all** while `AxleType` stays
+      `Undefined` — the differential falls back to reading `bAffectedByEngine`, which was
+      hard-coded rear-only, so `FrontWheelDrive`/`AllWheelDrive` silently produced the same
+      RWD car. Fixed: `AxleType = EAxleType::Front`/`Rear` set on the wheel constructors
+      (`PrototypeVehicleWheel.cpp`), which is what the engine actually reads. The false
+      in-code comment claiming the pawn "overrides this per-instance" is also removed.
+- [x] **Wheel geometry lives in wheel classes; the DataAsset validates against them and
+      never writes to a CDO.** `SetupVehicle` reads
+      `WheelSetups[i].WheelClass.GetDefaultObject()` — the **class default object**, not
+      the per-instance `Wheels[i]` that `CreateWheels` allocates. `UPrototypeFrontWheel`/
+      `UPrototypeRearWheel` carry the envelope in their constructors (now implemented,
+      `PrototypeVehicleWheel.cpp`), and `RacingSim::Vehicle::ValidateChassisAgainstWheelClasses`
+      **cross-checks the chassis's declared wheel radius/width against the wheel classes'
+      CDOs and fails on disagreement**, called from `ApplyChassisAsset()`. Tested directly:
+      `RacingSim.Vehicle.ChassisWheelMatch` proves agreement on the default fixture, proves
+      a deliberate mismatch is caught by name, and proves null inputs report rather than
+      crash.
+- [x] **Tuning is a typed DataAsset with validated ranges and validated cross-fields.**
+      `UVehicleChassisDataAsset` declares a `RacingSim::Validation::FRacingPropertyRange`
+      table and reuses `CORE-003`'s `EnforceRanges`. Geometric relationships no per-field
+      clamp can express are validated: wheelbase positive; both track widths clear their
+      wheel widths; wheelbase clears the summed wheel radii; centre of mass inside the
+      chassis box and at/below the wheel tops; drivetrain split only meaningful under AWD.
+      Tested by `RacingSim.Vehicle.ChassisRelationships` (four relationship cases plus the
+      clean-default and no-mutation-on-read-only cases) and
+      `RacingSim.Vehicle.ChassisGeometry` (derived wheelbase, per-wheel offset signs).
+- [x] **Units and coordinate conventions are explicit at every boundary.** Distances are
+      **centimetres**; mass is **kilograms**; `DragArea` is handed to Chaos in **cm²** and
+      Chaos converts internally with `Chaos::Cm2ToM2`. Positive `Steer` is **right** (+Z
+      yaw, left-handed Z-up), matching `FVehicleInputCommand`'s published convention; +X is
+      forward, so front wheels take positive X offsets and right-hand wheels take positive
+      Y — asserted directly by `RacingSim.Vehicle.ChassisGeometry`. This ticket's own new
+      code performs no SI conversion of its own; `FrontalAreaCm2`'s cm²-to-m² step happens
+      inside Chaos, is not this project's code, and is not asserted here.
+- [x] **`FVehicleInputCommand` reaches Chaos through one pure, testable mapping.**
+      `RacingSim::Vehicle::MapCommandToChaosInput` (`VehicleChaosInputMapping.h/.cpp`) is a
+      free function on plain data — no actor, no component, no world. It preserves the
+      steer sign; converts the analog `[0,1]` handbrake into Chaos's `bool` at a documented
+      0.5 threshold; maps `EVehicleGearRequest` onto `SetChangeUpInput`/`SetChangeDownInput`
+      only when `bManualTransmission` is true; and its header states in the code that Chaos
+      exposes no clutch axis in UE 5.8.1's public API, so `Clutch` is deliberately not
+      mapped. Tested by `RacingSim.Vehicle.ChaosInputMapping` (pass-through, sign
+      preservation, the threshold's both sides, the manual/automatic gate).
+- [x] **Nothing non-finite can reach the movement component.** `MapCommandToChaosInput`
+      refuses a `Command` that fails `IsFiniteAndInRange()` wholesale and returns the safe
+      coasting input. Asserted for NaN and +infinity, and for a plain out-of-`[0,1]`-range
+      throttle, in `RacingSim.Vehicle.ChaosInputMapping`.
+- [x] **Physics timing is stated as a policy; one half of the ordering is now a real
+      guarantee, the other half is not (corrected on re-review).** `ARacingVehiclePawn`'s
+      constructor sets `PrimaryActorTick.TickGroup = TG_PrePhysics`, matching
+      `UVehicleInputComponent`'s own tick group (VEH-001). **Repair cycle 1 (`code-reviewer`
+      MEDIUM-1):** same tick group alone does not order an actor's `Tick` against its own
+      component's `TickComponent` — `UActorComponent`'s tick registration adds no
+      prerequisite on the owning actor. Fixed: `AddTickPrerequisiteComponent(VehicleInputComp)`
+      in the pawn's constructor now guarantees `VehicleInputComp::TickComponent` runs before
+      `ARacingVehiclePawn::Tick`, so the command is fresh when read. **Re-review correction:**
+      `SetUpdatedComponent(ChassisCollision)` (used in place of a direct assignment) does add
+      a prerequisite, but the wrong direction for this claim — it orders `ChassisCollision`
+      *after* `VehicleMovementComponent`, not the pawn *before* it. There is **no** prerequisite
+      ordering `ARacingVehiclePawn::Tick` (which calls `SetThrottleInput` etc.) before
+      `VehicleMovementComponent::TickComponent` consumes those setters. Practical impact is
+      low — Chaos marshals input to the physics thread at the step rather than reading it
+      synchronously mid-tick — but the guarantee is not complete, and is recorded honestly as
+      partial rather than re-claimed as fixed. No gameplay value is derived from
+      `DeltaSeconds` in the pawn's `Tick`.
+- [x] **The transmission-mode agreement check the chassis DataAsset's own header promises
+      now exists.** `VehicleChassisDataAsset.h`'s `bUseAutomaticGears` comment states
+      "`ARacingVehiclePawn` checks the two agree at possession and warns by name" — **repair
+      cycle 1 (`code-reviewer` MEDIUM-3)**: no such check existed. `PossessedBy` now compares
+      `InputConfigAsset->TransmissionMode` against `ChassisAsset->bUseAutomaticGears` and logs
+      a named warning on disagreement, closing the gap between the two independent "is this
+      manual" sources (the config's `TransmissionMode`, which gates whether `GearRequest` is
+      ever produced, and the chassis's `bUseAutomaticGears`, which gates
+      `bManualTransmission` in `ApplyInputCommand`).
+- [x] **`MaxSteerAngleDegrees` is no longer dead, unvalidated data.** **Repair cycle 1
+      (`code-reviewer` MEDIUM-2):** the chassis asset declared this field as "geometry, not
+      tune" but nothing applied or validated it — Chaos reads the steered wheel's own
+      `MaxSteerAngle` from the CDO (same CDO-vs-instance constraint as radius/width), and the
+      front wheel class left it at the engine default, so the asset's 40° and the car's
+      actual lock silently disagreed. Fixed the same way radius/width already were:
+      `UPrototypeFrontWheel::MaxSteerAngle` set to match the chassis default, and
+      `ValidateChassisAgainstWheelClasses` now cross-checks the two and fails by name
+      (`MaxSteerAngleDegrees`) on disagreement.
+- [x] **The pawn actually binds input; VEH-002's headline claim was false until this repair
+      cycle.** **Repair cycle 1 (`code-reviewer` HIGH-1):** `UVehicleInputComponent::BindActions`
+      (VEH-001) is documented as "call from the pawn's `SetupPlayerInputComponent`" — the
+      first pass of this pawn never overrode that function and never called it. `PossessedBy`
+      still pushed the mapping context and configured the processor, so nothing in the logs
+      indicated a problem, but no `UInputAction` was ever bound to a handler:
+      `PendingSample` never left zero, `GetCommand()` returned the default coasting command
+      every Tick, and the whole point of this ticket — a `FVehicleInputCommand` reaching a
+      Chaos axis — was broken end-to-end. Fixed: `ARacingVehiclePawn::SetupPlayerInputComponent`
+      now casts to `UEnhancedInputComponent` and calls `VehicleInputComp->BindActions`,
+      logging an `Error` by name if the cast fails (a misconfigured
+      `DefaultInputComponentClass` would otherwise fail the same way, silently). **Still not
+      directly tested** — same pawn-spawn harness limitation as the `BoneName` criterion
+      above; this is exactly the class of defect that limitation makes possible, which is
+      why it shipped in the first pass and was caught only by `code-reviewer` reading the
+      code rather than by any automated gate.
+- [ ] **Stuck-input mitigation (VEH-001 MEDIUM-4) — NOT closed here, deferred honestly.**
+      The pre-written criterion called for a stale-sample timeout inside
+      `FVehicleInputProcessor` (a new `InputStaleAfterSeconds` config field, a new
+      `EVehicleInputCorrection::StaleSample` enumerator, and processor changes to
+      VEH-001's own module). That is real, non-trivial scope against a different
+      ticket's module and was not attempted in this pass — implementing it without the
+      same level of test rigour VEH-001 itself demanded would be worse than leaving it
+      explicitly open. **Re-routed forward, unclosed**, to the next ticket that touches
+      `VehicleInputProcessor.h/.cpp` (likely `VEH-004`, which owns failure detection).
+- [x] **The device-switch mapping-context defect is actually fixed (VEH-001 MEDIUM-1).**
+      `UVehicleInputComponent` now tracks `PushedContext` (a `TWeakObjectPtr`) and removes
+      *that* context before pushing a new one, so a keyboard→gamepad switch leaves exactly
+      one context mapped instead of stacking both. Not directly unit-tested (same pawn/
+      controller-possession limitation as the `BoneName` criterion above — there is no
+      automatable path to a real device switch without a live controller), but the fix
+      itself is a small, readable diff against the previously-wrong two-line body.
+- [ ] **Telemetry snapshot — NOT closed here, deferred honestly.** The pre-written
+      criterion asked for a read-only pawn snapshot (wheel contact state, suspension
+      length, mapped Chaos axes, correction bitmask). `GetVehicleMovementComponent()` is
+      exposed as the seam a telemetry consumer needs, but no dedicated snapshot struct was
+      built — this is squarely `VEH-004`'s stated scope ("telemetry and failure
+      detection") and duplicating it here risks the two tickets diverging on the same
+      data. Re-routed forward, unclosed, to `VEH-004`.
+- [x] **Automation is `SmokeFilter`, level-free, and proven discovered by a `RunFilter`
+      run.** Tests live in `Source/RacingSimTests/Vehicle/` (`VehicleChassisSpec.cpp`,
+      `VehicleChaosInputMappingSpec.cpp`) and construct only `UDataAsset`s and wheel-class
+      CDOs — never an `ARacingVehiclePawn`, `UActorComponent`, or `UWorld` — for the reason
+      stated in `VehicleChassisSpec.cpp`'s own file header (this project's harness crashes
+      the whole run on real Actor construction before `RegisterEngineElements()`,
+      `Docs/Environment.md`). **Re-verified after repair cycle 1, 2026-08-25**,
+      `reportCreatedOn 2026.08.25-07.10.12`: **succeeded=500, succeededWithWarnings=2
+      (pre-existing, unrelated), failed=0, notRun=0** — up from the `VEH-001` baseline of
+      495 by exactly the five new tests: `RacingSim.Vehicle.{ChassisGeometry,
+      ChassisRelationships,WheelClasses,ChassisWheelMatch,ChaosInputMapping}`, all
+      `state: "Success"`. Two of those five gained repair-cycle-1 assertions
+      (`WheelClasses`: `AxleType`; `ChassisWheelMatch`: `MaxSteerAngleDegrees` mismatch)
+      without changing the discovered-test count, since both were already-existing tests.
+- [x] **Both targets build with zero new warnings.** **Re-verified after repair cycle 1,
+      2026-08-25**, both `Result: Succeeded`, 0 `warning|error` matches, built `-NoUBA`
+      (the UBA distributed executor's known transient ICE, see `RACE-004`, was not
+      exercised as a failure on this worktree's builds). Repair cycle 1 also fixed a
+      genuine Unity-Build duplicate-definition error (`C2084`): `VehicleChassisDataAsset.cpp`
+      and `VehicleInputComponent.cpp`'s sibling `VehicleInputConfig.cpp` both declared a
+      file-anonymous `AddFailure(FRacingValidationResult&, FName, FString)` with an
+      identical signature, which a Unity Build's merged translation unit treats as a real
+      duplicate — renamed to `AddChassisValidationFailure` in the newer file. `ChaosVehicles`
+      added to `RacingSim.Build.cs`'s `PublicDependencyModuleNames`; `RacingSimTests.Build.cs`
+      also depends on it directly (`PrivateDependencyModuleNames`), because
+      `VehicleChassisSpec.cpp` calls `UChaosVehicleWheel::StaticClass()` directly and a
+      module that references another
+      module's exported symbols must depend on it directly for linking, not rely on a
+      transitive re-export through `RacingSim`.
+
+**Explicitly out of scope, and stated rather than quietly skipped:** any test that
+actually simulates Chaos physics, and therefore every `Docs/02-VehiclePhysics.md`
+validation manoeuvre. This project has no world a test can spawn into
+(`UWorld::CreateWorld` is presumed broken, `Docs/Environment.md`) and the only graybox
+level has no collision geometry (TRACK-002 `L2`), so there is no surface for a car to
+stand on. Coast-down, skidpad, step steer, braking, tunnelling, penetration and
+runaway-energy detection therefore belong to `VEH-004`/`VEH-006` and are **not** claimed
+here. VEH-002 proves configuration, contracts, conversions and wiring — not handling.
 
 ---
 
