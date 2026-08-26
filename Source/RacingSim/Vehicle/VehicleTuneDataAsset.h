@@ -259,19 +259,28 @@ public:
 	float GetPeakNormalisedTorque() const;
 
 	/**
-	 * Peak engine torque Chaos actually delivers, NEWTON-METRES.
+	 * The peak engine torque Chaos TARGETS, NEWTON-METRES -- an upper bound, not a
+	 * bit-exact runtime guarantee (softened on code review, repair cycle 2, MEDIUM-2).
 	 *
 	 * NOT `MaxTorqueNm * GetPeakNormalisedTorque()` -- that was this ticket's original,
 	 * incorrect implementation, corrected on code review (VEH-003 HIGH-1).
 	 * `FVehicleEngineConfig::FillEngineSetup` (ChaosWheeledVehicleMovementComponent.h)
 	 * does `Eval(X) / MaxVal` before handing the curve to Chaos: it RE-NORMALISES the
-	 * authored curve to its OWN peak, so the curve Chaos actually samples always peaks
-	 * at exactly 1.0, regardless of what the authored curve's peak value was. The
-	 * delivered peak torque is therefore always exactly MaxTorqueNm -- a curve authored
-	 * peaking at 0.85 (perfectly legal; only a non-zero peak is required) still lets the
-	 * engine reach the full MaxTorqueNm at its RPM of peak torque, because Chaos divides
-	 * that 0.85 back out. GetPeakNormalisedTorque() answers a different, authoring-time
-	 * question (how the curve looks as authored) and must not be multiplied into this.
+	 * authored curve to its OWN peak, so the curve Chaos actually samples always TARGETS
+	 * a peak of 1.0, regardless of what the authored curve's peak value was -- a curve
+	 * authored peaking at 0.85 (perfectly legal; only a non-zero peak is required)
+	 * targets the full MaxTorqueNm, not 0.85 of it. GetPeakNormalisedTorque() answers a
+	 * different, authoring-time question (how the curve looks as authored) and must not
+	 * be multiplied into this.
+	 *
+	 * The word "targets" is deliberate: `FillEngineSetup` resamples the curve at a fixed
+	 * number of discrete points into an `FNormalisedGraph` before Chaos ever evaluates
+	 * it, so the value actually delivered equals `MaxTorqueNm` only if a sample lands
+	 * exactly on the authored peak -- for most curves it is `MaxTorqueNm` to within a
+	 * fraction of a percent, closer for smoother curves and further for a sharply
+	 * peaked one. This asset does not validate that the curve's key domain stays within
+	 * `[0, MaxRpm]`; a peak authored above `MaxRpm` is not sampled and this accessor
+	 * would then overstate what Chaos delivers by more than that rounding error.
 	 */
 	float GetPeakTorqueNm() const
 	{

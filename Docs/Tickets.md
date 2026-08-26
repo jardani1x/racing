@@ -1530,6 +1530,17 @@ The two gates the previous commit left unrun were run by the orchestrating sessi
 falsify the HIGH-1 defect rather than restate it. Both targets re-built `Result:
 Succeeded`, 0 `warning|error` matches, after the repair-cycle fixes below.
 
+**Re-verified after repair cycle 2 (re-review found repair cycle 1 had not fully closed
+HIGH-1, see the second findings table below), `reportCreatedOn 2026.08.26-08.36.25`:
+succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0.**
+Both targets independently re-built and both build logs were captured this time (the
+re-review's one open gap): `RacingSimEditor Win64 Development` — `Result: Succeeded`, 0
+`warning|error` matches; `RacingSim Win64 Development` — `Result: Succeeded`, 0
+`warning|error` matches. All five `RacingSim.Vehicle.Tune*` tests `state: "Success"`,
+including `TunePeakTorqueIndependentOfCurvePeak`, which now also asserts the
+order-independence property that closed HIGH-1 for real (a non-finite key reports the
+curve unusable regardless of which position it occupies).
+
 `succeeded` rose from the VEH-002 baseline of 500 by exactly the five new tests —
 `RacingSim.Vehicle.{TuneDefaults,TunePeakTorqueIndependentOfCurvePeak,TuneRanges,
 TuneRelationships,TuneWheelClassMatch}`, all `state: "Success"` in
@@ -1568,6 +1579,23 @@ repair cycle 1; LOW items are non-blocking and left as recorded.
 | LOW-2 | A test comment said "Reached through `Validate(true)`" when the call is actually `ValidateReadOnly()` | **Fixed** — comment corrected |
 | LOW-3 | A suspension-travel-sum failure is reported against only one of its two operands (`SuspensionMaxDropCm`), which could mislead an author who only adjusts `SuspensionMaxRaiseCm` | **Accepted as-is** — non-blocking, same shape as pre-existing chassis-asset relationship-failure reporting |
 | LOW-4 | `FMath::IsNearlyEqual` at default tolerance (`KINDA_SMALL_NUMBER`) compares brake torques up to 10,000 Nm, which is effectively exact-equality at that magnitude | **Accepted as-is** — fine for the current authoring path; not worth widening speculatively |
+
+### VEH-003 — review findings, pass 2 (re-review of repair cycle 1), 2026-08-26
+
+Verdict: **CHANGES REQUESTED** — repair cycle 1 did not genuinely close HIGH-1, and
+MEDIUM-5 (the `bUseAutoReverse` fix) was a no-op against the field that actually matters.
+Repair cycle 2 closes both plus the remaining MEDIUM/LOW findings below.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 (re-opened) | The repair-cycle-1 gate (`GetPeakNormalisedTorque() > 0`) relied on `FRichCurve::GetValueRange`, which folds with `FMath::Max` — and `Max(finite, NaN)` returns the FINITE operand. So a curve with a non-finite key could still report a finite, positive peak **depending on which key `FMath::Max` compared first**, silently defeating the HIGH-2 gate for exactly the corrupting-solver-state case it was built to close. The ticket's own test proved this: a `{NaN, 1.0}` curve reported peak `1.0`, not `0` | **Fixed** — `GetPeakNormalisedTorque()` now iterates every key explicitly and returns 0 the instant ANY key is non-finite, independent of order. The test that previously asserted the wrong (order-dependent) behaviour now asserts the correct one, plus a new case with the NaN key in the OTHER position, proving order no longer matters |
+| MEDIUM-1 (was MEDIUM-5) | The repair-cycle-1 fix set `FVehicleTransmissionConfig::bUseAutoReverse = false`, but `SetupVehicle` instantiates `FSimpleTransmissionSim`, which never reads that field at all — only a separate, unused modular vehicle path does. The field that actually governs "does braking at standstill reverse the car" is `UChaosVehicleMovementComponent::bReverseAsBrake` (base class, defaults `true`), which was never touched | **Fixed** — now sets `VehicleMovementComponent->bReverseAsBrake = false` directly, with the reasoning corrected to cite the field the engine actually reads |
+| MEDIUM-2 | `GetPeakTorqueNm()`'s header claimed the delivered peak is "always exactly `MaxTorqueNm`" — but `FillEngineSetup` resamples the curve at a fixed number of discrete points, so the true delivered value equals `MaxTorqueNm` only if a sample lands exactly on the authored peak; for most curves it is within a fraction of a percent, and the asset does not validate that the curve's key domain stays within `[0, MaxRpm]` | **Fixed** — comment softened to "the peak Chaos TARGETS...an upper bound, not a bit-exact runtime guarantee", with the resampling and unvalidated-domain caveats stated explicitly |
+| MEDIUM-3 | The engine-refusal log said "Chaos' built-in engine defaults remain in place" — in reality, the default `EngineSetup.TorqueCurve` is empty, and `SetupVehicle` disables mechanical simulation ENTIRELY for an empty curve (no engine, transmission, or differential sim at all), silently discarding this function's transmission/steering writes too | **Fixed** — log message and the surrounding comment corrected to state mechanical simulation is disabled, not defaulted |
+| MEDIUM-4 | None of the repair-cycle-1 pawn changes (the gate, the no-owner warning, `bTuneApplied`, `bUseAutoReverse`) have automated coverage — all live in `ApplyTuneAsset()`, which this project's harness cannot construct a pawn to test | **Acknowledged, not newly introduced** — same documented harness limitation as VEH-002's `ApplyChassisAsset()`; this is exactly the gap that let MEDIUM-1 (above) ship undetected, recorded as a standing risk rather than claimed solved |
+| LOW-1 | `RacingSimBuildId.h:19,225` still said `CarSpecVersion` is "populated by VEH-003" without noting the wiring gap MEDIUM-2 (pass 1) corrected in `Docs/Tickets.md` | **Fixed** — comment updated to state the capability exists but nothing calls it yet |
+| LOW-2 | The `Docs/Tickets.md` checkbox for `CarSpecVersion` was ticked `[x]` on a criterion whose own text says the obligation is unclosed — self-contradictory | **Fixed** — unticked to `[ ]`, consistent with the criterion's own honest text |
+| LOW-3 | `Saved/Automation/Report/index.json`'s reported totals omitted `succeededWithWarnings=2` from the completion report, which is accurate but incomplete evidence | **Fixed** — now stated explicitly in the verification block above |
 
 - [x] **One new typed DataAsset owns the tune, and it declares no Chaos type.**
       `UVehicleTuneDataAsset` (`Source/RacingSim/Vehicle/VehicleTuneDataAsset.h/.cpp`)
@@ -1627,8 +1655,10 @@ repair cycle 1; LOW items are non-blocking and left as recorded.
       curve key, or in any gear ratio are reported by name; relationship checks are
       guarded so one non-finite value produces one issue rather than a misleading second
       one (the chassis asset's `AllFinite` precedent).
-- [x] **The `GetContentVersion()` capability exists; wiring it to a result is NOT closed
-      (corrected on code review, MEDIUM-2).** `GetContentVersion()` returns
+- [ ] **The `GetContentVersion()` capability exists; wiring it to a result is NOT closed
+      (corrected on code review, MEDIUM-2 — unticked on re-review, LOW-2: this box was
+      self-contradictory, `[x]` on a criterion whose own text says unclosed).**
+      `GetContentVersion()` returns
       `TuneId`/`TuneSchemaVersion`/`ComputeContentHash()`, with the hash combining every
       tune value including the curve keys, tested by `RacingSim.Vehicle.TuneDefaults`.
       But nothing calls `URaceResultRecorder::SetCarSpecVersion` with it — see the

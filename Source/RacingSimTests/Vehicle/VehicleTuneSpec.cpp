@@ -501,15 +501,29 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		SetCurveKeys(Tune->NormalisedTorqueCurve, {{1000.0f, FMath::Sqrt(-1.0f)}, {6000.0f, 1.0f}});
 		TestTrue(TEXT("A non-finite torque curve key is reported"),
 			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
-		// The contract is "never propagate a NaN", not "return zero". FRichCurve's
-		// GetValueRange ignores the NaN key and reports the finite maximum, so the peak
-		// here is 1.0 -- verified by this assertion failing when it was first written to
-		// expect 0. Both properties are asserted: finite, and finite for the RIGHT
-		// reason, since a downstream MaxTorqueNm * peak must never produce a NaN.
-		TestTrue(TEXT("GetPeakNormalisedTorque is finite for a curve with a non-finite key"),
-			FMath::IsFinite(Tune->GetPeakNormalisedTorque()));
-		TestTrue(TEXT("GetPeakTorqueNm is finite for a curve with a non-finite key"),
-			FMath::IsFinite(Tune->GetPeakTorqueNm()));
+		// Corrected on code review, repair cycle 2 (VEH-003 HIGH-1 re-opened): the
+		// PREVIOUS version of this test asserted the peak was 1.0 here, reasoning that
+		// FRichCurve::GetValueRange's Max-based fold "ignores" the NaN key. That is true
+		// only when the NaN key happens not to be the operand FMath::Max compares first
+		// -- Max(finite, NaN) returns the finite operand, so key ORDER silently decided
+		// whether this curve was treated as usable. GetPeakNormalisedTorque() no longer
+		// uses GetValueRange for exactly this reason: it now iterates keys explicitly and
+		// reports the curve as wholly unusable (0.0) the moment ANY key is non-finite,
+		// independent of order. The contract is genuinely "never propagate a NaN" now,
+		// not "usually, unless the NaN key comes first".
+		TestEqual(TEXT("A curve with a non-finite key reports zero peak, not the other key's value"),
+			Tune->GetPeakNormalisedTorque(), 0.0f);
+		TestEqual(TEXT("GetPeakTorqueNm is zero (unusable), not MaxTorqueNm, for a curve with a non-finite key"),
+			Tune->GetPeakTorqueNm(), 0.0f);
+	}
+	{
+		// The order-dependence check itself: the SAME two keys, NaN placed SECOND
+		// instead of first. Both orderings must report unusable -- proving the fix is
+		// not merely "moved the bug to depend on the other ordering".
+		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
+		SetCurveKeys(Tune->NormalisedTorqueCurve, {{1000.0f, 1.0f}, {6000.0f, FMath::Sqrt(-1.0f)}});
+		TestEqual(TEXT("A non-finite key reports zero peak regardless of its position in the curve"),
+			Tune->GetPeakNormalisedTorque(), 0.0f);
 	}
 
 	// 12. Effectively no suspension travel: every kerb strike goes straight into the

@@ -224,8 +224,14 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 	// (Eval(X) / MaxVal) before handing it to the physics solver, so a zero-peak curve is
 	// a division by zero that puts NaN into Chaos::FSimpleEngineConfig -- a corrupting
 	// solver state, not merely "a slow car". A missing/unusable engine curve is treated
-	// the same as a missing TuneAsset: reported by name, Chaos' own built-in engine
-	// defaults are left in place instead.
+	// the same as a missing TuneAsset: reported by name. NOTE what actually happens
+	// downstream, corrected on code review (repair cycle 2, MEDIUM-3): the default
+	// EngineSetup.TorqueCurve has no authored keys, and
+	// UChaosWheeledVehicleMovementComponent::SetupVehicle disables mechanical
+	// simulation entirely for an empty curve (logs its own "no torque curve defined"
+	// warning) -- it is not "Chaos' engine defaults" driving the car, it is no
+	// mechanical simulation at all, which also means the transmission and steering
+	// values this function writes below are not applied either.
 	if (TuneAsset->GetPeakNormalisedTorque() > 0.0f)
 	{
 		FVehicleEngineConfig& Engine = VehicleMovementComponent->EngineSetup;
@@ -240,7 +246,7 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 	else
 	{
 		UE_LOG(LogRacingVehicle, Error,
-			TEXT("ARacingVehiclePawn '%s': TuneAsset '%s' has an unusable NormalisedTorqueCurve (peak <= 0); refusing to write the engine setup rather than sending a divide-by-zero into Chaos. Chaos' built-in engine defaults remain in place."),
+			TEXT("ARacingVehiclePawn '%s': TuneAsset '%s' has an unusable NormalisedTorqueCurve (empty, all-zero, or containing a non-finite key); refusing to write the engine setup rather than sending a NaN into Chaos. With no torque curve authored, Chaos disables mechanical simulation entirely -- this is not merely a defaulted engine."),
 			*GetNameSafe(this), *GetNameSafe(TuneAsset));
 	}
 
@@ -258,16 +264,21 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 	Transmission.GearChangeTime = TuneAsset->GearChangeTimeSeconds;
 	Transmission.TransmissionEfficiency = TuneAsset->TransmissionEfficiency;
 
-	// bUseAutoReverse: explicitly decided and owned here, not left at Chaos'
-	// InitDefaults() value of true (code review, VEH-003 MEDIUM-5, which found this
-	// ticket writes 7 of FVehicleTransmissionConfig's fields but left this one as an
-	// unowned engine default despite the ticket's own thesis being single ownership).
-	// False: auto-reverse changes what a brake input does at standstill (it becomes a
-	// reverse-throttle), which is directly in VEH-001's input contract and RACE-002's
-	// reverse-crossing invariants -- a driver-visible behaviour change neither of those
-	// tickets was written expecting. Reverse is therefore driver-commanded only, via
-	// GearRequest/SetChangeDownInput reaching neutral then reverse, not auto-triggered.
-	Transmission.bUseAutoReverse = false;
+	// Corrected on code review, repair cycle 2 (VEH-003 MEDIUM-1, was MEDIUM-5): the
+	// PREVIOUS fix set FVehicleTransmissionConfig::bUseAutoReverse, reasoning that
+	// auto-reverse changes what a brake input does at standstill. That field is a
+	// genuine no-op on this component's actual simulation path: SetupVehicle
+	// instantiates FSimpleTransmissionSim (ChaosWheeledVehicleMovementComponent.cpp),
+	// which never reads Setup().AutoReverse at all -- only the separate modular
+	// vehicle path (SimModule/TransmissionModule.cpp) does. The field that actually
+	// governs "does a brake input at standstill reverse the car" is
+	// UChaosVehicleMovementComponent::bReverseAsBrake, a base-class field, which
+	// defaults to true and was previously left untouched. Set explicitly here instead,
+	// for the same reason the old (wrong) fix gave: reverse is driver-commanded only,
+	// via GearRequest reaching Reverse, not auto-triggered by braking at standstill --
+	// a behaviour VEH-001's input contract and RACE-002's reverse-crossing invariants
+	// were not written expecting.
+	VehicleMovementComponent->bReverseAsBrake = false;
 
 	// -- Differential. NOT written here, and that is the ticket's decision, not an
 	// omission: Chaos' FVehicleDifferentialConfig has exactly two fields and VEH-002's

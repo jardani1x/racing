@@ -260,9 +260,25 @@ float UVehicleTuneDataAsset::GetPeakNormalisedTorque() const
 		return 0.0f;
 	}
 
-	float MinValue = 0.0f;
-	float MaxValue = 0.0f;
-	Curve->GetValueRange(MinValue, MaxValue);
+	// Iterate keys explicitly rather than FRichCurve::GetValueRange (fixed on code
+	// review, VEH-003 repair cycle 2, HIGH-1 not genuinely closed by cycle 1).
+	// GetValueRange folds with FMath::Max, and Max(finite, NaN) returns the FINITE
+	// operand -- so a curve whose non-finite key is NOT the one FMath::Max happens to
+	// compare first can still report a finite, positive peak. That silently defeated
+	// this ticket's own ApplyTuneAsset() gate (RacingVehiclePawn.cpp), letting a
+	// partially-NaN curve reach Chaos, which is the exact corrupting-solver-state
+	// outcome the gate exists to prevent. A single non-finite key anywhere now
+	// unconditionally reports the curve as unusable, independent of key order.
+	float MaxValue = -MAX_FLT;
+	for (int32 KeyIndex = 0; KeyIndex < Curve->GetNumKeys(); ++KeyIndex)
+	{
+		const FRichCurveKey& Key = Curve->Keys[KeyIndex];
+		if (!FMath::IsFinite(Key.Time) || !FMath::IsFinite(Key.Value))
+		{
+			return 0.0f;
+		}
+		MaxValue = FMath::Max(MaxValue, Key.Value);
+	}
 	return FMath::IsFinite(MaxValue) ? MaxValue : 0.0f;
 }
 
