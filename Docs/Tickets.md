@@ -1514,28 +1514,26 @@ oversights:
   cross-checked against the front wheel CDO). VEH-003 owns the Chaos *steering setup* —
   `ESteeringType`, `AngleRatio` and the speed-vs-steering curve.
 
-#### Verification status as committed — READ THIS BEFORE TICKING ANYTHING
+#### Verification status — build and test gates now run
 
-**No checkbox below is ticked, and that is accurate rather than pessimistic. The code in
-this commit has never been compiled.**
+The two gates the previous commit left unrun were run by the orchestrating session
+against this exact commit's tree (no source changes since):
 
-The implementation is complete by *inspection* — every structural criterion below was
-read against the actual source before commit, and the design matches what the criterion
-describes. But the two gates that turn "it is written" into "it works" were **not run**:
+| Gate | Result |
+|---|---|
+| `RacingSimEditor Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
+| `RacingSim Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
+| `Automation RunFilter Smoke` | `reportCreatedOn 2026.08.26-07.22.42`: **succeeded=504, failed=0, notRun=0** |
 
-| Gate | Command form | Status |
-|---|---|---|
-| `RacingSimEditor Win64 Development` | `Docs/Environment.md` → *Compile editor target* | **NOT RUN — blocked** |
-| `RacingSim Win64 Development` | same, Game target | **NOT RUN — blocked** |
-| `Automation RunFilter Smoke` | `Docs/Environment.md` → *Run automation tests* | **NOT RUN** — moot without a build; the four new tests cannot exist in a stale binary, so a run would have reported the VEH-002 baseline of 500 and proved nothing |
+`succeeded` rose from the VEH-002 baseline of 500 by exactly the four new tests —
+`RacingSim.Vehicle.{TuneDefaults,TuneRanges,TuneRelationships,TuneWheelClassMatch}`, all
+`state: "Success"` in `Saved/Automation/Report/index.json`. This is the first real compile
+of this ticket's code; the build gate was previously blocked by an environment permission
+layer denying `Build.bat`/`UnrealEditor-Cmd.exe` to the implementing session, not by any
+defect, and was run directly by the orchestrating session instead.
 
-The build was attempted and was refused by the environment's command-permission layer,
-not by a compiler. Two invocation forms were tried (direct `Build.bat`, and via
-`cmd.exe /c`); both were denied before a compiler ran. No compiler output, warning count,
-or test count exists for VEH-003, and none is claimed anywhere in this section.
-
-**One real defect was found and fixed by inspection during this pass**, which is also the
-reason the build gate matters rather than being a formality:
+**One real defect was found and fixed by inspection before this build ran**, which is the
+reason the build gate mattered rather than being a formality:
 `VehicleTuneDataAsset.cpp` defined `bool AllFinite(const std::initializer_list<float>)`
 in its file-anonymous namespace, with a signature identical to the one
 `VehicleChassisDataAsset.cpp:43` already defines in the same module. Anonymous namespaces
@@ -1543,16 +1541,10 @@ give internal linkage, so a non-unity build would link cleanly and hide it; a **
 Build concatenates both translation units and the two definitions are a redefinition
 (C2084)** — the exact failure VEH-002 hit with `AddFailure` in its repair cycle 1. The
 file even carried a comment warning about this hazard on the helper directly above.
-Renamed to `AllTuneValuesFinite`, with the reasoning recorded at the definition.
+Renamed to `AllTuneValuesFinite`; the rename is now confirmed correct by a clean compile,
+not merely low-risk by inspection.
 
-That fix is itself uncompiled. It is a rename with 8 call sites in one file, so the risk
-is low, but "low risk" is not "verified" and this ticket does not claim it is.
-
-**`VEH-003` therefore stays `OPEN`.** The next actor on this ticket must run both builds
-and the `Smoke` gate, confirm `succeeded` rises above **500** in
-`Saved/Automation/Report/index.json`, and only then tick these boxes.
-
-- [ ] **One new typed DataAsset owns the tune, and it declares no Chaos type.**
+- [x] **One new typed DataAsset owns the tune, and it declares no Chaos type.**
       `UVehicleTuneDataAsset` (`Source/RacingSim/Vehicle/VehicleTuneDataAsset.h/.cpp`)
       carries engine, transmission, brake, steering and suspension tune. It follows the
       chassis asset's Phase 2 rule literally: **no ChaosVehicles include in the asset
@@ -1560,7 +1552,7 @@ and the `Smoke` gate, confirm `succeeded` rises above **500** in
       suspension layer can replace stock Chaos without rewriting the data contract stays
       keepable. Chaos-facing enums (`ESteeringType`) are mirrored by a project enum and
       mapped enumerator-for-enumerator in `ARacingVehiclePawn`, never `static_cast`ed.
-- [ ] **The engine is a curve plus an envelope, and the curve is required.**
+- [x] **The engine is a curve plus an envelope, and the curve is required.**
       Normalised torque `[0,1]` against RPM (`FRuntimeFloatCurve`), `MaxTorqueNm`,
       `MaxRPM`, `IdleRPM`, engine braking, and the two rev-inertia terms Chaos exposes.
       Chaos multiplies `MaxTorque` (N·m) by the normalised curve
@@ -1569,7 +1561,7 @@ and the `Smoke` gate, confirm `succeeded` rises above **500** in
       **requires** at least two keys, finite times/values, non-negative RPM domain, values
       within `[0,1]`, and a non-zero peak — the same policy VEH-001 applied to its
       steering curve (fail, never silently fall back).
-- [ ] **The gearbox is validated as a ratio set, not as independent numbers.** Forward
+- [x] **The gearbox is validated as a ratio set, not as independent numbers.** Forward
       ratios must be non-empty, all finite and strictly positive, and **strictly
       decreasing** (first gear is the shortest); reverse ratios likewise positive
       magnitudes; final drive positive; `ChangeDownRPM < ChangeUpRPM <= MaxRPM` and
@@ -1577,7 +1569,7 @@ and the `Smoke` gate, confirm `succeeded` rises above **500** in
       `(0,1]`. A gearbox whose third gear is shorter than its second is individually
       plausible and collectively impossible, which is the exact class of defect the
       chassis relationship checks exist for.
-- [ ] **Brakes and suspension are declared here but written to the wheel CLASS, never to
+- [x] **Brakes and suspension are declared here but written to the wheel CLASS, never to
       a CDO at runtime, and the two are cross-checked.** VEH-002 established why
       (`PrototypeVehicleWheel.h`): `SetupVehicle` reads
       `WheelSetups[i].WheelClass.GetDefaultObject()`, so a per-instance write lands after
@@ -1589,7 +1581,7 @@ and the `Smoke` gate, confirm `succeeded` rises above **500** in
       `ValidateTuneAgainstWheelClasses()` proves at runtime that an edited asset still
       agrees with the classes Chaos actually reads. No silent write, exactly as with
       radius/width/`MaxSteerAngleDegrees`.
-- [ ] **Speed-sensitive steering has exactly one owner, chosen explicitly, and the unit
+- [x] **Speed-sensitive steering has exactly one owner, chosen explicitly, and the unit
       trap is documented.** Chaos samples `SteeringSetup.SteeringCurve` with
       `CmSToMPH(VehicleState.ForwardSpeed)` —
       `ChaosWheeledVehicleMovementComponent.cpp:738` — i.e. the curve domain is **MILES
@@ -1600,32 +1592,32 @@ and the `Smoke` gate, confirm `succeeded` rises above **500** in
       into Chaos so its default ramp cannot apply silently; under `ChaosCurve` the asset
       supplies `SteerScaleBySpeedMphCurve` (named for its unit) and the input config must
       be `ESteerSpeedScaleMode::Off`. Disagreement is a validated, named failure.
-- [ ] **Ranges are a CORE-003 table, validated in both directions.** A
+- [x] **Ranges are a CORE-003 table, validated in both directions.** A
       `FRacingPropertyRange` table mirrors every `ClampMin`/`ClampMax` on the class,
       enforced by `EnforceRanges` (metadata is compiled out when `WITH_METADATA` is 0, so
       metadata can never be the enforcement path), and `VerifyRangesMatchMetadata` is
       asserted by a test so a newly-added clamped property cannot be forgotten.
       Replacements are declared for every property whose bound is not its safe value.
-- [ ] **Nothing non-finite survives validation.** NaN and ±infinity in any scalar, in any
+- [x] **Nothing non-finite survives validation.** NaN and ±infinity in any scalar, in any
       curve key, or in any gear ratio are reported by name; relationship checks are
       guarded so one non-finite value produces one issue rather than a misleading second
       one (the chassis asset's `AllFinite` precedent).
-- [ ] **`FRacingSimVersionStamp::CarSpecVersion` is populated** — `GetContentVersion()`
+- [x] **`FRacingSimVersionStamp::CarSpecVersion` is populated** — `GetContentVersion()`
       returns `TuneId`/`TuneSchemaVersion`/`ComputeContentHash()`, with the hash combining
       every tune value including the curve keys, so a retune is visible on a result. This
       closes the one obligation routed into this ticket.
-- [ ] **The pawn consumes the asset through one function, guarded and idempotent.**
+- [x] **The pawn consumes the asset through one function, guarded and idempotent.**
       `ARacingVehiclePawn::ApplyTuneAsset()` runs before `RecreatePhysicsState()`, reports
       validation issues without mutating the asset (`ValidateReadOnly`, VEH-002's policy),
       logs by name when the asset is missing, and is the only place a project enum is
       mapped onto a Chaos enum.
-- [ ] **Automation is `SmokeFilter`, level-free, DataAsset-and-CDO only.** This project's
+- [x] **Automation is `SmokeFilter`, level-free, DataAsset-and-CDO only.** This project's
       harness cannot construct a non-template Actor or `UActorComponent` at any recorded
       gate (`Docs/Environment.md`; `VehicleChassisSpec.cpp`'s file header), so tests touch
       `UVehicleTuneDataAsset` and wheel-class CDOs only, exactly as VEH-002 did. The
       `Smoke` `succeeded` count must rise from the VEH-002 baseline of **500**, read from
       `Saved/Automation/Report/index.json`, never from an exit code.
-- [ ] **Both targets build with zero new warnings** — `RacingSimEditor Win64 Development`
+- [x] **Both targets build with zero new warnings** — `RacingSimEditor Win64 Development`
       and `RacingSim Win64 Development`, command form per `Docs/Environment.md`.
 
 **Explicitly out of scope, and stated rather than quietly skipped:** every validation
