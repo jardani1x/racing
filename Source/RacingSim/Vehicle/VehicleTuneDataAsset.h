@@ -246,18 +246,41 @@ public:
 	 *
 	 * Same caveats URaceRulesetDataAsset::ComputeContentHash records: it hashes bit
 	 * patterns, so +0.0 and -0.0 differ, and a NaN hashes stably while comparing unequal
-	 * to itself. Validate() rejects non-finite values before a hash of one reaches a
-	 * result. This detects accidental drift between builds; it is not a signature.
+	 * to itself. Correction (code review, VEH-003 HIGH-2): Validate() only REPORTS
+	 * non-finite values, in every DataAsset in this project -- it does not remove them,
+	 * so one can still reach this hash. ARacingVehiclePawn::ApplyTuneAsset() is what
+	 * refuses to hand an unusable torque curve to Chaos; this hash still reflects
+	 * whatever was authored, valid or not. This detects accidental drift between builds;
+	 * it is not a signature.
 	 */
 	uint32 ComputeContentHash() const;
 
-	/** Peak of the normalised torque curve, dimensionless. 0 when the curve is unusable. */
+	/** Peak of the AUTHORED normalised torque curve, dimensionless, before Chaos re-normalises it. 0 when the curve is unusable. Not what Chaos delivers -- see GetPeakTorqueNm(). */
 	float GetPeakNormalisedTorque() const;
 
-	/** Peak engine torque actually available, NEWTON-METRES: MaxTorqueNm * curve peak. */
+	/**
+	 * Peak engine torque Chaos actually delivers, NEWTON-METRES.
+	 *
+	 * NOT `MaxTorqueNm * GetPeakNormalisedTorque()` -- that was this ticket's original,
+	 * incorrect implementation, corrected on code review (VEH-003 HIGH-1).
+	 * `FVehicleEngineConfig::FillEngineSetup` (ChaosWheeledVehicleMovementComponent.h)
+	 * does `Eval(X) / MaxVal` before handing the curve to Chaos: it RE-NORMALISES the
+	 * authored curve to its OWN peak, so the curve Chaos actually samples always peaks
+	 * at exactly 1.0, regardless of what the authored curve's peak value was. The
+	 * delivered peak torque is therefore always exactly MaxTorqueNm -- a curve authored
+	 * peaking at 0.85 (perfectly legal; only a non-zero peak is required) still lets the
+	 * engine reach the full MaxTorqueNm at its RPM of peak torque, because Chaos divides
+	 * that 0.85 back out. GetPeakNormalisedTorque() answers a different, authoring-time
+	 * question (how the curve looks as authored) and must not be multiplied into this.
+	 */
 	float GetPeakTorqueNm() const
 	{
-		return MaxTorqueNm * GetPeakNormalisedTorque();
+		// GetPeakNormalisedTorque() == 0 means the curve is unusable (empty, all-zero,
+		// or every key non-finite) -- Chaos's own re-normalisation divides by zero in
+		// that case and the engine delivers no torque at all, not MaxTorqueNm. Every
+		// OTHER curve, regardless of its own peak value, delivers exactly MaxTorqueNm
+		// once Chaos re-normalises it -- see the comment above.
+		return (GetPeakNormalisedTorque() > 0.0f) ? MaxTorqueNm : 0.0f;
 	}
 
 	/**
@@ -291,10 +314,13 @@ public:
 	/**
 	 * NORMALISED torque [0,1] against engine speed in RPM.
 	 *
-	 * Chaos multiplies MaxTorqueNm by this curve (FVehicleEngineConfig: "Torque
-	 * [Normalized 0..1] for a given RPM"), so an empty curve is a car with no torque at
-	 * any RPM that still starts, revs and reports a healthy MaxTorque. Required: at least
-	 * two keys, finite, non-negative RPM domain, values within [0,1], non-zero peak.
+	 * Chaos does NOT use this curve's authored scale directly: `FillEngineSetup`
+	 * (ChaosWheeledVehicleMovementComponent.h) evaluates it and divides by the curve's
+	 * OWN peak before multiplying by MaxTorqueNm, so the curve Chaos actually samples
+	 * always peaks at exactly 1.0 -- see GetPeakTorqueNm(). An empty curve is still a
+	 * car with no torque at any RPM that starts, revs and reports a healthy MaxTorque.
+	 * Required: at least two keys, finite, non-negative RPM domain, values within
+	 * [0,1], non-zero peak.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Engine")
 	FRuntimeFloatCurve NormalisedTorqueCurve;

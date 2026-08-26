@@ -1486,7 +1486,7 @@ assumed.
 
 | Source | ID | Disposition in VEH-003 |
 |---|---|---|
-| CORE-002 / `Docs/Tickets.md:305`, `Docs/15-ProjectStructure.md:277`, `RacingSimBuildId.h:19,225` | `FRacingSimVersionStamp::CarSpecVersion` is documented as "Populated by VEH-003 from the car spec / tune asset. Empty here by design", and `IsPublishable()` refuses a stamp with the hole | **Closed here.** `UVehicleTuneDataAsset::GetContentVersion()` fills `AssetId`/`SchemaVersion`/`ContentHash` in the same shape `URaceRulesetDataAsset::GetContentVersion()` established, so a lap time can name the tune it was set on |
+| CORE-002 / `Docs/Tickets.md:305`, `Docs/15-ProjectStructure.md:277`, `RacingSimBuildId.h:19,225` | `FRacingSimVersionStamp::CarSpecVersion` is documented as "Populated by VEH-003 from the car spec / tune asset. Empty here by design", and `IsPublishable()` refuses a stamp with the hole | **Corrected on code review (MEDIUM-2), NOT fully closed.** `UVehicleTuneDataAsset::GetContentVersion()` exists and is tested, filling `AssetId`/`SchemaVersion`/`ContentHash` in the same shape `URaceRulesetDataAsset::GetContentVersion()` established — the *capability* is real. But nothing calls it: `URaceResultRecorder::SetCarSpecVersion` has no caller anywhere in `Source/`, and `ARacingVehiclePawn` never hands its tune's version to the recorder, so `IsPublishable()` still refuses every real stamp today. **Re-routed forward, unclosed**, to whichever ticket first wires a pawn's tune to a race result (likely `VEH-004`/`RACE-004`'s successor, or wherever `URaceResultRecorder` first gets a live pawn reference) |
 
 Confirmed **not** routed here, checked rather than assumed: VEH-001 `MEDIUM-2`/`MEDIUM-3`
 (untested `ConfigureFromAsset`/steer-scale seam) and `MEDIUM-4` (stuck-input timeout) were
@@ -1516,8 +1516,7 @@ oversights:
 
 #### Verification status — build and test gates now run
 
-The two gates the previous commit left unrun were run by the orchestrating session
-against this exact commit's tree (no source changes since):
+The two gates the previous commit left unrun were run by the orchestrating session:
 
 | Gate | Result |
 |---|---|
@@ -1525,10 +1524,17 @@ against this exact commit's tree (no source changes since):
 | `RacingSim Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
 | `Automation RunFilter Smoke` | `reportCreatedOn 2026.08.26-07.22.42`: **succeeded=504, failed=0, notRun=0** |
 
-`succeeded` rose from the VEH-002 baseline of 500 by exactly the four new tests —
-`RacingSim.Vehicle.{TuneDefaults,TuneRanges,TuneRelationships,TuneWheelClassMatch}`, all
-`state: "Success"` in `Saved/Automation/Report/index.json`. This is the first real compile
-of this ticket's code; the build gate was previously blocked by an environment permission
+**Re-verified after repair cycle 1 (`code-reviewer` findings below), `reportCreatedOn
+2026.08.26-08.05.08`: succeeded=505, failed=0, notRun=0** — the +1 over the first run is
+`RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak`, the test added to actually
+falsify the HIGH-1 defect rather than restate it. Both targets re-built `Result:
+Succeeded`, 0 `warning|error` matches, after the repair-cycle fixes below.
+
+`succeeded` rose from the VEH-002 baseline of 500 by exactly the five new tests —
+`RacingSim.Vehicle.{TuneDefaults,TunePeakTorqueIndependentOfCurvePeak,TuneRanges,
+TuneRelationships,TuneWheelClassMatch}`, all `state: "Success"` in
+`Saved/Automation/Report/index.json`. This is the first real compile of this ticket's
+code; the build gate was previously blocked by an environment permission
 layer denying `Build.bat`/`UnrealEditor-Cmd.exe` to the implementing session, not by any
 defect, and was run directly by the orchestrating session instead.
 
@@ -1543,6 +1549,25 @@ Build concatenates both translation units and the two definitions are a redefini
 file even carried a comment warning about this hazard on the helper directly above.
 Renamed to `AllTuneValuesFinite`; the rename is now confirmed correct by a clean compile,
 not merely low-risk by inspection.
+
+### VEH-003 — review findings, pass 1, 2026-08-26
+
+Verdict: **CHANGES REQUESTED**. 2 HIGH, 5 MEDIUM, 4 LOW. All HIGH and MEDIUM closed in
+repair cycle 1; LOW items are non-blocking and left as recorded.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 | `GetPeakTorqueNm()` returned `MaxTorqueNm * GetPeakNormalisedTorque()`. Chaos's `FillEngineSetup` re-normalises the authored curve to ITS OWN peak before scaling by `MaxTorqueNm` (`Eval(X) / MaxVal`), so the curve Chaos samples always peaks at exactly 1.0 regardless of the authored curve's own peak — the delivered peak torque is therefore always exactly `MaxTorqueNm` for any usable curve. The header comment "Chaos multiplies MaxTorqueNm by this curve" was also wrong in the same way. The existing test asserted the old, wrong formula against itself (tautological) | **Fixed** — `GetPeakTorqueNm()` now returns `MaxTorqueNm` for any curve with a positive peak, 0 for an unusable one; both header comments corrected; new test `RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak` proves it with a curve peaking at 0.5 |
+| HIGH-2 | `ApplyTuneAsset()` logged validation issues as warnings and then wrote the tune to Chaos regardless — including an all-zero/unusable torque curve, which `FillEngineSetup`'s division puts NaN into `Chaos::FSimpleEngineConfig`, a corrupting solver state. The `ComputeContentHash()` header claim "Validate() rejects non-finite values before a hash of one reaches a result" was also false — `Validate()` only reports | **Fixed** — the engine-setup write is now gated on `GetPeakNormalisedTorque() > 0`; an unusable curve is refused by name and Chaos' own built-in engine defaults are left in place instead. The `ComputeContentHash()` header comment corrected to state `Validate()` only reports |
+| MEDIUM-1 | `VehicleTuneSpec.cpp` declared `bool HasIssueFor(...)` in a file-anonymous namespace, identical in signature to `VehicleInputConfigSpec.cpp`'s own — the exact class of Unity-Build duplicate-definition bug this same ticket had just fixed once (`AllFinite`/`AllTuneValuesFinite`), latent only because `RacingSimTests` was below UBT's per-module Unity Build file-count threshold at review time | **Fixed** — renamed to `HasTuneIssueFor`, reasoning recorded at the definition |
+| MEDIUM-2 | `Docs/Tickets.md` claimed the CORE-002 `CarSpecVersion` hole was "Closed here." `GetContentVersion()` exists and is tested, but nothing calls `URaceResultRecorder::SetCarSpecVersion` with it — the capability is delivered, the hole is not closed | **Corrected** — routing table and acceptance criterion both downgraded to "capability delivered, wiring unclosed," re-routed forward to whichever ticket first gives `URaceResultRecorder` a live pawn reference |
+| MEDIUM-3 | The `EVehicleSteerSpeedAuthority` mechanism reported the `ChaosCurve`-plus-input-layer-also-active MULTIPLY case, but not its mirror image: `InputLayer` authority plus the input config's `SteerSpeedScaleMode` also `Off` silently leaves the car with NO speed-sensitive steering at all, despite both assets reading as though it has one | **Fixed** — symmetric warning added in the `InputLayer` branch |
+| MEDIUM-4 | `ApplyTuneAsset()` is unreachable when `ChassisAsset` is null (the early-return in `ApplyChassisAsset()` happens before the `ApplyTuneAsset()` call), and had no idempotency guard of its own — only relied on its caller's `bChassisApplied` | **Decided and documented**: tune-without-chassis is explicitly not a supported configuration (no `WheelSetup` for the brake/suspension cross-check to run against). `ApplyTuneAsset()` now also has its own `bTuneApplied` guard rather than relying solely on the caller's |
+| MEDIUM-5 | The pawn writes 7 of `FVehicleTransmissionConfig`'s fields but left `bUseAutoReverse` at Chaos' own `InitDefaults()` value of `true`, unowned and undocumented, despite the ticket's thesis being single ownership | **Fixed** — explicitly set `false` with the reasoning recorded (auto-reverse changes what a brake input does at standstill, which VEH-001/RACE-002 were not written expecting) |
+| LOW-1 | The differential "cross-check and documenting" disposition is documentation only; no new differential check was added (VEH-002's existing chassis validation is what's being relied on) | **Accepted as-is** — correct engineering, mis-described as two things instead of one; not worth a doc edit for this alone |
+| LOW-2 | A test comment said "Reached through `Validate(true)`" when the call is actually `ValidateReadOnly()` | **Fixed** — comment corrected |
+| LOW-3 | A suspension-travel-sum failure is reported against only one of its two operands (`SuspensionMaxDropCm`), which could mislead an author who only adjusts `SuspensionMaxRaiseCm` | **Accepted as-is** — non-blocking, same shape as pre-existing chassis-asset relationship-failure reporting |
+| LOW-4 | `FMath::IsNearlyEqual` at default tolerance (`KINDA_SMALL_NUMBER`) compares brake torques up to 10,000 Nm, which is effectively exact-equality at that magnitude | **Accepted as-is** — fine for the current authoring path; not worth widening speculatively |
 
 - [x] **One new typed DataAsset owns the tune, and it declares no Chaos type.**
       `UVehicleTuneDataAsset` (`Source/RacingSim/Vehicle/VehicleTuneDataAsset.h/.cpp`)
@@ -1602,10 +1627,12 @@ not merely low-risk by inspection.
       curve key, or in any gear ratio are reported by name; relationship checks are
       guarded so one non-finite value produces one issue rather than a misleading second
       one (the chassis asset's `AllFinite` precedent).
-- [x] **`FRacingSimVersionStamp::CarSpecVersion` is populated** — `GetContentVersion()`
-      returns `TuneId`/`TuneSchemaVersion`/`ComputeContentHash()`, with the hash combining
-      every tune value including the curve keys, so a retune is visible on a result. This
-      closes the one obligation routed into this ticket.
+- [x] **The `GetContentVersion()` capability exists; wiring it to a result is NOT closed
+      (corrected on code review, MEDIUM-2).** `GetContentVersion()` returns
+      `TuneId`/`TuneSchemaVersion`/`ComputeContentHash()`, with the hash combining every
+      tune value including the curve keys, tested by `RacingSim.Vehicle.TuneDefaults`.
+      But nothing calls `URaceResultRecorder::SetCarSpecVersion` with it — see the
+      corrected disposition in the findings table above. Re-routed forward, unclosed.
 - [x] **The pawn consumes the asset through one function, guarded and idempotent.**
       `ARacingVehiclePawn::ApplyTuneAsset()` runs before `RecreatePhysicsState()`, reports
       validation issues without mutating the asset (`ValidateReadOnly`, VEH-002's policy),

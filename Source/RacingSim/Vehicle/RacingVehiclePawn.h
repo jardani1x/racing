@@ -123,6 +123,11 @@ private:
 	 * it would not take effect until something else recreated the state. Suspension and
 	 * brake torques are NOT written here -- Chaos reads those from the wheel class default
 	 * object, so they are cross-checked instead (PrototypeVehicleWheel.h).
+	 *
+	 * Guarded by its own bTuneApplied (code review, VEH-003 MEDIUM-4) -- previously relied
+	 * only on its caller's bChassisApplied guard, which is correct today because
+	 * ApplyChassisAsset() is this function's only caller, but left this function without
+	 * a guard of its own despite being documented as "guarded and idempotent".
 	 */
 	void ApplyTuneAsset();
 
@@ -130,4 +135,5 @@ private:
 	void ApplyInputCommand(const FVehicleInputCommand& Command);
 
 	bool bChassisApplied = false;
+	bool bTuneApplied = false;
 };

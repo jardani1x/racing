@@ -46,8 +46,22 @@ namespace
 		return NewObject<UVehicleTuneDataAsset>(GetTransientPackage());
 	}
 
-	/** True when the result names an issue against this property. */
-	bool HasIssueFor(const FRacingValidationResult& Result, const FName PropertyName)
+	/**
+	 * True when the result names an issue against this property.
+	 *
+	 * Named `HasTuneIssueFor`, not the shorter `HasIssueFor` this ticket originally used
+	 * -- fixed on code review (VEH-003 MEDIUM-1). VehicleInputConfigSpec.cpp already
+	 * declares an identically-signatured `HasIssueFor` in its own file-anonymous
+	 * namespace, in the same RacingSimTests module. Both compile fine individually
+	 * (internal linkage), but a Unity Build concatenates .cpp files into one translation
+	 * unit and two same-named definitions become a genuine redefinition (C2084) --
+	 * exactly the class of bug this same ticket already fixed once, for
+	 * AllFinite/AllTuneValuesFinite, in the RUNTIME module. This module was not yet at
+	 * the file count where UBT switches it to Unity Build, so the collision was latent
+	 * rather than a build failure -- see Docs/Tickets.md's VEH-003 section for the
+	 * measurement.
+	 */
+	bool HasTuneIssueFor(const FRacingValidationResult& Result, const FName PropertyName)
 	{
 		return Result.Issues.ContainsByPredicate(
 			[PropertyName](const FRacingValidationIssue& Issue) { return Issue.PropertyName == PropertyName; });
@@ -89,10 +103,16 @@ bool FRacingSimVehicleTuneDefaultsTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("The default torque curve has at least two keys"),
 		TorqueCurve != nullptr && TorqueCurve->GetNumKeys() >= 2);
 
-	TestEqual(TEXT("The default torque curve peaks at 1.0 (normalised)"),
+	TestEqual(TEXT("The default torque curve peaks at 1.0 (normalised, as authored)"),
 		Tune->GetPeakNormalisedTorque(), 1.0f);
-	TestEqual(TEXT("Peak torque is MaxTorqueNm scaled by the curve peak, in Nm"),
-		Tune->GetPeakTorqueNm(), Tune->MaxTorqueNm * Tune->GetPeakNormalisedTorque());
+	// Deliberately NOT Tune->MaxTorqueNm * Tune->GetPeakNormalisedTorque() -- that was
+	// this ticket's original, code-review-caught defect (VEH-003 HIGH-1). Chaos
+	// re-normalises the curve to ITS OWN peak before scaling by MaxTorqueNm, so the
+	// delivered peak is always exactly MaxTorqueNm, independent of the authored curve's
+	// peak. See RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak below for the
+	// case that actually falsifies the old, wrong formula.
+	TestEqual(TEXT("Peak torque equals MaxTorqueNm (Chaos re-normalises the curve to its own peak)"),
+		Tune->GetPeakTorqueNm(), Tune->MaxTorqueNm);
 
 	// The steer curve is authored even though the default authority ignores it: an
 	// author who flips the enum must not find an empty curve they never touched.
@@ -146,6 +166,45 @@ bool FRacingSimVehicleTuneDefaultsTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// Peak torque must not depend on the authored curve's own peak -- Chaos
+// re-normalises the curve internally (VEH-003 HIGH-1, code review)
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRacingSimVehicleTunePeakTorqueIndependentOfCurvePeakTest,
+	"RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRacingSimVehicleTunePeakTorqueIndependentOfCurvePeakTest::RunTest(const FString& Parameters)
+{
+	// A curve peaking well below 1.0 is legal (validation only requires a non-zero
+	// peak). This is the case that falsifies the old, incorrect
+	// `MaxTorqueNm * GetPeakNormalisedTorque()` formula: that formula would have
+	// returned 0.5 * MaxTorqueNm here, but Chaos's FillEngineSetup divides the curve
+	// by its own peak before scaling by MaxTorqueNm, so the delivered peak is always
+	// exactly MaxTorqueNm regardless of the authored curve's own peak value.
+	UVehicleTuneDataAsset* LowPeak = MakeDefaultTune();
+	SetCurveKeys(LowPeak->NormalisedTorqueCurve, {{1000.0f, 0.2f}, {4000.0f, 0.5f}, {7000.0f, 0.1f}});
+
+	TestEqual(TEXT("The authored curve peak is 0.5, not 1.0"),
+		LowPeak->GetPeakNormalisedTorque(), 0.5f);
+	TestEqual(TEXT("Delivered peak torque is still exactly MaxTorqueNm, not MaxTorqueNm * 0.5"),
+		LowPeak->GetPeakTorqueNm(), LowPeak->MaxTorqueNm);
+
+	// An unusable curve (peak 0) is the one case where GetPeakTorqueNm() must NOT
+	// return MaxTorqueNm -- Chaos's re-normalisation divides by zero and delivers no
+	// torque at all in that case.
+	UVehicleTuneDataAsset* ZeroPeak = MakeDefaultTune();
+	SetCurveKeys(ZeroPeak->NormalisedTorqueCurve, {{1000.0f, 0.0f}, {7000.0f, 0.0f}});
+	TestEqual(TEXT("An all-zero curve yields zero delivered peak torque, not MaxTorqueNm"),
+		ZeroPeak->GetPeakTorqueNm(), 0.0f);
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // Ranges: the table must mirror the metadata in BOTH directions
 // ---------------------------------------------------------------------------
 
@@ -185,9 +244,9 @@ bool FRacingSimVehicleTuneRangesTest::RunTest(const FString& Parameters)
 
 		const FRacingValidationResult Report = Tune->ValidateReadOnly();
 		TestFalse(TEXT("An out-of-range tune does not validate clean"), Report.IsClean());
-		TestTrue(TEXT("MaxTorqueNm above its maximum is reported"), HasIssueFor(Report, TEXT("MaxTorqueNm")));
-		TestTrue(TEXT("A negative IdleRpm is reported"), HasIssueFor(Report, TEXT("IdleRpm")));
-		TestTrue(TEXT("A zero damping ratio is reported"), HasIssueFor(Report, TEXT("FrontDampingRatio")));
+		TestTrue(TEXT("MaxTorqueNm above its maximum is reported"), HasTuneIssueFor(Report, TEXT("MaxTorqueNm")));
+		TestTrue(TEXT("A negative IdleRpm is reported"), HasTuneIssueFor(Report, TEXT("IdleRpm")));
+		TestTrue(TEXT("A zero damping ratio is reported"), HasTuneIssueFor(Report, TEXT("FrontDampingRatio")));
 
 		// ValidateReadOnly must not mutate. A report that silently repaired the asset
 		// would make the corrected/uncorrected distinction meaningless.
@@ -216,9 +275,9 @@ bool FRacingSimVehicleTuneRangesTest::RunTest(const FString& Parameters)
 
 		const FRacingValidationResult Report = Tune->ValidateReadOnly();
 		TestFalse(TEXT("A NaN redline does not validate clean"), Report.IsClean());
-		TestTrue(TEXT("A NaN redline is reported against MaxRpm"), HasIssueFor(Report, TEXT("MaxRpm")));
+		TestTrue(TEXT("A NaN redline is reported against MaxRpm"), HasTuneIssueFor(Report, TEXT("MaxRpm")));
 		TestFalse(TEXT("A NaN redline does not also produce a spurious ChangeUpRpm relationship issue"),
-			HasIssueFor(Report, TEXT("ChangeUpRpm")));
+			HasTuneIssueFor(Report, TEXT("ChangeUpRpm")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
@@ -226,7 +285,7 @@ bool FRacingSimVehicleTuneRangesTest::RunTest(const FString& Parameters)
 
 		const FRacingValidationResult Report = Tune->ValidateReadOnly();
 		TestFalse(TEXT("An infinite MaxTorqueNm does not validate clean"), Report.IsClean());
-		TestTrue(TEXT("An infinite MaxTorqueNm is reported"), HasIssueFor(Report, TEXT("MaxTorqueNm")));
+		TestTrue(TEXT("An infinite MaxTorqueNm is reported"), HasTuneIssueFor(Report, TEXT("MaxTorqueNm")));
 
 		Tune->Validate(/*bCorrect*/ true);
 		TestTrue(TEXT("Correcting an infinity yields a finite MaxTorqueNm"), FMath::IsFinite(Tune->MaxTorqueNm));
@@ -266,7 +325,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->TuneId = NAME_None;
 		const FRacingValidationResult Result = Tune->ValidateReadOnly();
-		TestTrue(TEXT("An unnamed tune is reported"), HasIssueFor(Result, TEXT("TuneId")));
+		TestTrue(TEXT("An unnamed tune is reported"), HasTuneIssueFor(Result, TEXT("TuneId")));
 		TestFalse(TEXT("An unnamed tune's content version is not publishable"),
 			Tune->GetContentVersion().IsPopulated());
 	}
@@ -279,7 +338,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->ChangeUpRpm = 2900.0f;
 		Tune->ChangeDownRpm = 2000.0f;
 		TestTrue(TEXT("A redline below idle is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("MaxRpm")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("MaxRpm")));
 	}
 
 	// 3. Shift points that hunt: up at or below down.
@@ -288,7 +347,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->ChangeUpRpm = 3000.0f;
 		Tune->ChangeDownRpm = 3000.0f;
 		TestTrue(TEXT("Equal shift points are reported -- the gearbox would hunt"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ChangeUpRpm")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ChangeUpRpm")));
 	}
 
 	// 4. Upshift point past the redline: the gearbox never upshifts.
@@ -296,7 +355,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->ChangeUpRpm = Tune->MaxRpm + 500.0f;
 		TestTrue(TEXT("An upshift point above the redline is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ChangeUpRpm")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ChangeUpRpm")));
 	}
 
 	// 5. Downshift point below idle: the gearbox never downshifts.
@@ -305,7 +364,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->IdleRpm = 2000.0f;
 		Tune->ChangeDownRpm = 1000.0f;
 		TestTrue(TEXT("A downshift point below idle is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ChangeDownRpm")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ChangeDownRpm")));
 	}
 
 	// 6. Gear ratios that are not strictly decreasing. Individually plausible,
@@ -314,19 +373,19 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->ForwardGearRatios = {3.35f, 2.18f, 2.40f, 1.19f};
 		TestTrue(TEXT("A non-decreasing forward gear set is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ForwardGearRatios")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ForwardGearRatios")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->ForwardGearRatios.Empty();
 		TestTrue(TEXT("An empty forward gear set is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ForwardGearRatios")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ForwardGearRatios")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->ForwardGearRatios = {3.35f, FMath::Sqrt(-1.0f), 1.57f};
 		TestTrue(TEXT("A non-finite gear ratio is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ForwardGearRatios")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ForwardGearRatios")));
 	}
 
 	// 7. Reverse ratios are POSITIVE magnitudes -- Chaos applies the sign. A negative
@@ -335,13 +394,13 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->ReverseGearRatios = {-2.9f};
 		TestTrue(TEXT("A negative reverse ratio is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ReverseGearRatios")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ReverseGearRatios")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->ReverseGearRatios.Empty();
 		TestTrue(TEXT("An empty reverse gear set is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("ReverseGearRatios")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("ReverseGearRatios")));
 	}
 
 	// 8. Rear brake bias: locks the rear axle first and spins the car under braking.
@@ -351,7 +410,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->RearBrakeTorqueNm = Tune->FrontBrakeTorqueNm + 100.0f;
 
 		const FRacingValidationResult Report = Tune->ValidateReadOnly();
-		TestTrue(TEXT("A rear brake bias is reported"), HasIssueFor(Report, TEXT("RearBrakeTorqueNm")));
+		TestTrue(TEXT("A rear brake bias is reported"), HasTuneIssueFor(Report, TEXT("RearBrakeTorqueNm")));
 
 		const float BeforeRear = Tune->RearBrakeTorqueNm;
 		Tune->Validate(/*bCorrect*/ true);
@@ -367,7 +426,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->SteeringModel = EVehicleSteeringModel::Ackermann;
 		Tune->OuterInnerAngleRatio = 0.45f;
 		TestTrue(TEXT("A non-default angle ratio under a model that ignores it is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("OuterInnerAngleRatio")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("OuterInnerAngleRatio")));
 	}
 	{
 		// The same model with the ratio left alone is clean: this reports an author's
@@ -375,7 +434,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->SteeringModel = EVehicleSteeringModel::Ackermann;
 		TestFalse(TEXT("Ackermann with an untouched ratio is not reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("OuterInnerAngleRatio")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("OuterInnerAngleRatio")));
 	}
 
 	// 10. The mph steer curve is validated only when it is the selected authority.
@@ -383,11 +442,11 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		SetCurveKeys(Tune->SteerScaleBySpeedMphCurve, {{0.0f, 1.0f}});   // one key
 		TestFalse(TEXT("A broken mph curve is ignored while the input layer holds authority"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
 
 		Tune->SteerSpeedAuthority = EVehicleSteerSpeedAuthority::ChaosCurve;
 		TestTrue(TEXT("The same curve is reported once Chaos holds authority"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
 	}
 	{
 		// A curve value outside [0.05, 1] either locks the wheel or multiplies the
@@ -396,7 +455,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->SteerSpeedAuthority = EVehicleSteerSpeedAuthority::ChaosCurve;
 		SetCurveKeys(Tune->SteerScaleBySpeedMphCurve, {{0.0f, 1.0f}, {100.0f, 3.7f}});
 		TestTrue(TEXT("A steer scale above 1 is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
 	}
 	{
 		// Negative domain: mph is a speed, not a signed axis.
@@ -404,7 +463,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		Tune->SteerSpeedAuthority = EVehicleSteerSpeedAuthority::ChaosCurve;
 		SetCurveKeys(Tune->SteerScaleBySpeedMphCurve, {{-10.0f, 1.0f}, {100.0f, 0.5f}});
 		TestTrue(TEXT("A negative mph key is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("SteerScaleBySpeedMphCurve")));
 	}
 
 	// 11. Torque curve failures. The all-zero case is the one no per-key check sees:
@@ -414,7 +473,7 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		SetCurveKeys(Tune->NormalisedTorqueCurve, {{1000.0f, 0.0f}, {7000.0f, 0.0f}});
 		TestTrue(TEXT("An all-zero torque curve is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
 		TestEqual(TEXT("An all-zero torque curve yields zero peak torque"), Tune->GetPeakTorqueNm(), 0.0f);
 	}
 	{
@@ -423,25 +482,25 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		SetCurveKeys(Tune->NormalisedTorqueCurve, {{1000.0f, 250.0f}, {7000.0f, 420.0f}});
 		TestTrue(TEXT("A torque curve authored in Nm rather than normalised is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		SetCurveKeys(Tune->NormalisedTorqueCurve, {{5000.0f, 1.0f}});
 		TestTrue(TEXT("A single-key torque curve is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		SetCurveKeys(Tune->NormalisedTorqueCurve, {{-100.0f, 0.5f}, {6000.0f, 1.0f}});
 		TestTrue(TEXT("A negative rpm key is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		SetCurveKeys(Tune->NormalisedTorqueCurve, {{1000.0f, FMath::Sqrt(-1.0f)}, {6000.0f, 1.0f}});
 		TestTrue(TEXT("A non-finite torque curve key is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("NormalisedTorqueCurve")));
 		// The contract is "never propagate a NaN", not "return zero". FRichCurve's
 		// GetValueRange ignores the NaN key and reports the finite maximum, so the peak
 		// here is 1.0 -- verified by this assertion failing when it was first written to
@@ -455,14 +514,15 @@ bool FRacingSimVehicleTuneRelationshipsTest::RunTest(const FString& Parameters)
 
 	// 12. Effectively no suspension travel: every kerb strike goes straight into the
 	//     chassis, which VEH-004 would later see as an instability with no obvious cause.
-	//     Reached through Validate(true) so the range pass runs first: the individual
-	//     clamps permit 0.5 cm each, and it is only their SUM that is the defect.
+	//     Reached through ValidateReadOnly() (the individual clamps permit 0.5 cm each,
+	//     and it is only their SUM that is the defect -- comment corrected, code review
+	//     VEH-003 LOW-2, this was never a Validate(true) call).
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->SuspensionMaxRaiseCm = 0.5f;
 		Tune->SuspensionMaxDropCm = 0.5f;
 		TestTrue(TEXT("Effectively zero total suspension travel is reported"),
-			HasIssueFor(Tune->ValidateReadOnly(), TEXT("SuspensionMaxDropCm")));
+			HasTuneIssueFor(Tune->ValidateReadOnly(), TEXT("SuspensionMaxDropCm")));
 	}
 
 	return true;
@@ -508,21 +568,21 @@ bool FRacingSimVehicleTuneWheelClassMatchTest::RunTest(const FString& Parameters
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->FrontSpringRateNPerM += 10.0f;
 		TestTrue(TEXT("An edited front spring rate is reported against the wheel class"),
-			HasIssueFor(RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass),
+			HasTuneIssueFor(RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass),
 				TEXT("FrontSpringRateNPerM")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->RearBrakeTorqueNm += 250.0f;
 		TestTrue(TEXT("An edited rear brake torque is reported against the wheel class"),
-			HasIssueFor(RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass),
+			HasTuneIssueFor(RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass),
 				TEXT("RearBrakeTorqueNm")));
 	}
 	{
 		UVehicleTuneDataAsset* Tune = MakeDefaultTune();
 		Tune->HandbrakeTorqueNm += 100.0f;
 		TestTrue(TEXT("An edited handbrake torque is reported against the rear wheel class"),
-			HasIssueFor(RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass),
+			HasTuneIssueFor(RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass),
 				TEXT("HandbrakeTorqueNm")));
 	}
 	{
@@ -532,7 +592,7 @@ bool FRacingSimVehicleTuneWheelClassMatchTest::RunTest(const FString& Parameters
 		Tune->WheelLoadRatio = 0.9f;
 		const FRacingValidationResult Result =
 			RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(Tune, FrontClass, RearClass);
-		TestTrue(TEXT("An edited wheel load ratio is reported"), HasIssueFor(Result, TEXT("WheelLoadRatio")));
+		TestTrue(TEXT("An edited wheel load ratio is reported"), HasTuneIssueFor(Result, TEXT("WheelLoadRatio")));
 		TestEqual(TEXT("It is reported once per wheel class, not once overall"), Result.Issues.Num(), 2);
 	}
 
