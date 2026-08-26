@@ -1084,7 +1084,7 @@ acceptance criteria — do not rediscover these from scratch:
 |---|---|---|---|---|---|
 | VEH-001 | Keyboard/gamepad input mappings | vehicle-physics-engineer | CORE-001 | B | **DONE** 2026-08-25 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM — device-switch mapping-context bug, untested `ConfigureFromAsset`/steer-scale seam ×2, no stuck-input timeout — plus 3 LOW, all routed forward to `VEH-002`/`STREAM-001`, none blocking a contract-only ticket with no consumer yet). Independently confirmed the two loop-premise test fixes are genuine, the no-hard-coded-keys source scan is real, and the processor has no `UObject`/actor dependency. Both targets build clean and Smoke `succeeded=495` (baseline 486 + 9 new `RacingSim.Vehicle.Input*` tests, `failed=0, notRun=0`). Merged to `main`. |
 | VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | **DONE** 2026-08-25 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: input never bound so the car could never actually be driven; drivetrain layout silently inert because `AxleType` was never set on the wheel classes — plus 5 MEDIUM); repair cycle 1 closed both HIGH and all 5 MEDIUM (tick-prerequisite ordering, `MaxSteerAngleDegrees` cross-validation, transmission-mode agreement check, idempotency guard, corrected a false VEH-001-findings-closure claim, and fixed a genuine Unity-Build duplicate-symbol collision surfaced by the rebuild); re-review returned APPROVED WITH FOLLOW-UPS, with one doc-wording overstatement corrected (the tick-ordering fix only closes half the claimed guarantee). `test-engineer` independently confirmed both targets build clean (0 warnings, verified via captured build logs and per-file `.sarif` diagnostics) and Smoke `succeeded=500, failed=0, notRun=0`, all five new `RacingSim.Vehicle.*` tests `Success` including the two that gained repair-cycle assertions. Merged to `main`. Two acceptance criteria (VEH-001 MEDIUM-4 stuck-input timeout; telemetry snapshot) explicitly left unclosed and routed forward to `VEH-004` rather than faked |
-| VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | OPEN |
+| VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | **DONE** 2026-08-26 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: torque-curve peak formula wrong given Chaos's internal re-normalisation; an unvalidated/unusable torque curve reaching the physics solver — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and all MEDIUM, but re-review found HIGH-1's fix still order-dependent (`FMath::Max(finite, NaN)` returns the finite operand) and one MEDIUM fix targeted the wrong Chaos field (`bUseAutoReverse` vs. the actually-read `bReverseAsBrake`); repair cycle 2 closed both for real, independently re-verified against engine source (`ChaosWheeledVehicleMovementComponent.h`/`.cpp`, `ChaosVehicleMovementComponent.cpp`). Final re-review: APPROVED WITH FOLLOW-UPS — both build logs inspected directly (`Result: Succeeded`, 0 real warnings, both targets). `test-engineer` gate folded into the orchestrating session's own build/Smoke verification at each cycle: Smoke `succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all five new `RacingSim.Vehicle.Tune*` tests `Success`. Merged to `main`. Two items (an identical divide-by-peak hazard on the steering curve, `bUseAutoReverse` ownership) routed forward to `VEH-004`, the first ticket to author a tune content asset |
 | VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002 | C | OPEN |
 | VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | OPEN |
 | VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | OPEN |
@@ -1469,6 +1469,254 @@ level has no collision geometry (TRACK-002 `L2`), so there is no surface for a c
 stand on. Coast-down, skidpad, step steer, braking, tunnelling, penetration and
 runaway-energy detection therefore belong to `VEH-004`/`VEH-006` and are **not** claimed
 here. VEH-002 proves configuration, contracts, conversions and wiring — not handling.
+
+### VEH-003 — acceptance criteria, opened 2026-08-25
+
+Scope per the Epic 2 row: `Engine/transmission/diff/brakes/steering/suspension tune
+data`. Owner `vehicle-physics-engineer`. Gate C. Depends on `VEH-002` (**DONE**, merged
+at `4e3aa58`) and `CORE-003` (**DONE**) — unblocked.
+
+#### Findings routed forward into this ticket
+
+Grepped `Docs/Tickets.md`, `Docs/15-ProjectStructure.md` and
+`Source/RacingSim/Core/RacingSimBuildId.h` for `VEH-003`. **One** obligation is routed
+here, and it is a contract hole rather than a review finding; the remainder of VEH-002's
+open items were explicitly routed to `VEH-004`, not here, which was checked rather than
+assumed.
+
+| Source | ID | Disposition in VEH-003 |
+|---|---|---|
+| CORE-002 / `Docs/Tickets.md:305`, `Docs/15-ProjectStructure.md:277`, `RacingSimBuildId.h:19,225` | `FRacingSimVersionStamp::CarSpecVersion` is documented as "Populated by VEH-003 from the car spec / tune asset. Empty here by design", and `IsPublishable()` refuses a stamp with the hole | **Corrected on code review (MEDIUM-2), NOT fully closed.** `UVehicleTuneDataAsset::GetContentVersion()` exists and is tested, filling `AssetId`/`SchemaVersion`/`ContentHash` in the same shape `URaceRulesetDataAsset::GetContentVersion()` established — the *capability* is real. But nothing calls it: `URaceResultRecorder::SetCarSpecVersion` has no caller anywhere in `Source/`, and `ARacingVehiclePawn` never hands its tune's version to the recorder, so `IsPublishable()` still refuses every real stamp today. **Re-routed forward, unclosed**, to whichever ticket first wires a pawn's tune to a race result (likely `VEH-004`/`RACE-004`'s successor, or wherever `URaceResultRecorder` first gets a live pawn reference) |
+
+Confirmed **not** routed here, checked rather than assumed: VEH-001 `MEDIUM-2`/`MEDIUM-3`
+(untested `ConfigureFromAsset`/steer-scale seam) and `MEDIUM-4` (stuck-input timeout) were
+re-routed by VEH-002 to "the next ticket that touches `VehicleInputProcessor.h/.cpp`
+(likely `VEH-004`)". **VEH-003 does not touch that file**, and deliberately does not: the
+tune is not the input layer. They stay with `VEH-004`.
+
+#### The scope boundary, in both directions
+
+VEH-002's chassis asset states the dividing question — a number answering "what SHAPE is
+it" is chassis, a number answering "how FAST is it" is tune. VEH-003 takes the second
+half and **must not re-declare the first**. Two consequences that are decisions, not
+oversights:
+
+- **The differential bias is NOT re-declared here.** `FVehicleDifferentialConfig` in UE
+  5.8.1 exposes exactly two fields, `DifferentialType` and `FrontRearSplit`
+  (`ChaosWheeledVehicleMovementComponent.h:194-198`), and VEH-002 already owns both via
+  `EVehicleDrivetrainLayout` and `FrontRearTorqueSplit` on the chassis asset — including
+  the "split is meaningless outside AWD" validation. Adding a second bias field here
+  would give one Chaos value two owners, which is exactly what the chassis header warns
+  against. **The "diff" in this ticket's title is therefore satisfied by cross-checking
+  and documenting the existing field, not by duplicating it**, and this must be stated in
+  the completion report rather than looking like a missed requirement.
+- **The mechanical steering lock stays on the chassis** (`MaxSteerAngleDegrees`, already
+  cross-checked against the front wheel CDO). VEH-003 owns the Chaos *steering setup* —
+  `ESteeringType`, `AngleRatio` and the speed-vs-steering curve.
+
+#### Verification status — build and test gates now run
+
+The two gates the previous commit left unrun were run by the orchestrating session:
+
+| Gate | Result |
+|---|---|
+| `RacingSimEditor Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
+| `RacingSim Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
+| `Automation RunFilter Smoke` | `reportCreatedOn 2026.08.26-07.22.42`: **succeeded=504, failed=0, notRun=0** |
+
+**Re-verified after repair cycle 1 (`code-reviewer` findings below), `reportCreatedOn
+2026.08.26-08.05.08`: succeeded=505, failed=0, notRun=0** — the +1 over the first run is
+`RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak`, the test added to actually
+falsify the HIGH-1 defect rather than restate it. Both targets re-built `Result:
+Succeeded`, 0 `warning|error` matches, after the repair-cycle fixes below.
+
+**Re-verified after repair cycle 2 (re-review found repair cycle 1 had not fully closed
+HIGH-1, see the second findings table below), `reportCreatedOn 2026.08.26-08.36.25`:
+succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0.**
+Both targets independently re-built and both build logs were captured this time (the
+re-review's one open gap): `RacingSimEditor Win64 Development` — `Result: Succeeded`, 0
+`warning|error` matches; `RacingSim Win64 Development` — `Result: Succeeded`, 0
+`warning|error` matches. All five `RacingSim.Vehicle.Tune*` tests `state: "Success"`,
+including `TunePeakTorqueIndependentOfCurvePeak`, which now also asserts the
+order-independence property that closed HIGH-1 for real (a non-finite key reports the
+curve unusable regardless of which position it occupies).
+
+`succeeded` rose from the VEH-002 baseline of 500 by exactly the five new tests —
+`RacingSim.Vehicle.{TuneDefaults,TunePeakTorqueIndependentOfCurvePeak,TuneRanges,
+TuneRelationships,TuneWheelClassMatch}`, all `state: "Success"` in
+`Saved/Automation/Report/index.json`. This is the first real compile of this ticket's
+code; the build gate was previously blocked by an environment permission
+layer denying `Build.bat`/`UnrealEditor-Cmd.exe` to the implementing session, not by any
+defect, and was run directly by the orchestrating session instead.
+
+**One real defect was found and fixed by inspection before this build ran**, which is the
+reason the build gate mattered rather than being a formality:
+`VehicleTuneDataAsset.cpp` defined `bool AllFinite(const std::initializer_list<float>)`
+in its file-anonymous namespace, with a signature identical to the one
+`VehicleChassisDataAsset.cpp:43` already defines in the same module. Anonymous namespaces
+give internal linkage, so a non-unity build would link cleanly and hide it; a **Unity
+Build concatenates both translation units and the two definitions are a redefinition
+(C2084)** — the exact failure VEH-002 hit with `AddFailure` in its repair cycle 1. The
+file even carried a comment warning about this hazard on the helper directly above.
+Renamed to `AllTuneValuesFinite`; the rename is now confirmed correct by a clean compile,
+not merely low-risk by inspection.
+
+### VEH-003 — review findings, pass 1, 2026-08-26
+
+Verdict: **CHANGES REQUESTED**. 2 HIGH, 5 MEDIUM, 4 LOW. All HIGH and MEDIUM closed in
+repair cycle 1; LOW items are non-blocking and left as recorded.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 | `GetPeakTorqueNm()` returned `MaxTorqueNm * GetPeakNormalisedTorque()`. Chaos's `FillEngineSetup` re-normalises the authored curve to ITS OWN peak before scaling by `MaxTorqueNm` (`Eval(X) / MaxVal`), so the curve Chaos samples always peaks at exactly 1.0 regardless of the authored curve's own peak — the delivered peak torque is therefore always exactly `MaxTorqueNm` for any usable curve. The header comment "Chaos multiplies MaxTorqueNm by this curve" was also wrong in the same way. The existing test asserted the old, wrong formula against itself (tautological) | **Fixed** — `GetPeakTorqueNm()` now returns `MaxTorqueNm` for any curve with a positive peak, 0 for an unusable one; both header comments corrected; new test `RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak` proves it with a curve peaking at 0.5 |
+| HIGH-2 | `ApplyTuneAsset()` logged validation issues as warnings and then wrote the tune to Chaos regardless — including an all-zero/unusable torque curve, which `FillEngineSetup`'s division puts NaN into `Chaos::FSimpleEngineConfig`, a corrupting solver state. The `ComputeContentHash()` header claim "Validate() rejects non-finite values before a hash of one reaches a result" was also false — `Validate()` only reports | **Fixed** — the engine-setup write is now gated on `GetPeakNormalisedTorque() > 0`; an unusable curve is refused by name and Chaos' own built-in engine defaults are left in place instead. The `ComputeContentHash()` header comment corrected to state `Validate()` only reports |
+| MEDIUM-1 | `VehicleTuneSpec.cpp` declared `bool HasIssueFor(...)` in a file-anonymous namespace, identical in signature to `VehicleInputConfigSpec.cpp`'s own — the exact class of Unity-Build duplicate-definition bug this same ticket had just fixed once (`AllFinite`/`AllTuneValuesFinite`), latent only because `RacingSimTests` was below UBT's per-module Unity Build file-count threshold at review time | **Fixed** — renamed to `HasTuneIssueFor`, reasoning recorded at the definition |
+| MEDIUM-2 | `Docs/Tickets.md` claimed the CORE-002 `CarSpecVersion` hole was "Closed here." `GetContentVersion()` exists and is tested, but nothing calls `URaceResultRecorder::SetCarSpecVersion` with it — the capability is delivered, the hole is not closed | **Corrected** — routing table and acceptance criterion both downgraded to "capability delivered, wiring unclosed," re-routed forward to whichever ticket first gives `URaceResultRecorder` a live pawn reference |
+| MEDIUM-3 | The `EVehicleSteerSpeedAuthority` mechanism reported the `ChaosCurve`-plus-input-layer-also-active MULTIPLY case, but not its mirror image: `InputLayer` authority plus the input config's `SteerSpeedScaleMode` also `Off` silently leaves the car with NO speed-sensitive steering at all, despite both assets reading as though it has one | **Fixed** — symmetric warning added in the `InputLayer` branch |
+| MEDIUM-4 | `ApplyTuneAsset()` is unreachable when `ChassisAsset` is null (the early-return in `ApplyChassisAsset()` happens before the `ApplyTuneAsset()` call), and had no idempotency guard of its own — only relied on its caller's `bChassisApplied` | **Decided and documented**: tune-without-chassis is explicitly not a supported configuration (no `WheelSetup` for the brake/suspension cross-check to run against). `ApplyTuneAsset()` now also has its own `bTuneApplied` guard rather than relying solely on the caller's |
+| MEDIUM-5 | The pawn writes 7 of `FVehicleTransmissionConfig`'s fields but left `bUseAutoReverse` at Chaos' own `InitDefaults()` value of `true`, unowned and undocumented, despite the ticket's thesis being single ownership | **Fixed** — explicitly set `false` with the reasoning recorded (auto-reverse changes what a brake input does at standstill, which VEH-001/RACE-002 were not written expecting) |
+| LOW-1 | The differential "cross-check and documenting" disposition is documentation only; no new differential check was added (VEH-002's existing chassis validation is what's being relied on) | **Accepted as-is** — correct engineering, mis-described as two things instead of one; not worth a doc edit for this alone |
+| LOW-2 | A test comment said "Reached through `Validate(true)`" when the call is actually `ValidateReadOnly()` | **Fixed** — comment corrected |
+| LOW-3 | A suspension-travel-sum failure is reported against only one of its two operands (`SuspensionMaxDropCm`), which could mislead an author who only adjusts `SuspensionMaxRaiseCm` | **Accepted as-is** — non-blocking, same shape as pre-existing chassis-asset relationship-failure reporting |
+| LOW-4 | `FMath::IsNearlyEqual` at default tolerance (`KINDA_SMALL_NUMBER`) compares brake torques up to 10,000 Nm, which is effectively exact-equality at that magnitude | **Accepted as-is** — fine for the current authoring path; not worth widening speculatively |
+
+### VEH-003 — review findings, pass 2 (re-review of repair cycle 1), 2026-08-26
+
+Verdict: **CHANGES REQUESTED** — repair cycle 1 did not genuinely close HIGH-1, and
+MEDIUM-5 (the `bUseAutoReverse` fix) was a no-op against the field that actually matters.
+Repair cycle 2 closes both plus the remaining MEDIUM/LOW findings below.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 (re-opened) | The repair-cycle-1 gate (`GetPeakNormalisedTorque() > 0`) relied on `FRichCurve::GetValueRange`, which folds with `FMath::Max` — and `Max(finite, NaN)` returns the FINITE operand. So a curve with a non-finite key could still report a finite, positive peak **depending on which key `FMath::Max` compared first**, silently defeating the HIGH-2 gate for exactly the corrupting-solver-state case it was built to close. The ticket's own test proved this: a `{NaN, 1.0}` curve reported peak `1.0`, not `0` | **Fixed** — `GetPeakNormalisedTorque()` now iterates every key explicitly and returns 0 the instant ANY key is non-finite, independent of order. The test that previously asserted the wrong (order-dependent) behaviour now asserts the correct one, plus a new case with the NaN key in the OTHER position, proving order no longer matters |
+| MEDIUM-1 (was MEDIUM-5) | The repair-cycle-1 fix set `FVehicleTransmissionConfig::bUseAutoReverse = false`, but `SetupVehicle` instantiates `FSimpleTransmissionSim`, which never reads that field at all — only a separate, unused modular vehicle path does. The field that actually governs "does braking at standstill reverse the car" is `UChaosVehicleMovementComponent::bReverseAsBrake` (base class, defaults `true`), which was never touched | **Fixed** — now sets `VehicleMovementComponent->bReverseAsBrake = false` directly, with the reasoning corrected to cite the field the engine actually reads |
+| MEDIUM-2 | `GetPeakTorqueNm()`'s header claimed the delivered peak is "always exactly `MaxTorqueNm`" — but `FillEngineSetup` resamples the curve at a fixed number of discrete points, so the true delivered value equals `MaxTorqueNm` only if a sample lands exactly on the authored peak; for most curves it is within a fraction of a percent, and the asset does not validate that the curve's key domain stays within `[0, MaxRpm]` | **Fixed** — comment softened to "the peak Chaos TARGETS...an upper bound, not a bit-exact runtime guarantee", with the resampling and unvalidated-domain caveats stated explicitly |
+| MEDIUM-3 | The engine-refusal log said "Chaos' built-in engine defaults remain in place" — in reality, the default `EngineSetup.TorqueCurve` is empty, and `SetupVehicle` disables mechanical simulation ENTIRELY for an empty curve (no engine, transmission, or differential sim at all), silently discarding this function's transmission/steering writes too | **Fixed** — log message and the surrounding comment corrected to state mechanical simulation is disabled, not defaulted |
+| MEDIUM-4 | None of the repair-cycle-1 pawn changes (the gate, the no-owner warning, `bTuneApplied`, `bUseAutoReverse`) have automated coverage — all live in `ApplyTuneAsset()`, which this project's harness cannot construct a pawn to test | **Acknowledged, not newly introduced** — same documented harness limitation as VEH-002's `ApplyChassisAsset()`; this is exactly the gap that let MEDIUM-1 (above) ship undetected, recorded as a standing risk rather than claimed solved |
+| LOW-1 | `RacingSimBuildId.h:19,225` still said `CarSpecVersion` is "populated by VEH-003" without noting the wiring gap MEDIUM-2 (pass 1) corrected in `Docs/Tickets.md` | **Fixed** — comment updated to state the capability exists but nothing calls it yet |
+| LOW-2 | The `Docs/Tickets.md` checkbox for `CarSpecVersion` was ticked `[x]` on a criterion whose own text says the obligation is unclosed — self-contradictory | **Fixed** — unticked to `[ ]`, consistent with the criterion's own honest text |
+| LOW-3 | `Saved/Automation/Report/index.json`'s reported totals omitted `succeededWithWarnings=2` from the completion report, which is accurate but incomplete evidence | **Fixed** — now stated explicitly in the verification block above |
+
+### VEH-003 — review findings, pass 3 (re-review of repair cycle 2), 2026-08-26
+
+Verdict: **APPROVED WITH FOLLOW-UPS. Ready to merge — no repair cycle 3.** All four
+re-opened items from pass 2 (HIGH-1, MEDIUM-1/2/3) independently re-verified closed
+against engine source; both build logs inspected directly this time (`Result: Succeeded`
+for both `RacingSimEditor` and `RacingSim`, one benign `-WarningsAsErrors` flag string as
+the only `warning|error` match in either log). Two new, non-blocking items found — the
+reviewer's own recommendation was explicit: route these forward rather than spend the
+third and final repair cycle on them.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| LOW-1 (new) | The `MEDIUM-3` fix corrected the log/comment for the engine and transmission being skipped when mechanical sim is disabled, but added a new inaccurate clause claiming steering is skipped too. `FSimpleSteeringSim` is actually added at `ChaosWheeledVehicleMovementComponent.cpp:1576-1577`, **outside** the `bMechanicalSimEnabled` guard — steering is applied regardless | **Accepted, routed forward** — a comment-only inaccuracy reaching nothing; fix on next touch of `ApplyTuneAsset()` |
+| MEDIUM-1 (new) | `SteerScaleBySpeedMphCurve` is written to `Steering.SteeringCurve` (`RacingVehiclePawn.cpp`) with **no** peak/finiteness gate, unlike the torque curve. `FillSteeringSetup` does the identical `Eval(X)/MaxValue` divide-by-peak that HIGH-2 closed for torque, plus a `GetLastKey()` hard-assert on an empty curve and a `MaxX/NumSamples` divide-by-zero risk if the curve's last key sits at time 0. `ValidateNormalisedCurve` already catches all of this, but only as a report, exactly as the torque curve was before HIGH-2 | **Not reachable today** — no `UVehicleTuneDataAsset` content asset exists yet, and the constructor default is valid. **Routed forward, tracked**, to whichever ticket first authors a tune `.uasset` (`VEH-004`): mirror the torque-curve gate onto the steering curve before that asset can exist |
+| LOW-2 (new) | The `MEDIUM-1` fix (repair cycle 2) replaced `Transmission.bUseAutoReverse` rather than leaving it explicitly documented as unowned; it now sits at Chaos' own `InitDefaults()` default (`true`), inert today but undocumented | **Routed forward** alongside the steering-curve gate — decide and document ownership when `VEH-004` or a later ticket next touches this function |
+| Original LOW-1 (VEH-001 style numbering carried over) | `RacingSimBuildId.h:19` and `:26` (the file-header summary table, not the field comment fixed in pass 2) still read "populated by VEH-003" without the wiring caveat | **Accepted, routed forward** — the authoritative field-level comment (`:226-234`) is already correct; the header-table line is cosmetic staleness, not a load-bearing claim |
+
+- [x] **One new typed DataAsset owns the tune, and it declares no Chaos type.**
+      `UVehicleTuneDataAsset` (`Source/RacingSim/Vehicle/VehicleTuneDataAsset.h/.cpp`)
+      carries engine, transmission, brake, steering and suspension tune. It follows the
+      chassis asset's Phase 2 rule literally: **no ChaosVehicles include in the asset
+      header**, so `Docs/02-VehiclePhysics.md`'s promise that a project-owned tyre/
+      suspension layer can replace stock Chaos without rewriting the data contract stays
+      keepable. Chaos-facing enums (`ESteeringType`) are mirrored by a project enum and
+      mapped enumerator-for-enumerator in `ARacingVehiclePawn`, never `static_cast`ed.
+- [x] **The engine is a curve plus an envelope, and the curve is required.**
+      Normalised torque `[0,1]` against RPM (`FRuntimeFloatCurve`), `MaxTorqueNm`,
+      `MaxRPM`, `IdleRPM`, engine braking, and the two rev-inertia terms Chaos exposes.
+      Chaos multiplies `MaxTorque` (N·m) by the normalised curve
+      (`FVehicleEngineConfig`, `ChaosWheeledVehicleMovementComponent.h:234-238`), so a
+      curve with no keys is a car with no torque at any RPM. Validation therefore
+      **requires** at least two keys, finite times/values, non-negative RPM domain, values
+      within `[0,1]`, and a non-zero peak — the same policy VEH-001 applied to its
+      steering curve (fail, never silently fall back).
+- [x] **The gearbox is validated as a ratio set, not as independent numbers.** Forward
+      ratios must be non-empty, all finite and strictly positive, and **strictly
+      decreasing** (first gear is the shortest); reverse ratios likewise positive
+      magnitudes; final drive positive; `ChangeDownRPM < ChangeUpRPM <= MaxRPM` and
+      `IdleRPM < MaxRPM`; gear-change time non-negative; transmission efficiency in
+      `(0,1]`. A gearbox whose third gear is shorter than its second is individually
+      plausible and collectively impossible, which is the exact class of defect the
+      chassis relationship checks exist for.
+- [x] **Brakes and suspension are declared here but written to the wheel CLASS, never to
+      a CDO at runtime, and the two are cross-checked.** VEH-002 established why
+      (`PrototypeVehicleWheel.h`): `SetupVehicle` reads
+      `WheelSetups[i].WheelClass.GetDefaultObject()`, so a per-instance write lands after
+      Chaos has already copied the CDO, and a CDO write is process-global. VEH-003 must
+      **replace, not extend**, the placeholder spring rate/preload/damping/travel/brake/
+      handbrake torques the VEH-002 wheel constructors carry. The single source of truth
+      is a `constexpr` block (`RacingSim::Vehicle::PrototypeTuneDefaults`) consumed by
+      **both** the wheel constructors and the DataAsset's property defaults, and
+      `ValidateTuneAgainstWheelClasses()` proves at runtime that an edited asset still
+      agrees with the classes Chaos actually reads. No silent write, exactly as with
+      radius/width/`MaxSteerAngleDegrees`.
+- [x] **Speed-sensitive steering has exactly one owner, chosen explicitly, and the unit
+      trap is documented.** Chaos samples `SteeringSetup.SteeringCurve` with
+      `CmSToMPH(VehicleState.ForwardSpeed)` —
+      `ChaosWheeledVehicleMovementComponent.cpp:738` — i.e. the curve domain is **MILES
+      PER HOUR**, while VEH-001's `SteerScaleBySpeedKphCurve` is **KM/H**, and Chaos'
+      default curve already falls to 0.3 by 120 mph. Left alone the two multiply and the
+      car loses far more steering than either asset says. `EVehicleSteerSpeedAuthority`
+      names the owner: under `InputLayer` (the default) the pawn writes a flat unity curve
+      into Chaos so its default ramp cannot apply silently; under `ChaosCurve` the asset
+      supplies `SteerScaleBySpeedMphCurve` (named for its unit) and the input config must
+      be `ESteerSpeedScaleMode::Off`. Disagreement is a validated, named failure.
+- [x] **Ranges are a CORE-003 table, validated in both directions.** A
+      `FRacingPropertyRange` table mirrors every `ClampMin`/`ClampMax` on the class,
+      enforced by `EnforceRanges` (metadata is compiled out when `WITH_METADATA` is 0, so
+      metadata can never be the enforcement path), and `VerifyRangesMatchMetadata` is
+      asserted by a test so a newly-added clamped property cannot be forgotten.
+      Replacements are declared for every property whose bound is not its safe value.
+- [x] **Nothing non-finite survives validation.** NaN and ±infinity in any scalar, in any
+      curve key, or in any gear ratio are reported by name; relationship checks are
+      guarded so one non-finite value produces one issue rather than a misleading second
+      one (the chassis asset's `AllFinite` precedent).
+- [ ] **The `GetContentVersion()` capability exists; wiring it to a result is NOT closed
+      (corrected on code review, MEDIUM-2 — unticked on re-review, LOW-2: this box was
+      self-contradictory, `[x]` on a criterion whose own text says unclosed).**
+      `GetContentVersion()` returns
+      `TuneId`/`TuneSchemaVersion`/`ComputeContentHash()`, with the hash combining every
+      tune value including the curve keys, tested by `RacingSim.Vehicle.TuneDefaults`.
+      But nothing calls `URaceResultRecorder::SetCarSpecVersion` with it — see the
+      corrected disposition in the findings table above. Re-routed forward, unclosed.
+- [x] **The pawn consumes the asset through one function, guarded and idempotent.**
+      `ARacingVehiclePawn::ApplyTuneAsset()` runs before `RecreatePhysicsState()`, reports
+      validation issues without mutating the asset (`ValidateReadOnly`, VEH-002's policy),
+      logs by name when the asset is missing, and is the only place a project enum is
+      mapped onto a Chaos enum.
+- [x] **Automation is `SmokeFilter`, level-free, DataAsset-and-CDO only.** This project's
+      harness cannot construct a non-template Actor or `UActorComponent` at any recorded
+      gate (`Docs/Environment.md`; `VehicleChassisSpec.cpp`'s file header), so tests touch
+      `UVehicleTuneDataAsset` and wheel-class CDOs only, exactly as VEH-002 did. The
+      `Smoke` `succeeded` count must rise from the VEH-002 baseline of **500**, read from
+      `Saved/Automation/Report/index.json`, never from an exit code.
+- [x] **Both targets build with zero new warnings** — `RacingSimEditor Win64 Development`
+      and `RacingSim Win64 Development`, command form per `Docs/Environment.md`.
+
+**Explicitly out of scope, and stated rather than quietly skipped:** every validation
+manoeuvre in `Docs/02-VehiclePhysics.md` (coast-down, skidpad, step steer, braking
+distance), ABS/TCS, tyre friction tuning, and any claim that these numbers *handle* well.
+VEH-003 ships a validated, unit-explicit, telemetry-identifiable tune — proving it is a
+good tune needs a car driving on a surface, which is `VEH-006`. The values are original
+prototype envelopes invented for this project; no branded vehicle specification was
+consulted, per CLAUDE.md.
+
+#### Where this work lives — two worktrees, reconcile before merging
+
+VEH-003 was implemented in worktree `agent-ad1d630fd1f4682bd` and left **uncommitted**
+there when that session ended. The continuing session was isolated to a *different*
+worktree, `agent-aee66d15f8d1395a9`, and its tooling refused git operations against the
+other checkout — correctly, since a worktree-isolated agent must not commit into a
+checkout it does not own.
+
+The seven files were therefore **copied** into `agent-aee66d15f8d1395a9` (identical base
+commit `4e3aa58`, so the copy is exact and conflict-free), the `AllFinite` collision was
+fixed there, and the work was committed on branch `worktree-agent-aee66d15f8d1395a9`.
+
+**Consequence to handle:** the original uncommitted copy still sits in
+`agent-ad1d630fd1f4682bd` and is now *stale* — it lacks the `AllTuneValuesFinite` fix and
+this section. Discard it rather than merging it, or the collision returns.
 
 ---
 

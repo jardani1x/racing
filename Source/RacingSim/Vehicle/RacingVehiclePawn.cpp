@@ -10,6 +10,7 @@
 #include "Vehicle/VehicleInputComponent.h"
 #include "Vehicle/VehicleInputConfig.h"
 #include "Vehicle/VehicleInputTypes.h"
+#include "Vehicle/VehicleTuneDataAsset.h"
 
 ARacingVehiclePawn::ARacingVehiclePawn(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -74,8 +75,17 @@ void ARacingVehiclePawn::ApplyChassisAsset()
 		// ChassisCollision's default box, cannot drive (WheelSetups stays empty, so
 		// Chaos has nothing to simulate), and says so loudly. Matches VEH-001's
 		// established policy for an unconfigured input component.
+		//
+		// Decision, recorded rather than left implicit (code review, VEH-003 MEDIUM-4):
+		// ApplyTuneAsset() is deliberately NOT called on this path, so a TuneAsset on a
+		// chassis-less pawn is never applied, validated, or cross-checked against the
+		// wheel classes. "Tune without a chassis" is not a supported configuration --
+		// there is no WheelSetup for the tune's brake/suspension cross-check to run
+		// against, and a car with no wheels gains nothing from a tuned engine. If a
+		// future ticket needs the two independent, split this early-return so it only
+		// skips the chassis-specific work below and calls ApplyTuneAsset() regardless.
 		UE_LOG(LogRacingVehicle, Error,
-			TEXT("ARacingVehiclePawn '%s' has no ChassisAsset; the vehicle will not be drivable."),
+			TEXT("ARacingVehiclePawn '%s' has no ChassisAsset; the vehicle will not be drivable. Any TuneAsset is also not applied."),
 			*GetNameSafe(this));
 		return;
 	}
@@ -161,9 +171,200 @@ void ARacingVehiclePawn::ApplyChassisAsset()
 			TEXT("ARacingVehiclePawn '%s': %s"), *GetNameSafe(this), *Issue.Message);
 	}
 
+	// VEH-003, deliberately BEFORE RecreatePhysicsState(): that call is what pushes the
+	// whole configuration into Chaos, so a tune written after it would sit in the
+	// component and not in the simulation until something else recreated the state.
+	ApplyTuneAsset();
+
 	VehicleMovementComponent->RecreatePhysicsState();
 
 	bChassisApplied = true;
+}
+
+void ARacingVehiclePawn::ApplyTuneAsset()
+{
+	if (bTuneApplied)
+	{
+		// Own guard, not borrowed from the caller's bChassisApplied (code review,
+		// VEH-003 MEDIUM-4) -- correct today because ApplyChassisAsset() is this
+		// function's only caller, but a function documented as "guarded and
+		// idempotent" should not depend on every future caller remembering to guard it.
+		return;
+	}
+
+	if (TuneAsset == nullptr)
+	{
+		// Reported, never substituted. A silent fallback to Chaos' own engine/transmission
+		// defaults would give a car that drives -- badly, and unlike the authored tune --
+		// with nothing in the session saying which numbers were used. Same policy as the
+		// null-chassis path above.
+		UE_LOG(LogRacingVehicle, Error,
+			TEXT("ARacingVehiclePawn '%s' has no TuneAsset; Chaos' built-in engine, transmission and steering defaults remain in place and no authored tune is applied."),
+			*GetNameSafe(this));
+		return;
+	}
+
+	const RacingSim::Validation::FRacingValidationResult TuneValidation = TuneAsset->ValidateReadOnly();
+	for (const RacingSim::Validation::FRacingValidationIssue& Issue : TuneValidation.Issues)
+	{
+		// Report-only, matching the chassis path: this pawn does not own the asset and
+		// must not mutate a tune a designer will later open and find changed.
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s': tune validation issue on '%s': %s"),
+			*GetNameSafe(this), *Issue.PropertyName.ToString(), *Issue.Message);
+	}
+
+	// -- Engine. Nm, rpm, and a NORMALISED [0,1] curve Chaos re-normalises internally
+	// (see UVehicleTuneDataAsset::GetPeakTorqueNm()).
+	//
+	// The torque curve write is gated on GetPeakNormalisedTorque() > 0 -- fixed on code
+	// review (VEH-003 HIGH-2). ValidateReadOnly() above only REPORTS an unusable curve
+	// (empty, all-zero, or every key non-finite); nothing previously stopped it reaching
+	// Chaos. FVehicleEngineConfig::FillEngineSetup divides the curve by its own peak
+	// (Eval(X) / MaxVal) before handing it to the physics solver, so a zero-peak curve is
+	// a division by zero that puts NaN into Chaos::FSimpleEngineConfig -- a corrupting
+	// solver state, not merely "a slow car". A missing/unusable engine curve is treated
+	// the same as a missing TuneAsset: reported by name. NOTE what actually happens
+	// downstream, corrected on code review (repair cycle 2, MEDIUM-3): the default
+	// EngineSetup.TorqueCurve has no authored keys, and
+	// UChaosWheeledVehicleMovementComponent::SetupVehicle disables mechanical
+	// simulation entirely for an empty curve (logs its own "no torque curve defined"
+	// warning) -- it is not "Chaos' engine defaults" driving the car, it is no
+	// mechanical simulation at all, which also means the transmission and steering
+	// values this function writes below are not applied either.
+	if (TuneAsset->GetPeakNormalisedTorque() > 0.0f)
+	{
+		FVehicleEngineConfig& Engine = VehicleMovementComponent->EngineSetup;
+		Engine.TorqueCurve = TuneAsset->NormalisedTorqueCurve;
+		Engine.MaxTorque = TuneAsset->MaxTorqueNm;
+		Engine.MaxRPM = TuneAsset->MaxRpm;
+		Engine.EngineIdleRPM = TuneAsset->IdleRpm;
+		Engine.EngineBrakeEffect = TuneAsset->EngineBrakeEffect;
+		Engine.EngineRevUpMOI = TuneAsset->EngineRevUpMoi;
+		Engine.EngineRevDownRate = TuneAsset->EngineRevDownRate;
+	}
+	else
+	{
+		UE_LOG(LogRacingVehicle, Error,
+			TEXT("ARacingVehiclePawn '%s': TuneAsset '%s' has an unusable NormalisedTorqueCurve (empty, all-zero, or containing a non-finite key); refusing to write the engine setup rather than sending a NaN into Chaos. With no torque curve authored, Chaos disables mechanical simulation entirely -- this is not merely a defaulted engine."),
+			*GetNameSafe(this), *GetNameSafe(TuneAsset));
+	}
+
+	// -- Transmission. All dimensionless except GearChangeTime (seconds).
+	//
+	// bUseAutomaticGears is NOT written here: it is the chassis asset's, is already set
+	// above, and is cross-checked against VEH-001's ETransmissionInputMode at possession.
+	// Two writers for one Chaos field is exactly what this ticket's asset split avoids.
+	FVehicleTransmissionConfig& Transmission = VehicleMovementComponent->TransmissionSetup;
+	Transmission.ForwardGearRatios = TuneAsset->ForwardGearRatios;
+	Transmission.ReverseGearRatios = TuneAsset->ReverseGearRatios;
+	Transmission.FinalRatio = TuneAsset->FinalDriveRatio;
+	Transmission.ChangeUpRPM = TuneAsset->ChangeUpRpm;
+	Transmission.ChangeDownRPM = TuneAsset->ChangeDownRpm;
+	Transmission.GearChangeTime = TuneAsset->GearChangeTimeSeconds;
+	Transmission.TransmissionEfficiency = TuneAsset->TransmissionEfficiency;
+
+	// Corrected on code review, repair cycle 2 (VEH-003 MEDIUM-1, was MEDIUM-5): the
+	// PREVIOUS fix set FVehicleTransmissionConfig::bUseAutoReverse, reasoning that
+	// auto-reverse changes what a brake input does at standstill. That field is a
+	// genuine no-op on this component's actual simulation path: SetupVehicle
+	// instantiates FSimpleTransmissionSim (ChaosWheeledVehicleMovementComponent.cpp),
+	// which never reads Setup().AutoReverse at all -- only the separate modular
+	// vehicle path (SimModule/TransmissionModule.cpp) does. The field that actually
+	// governs "does a brake input at standstill reverse the car" is
+	// UChaosVehicleMovementComponent::bReverseAsBrake, a base-class field, which
+	// defaults to true and was previously left untouched. Set explicitly here instead,
+	// for the same reason the old (wrong) fix gave: reverse is driver-commanded only,
+	// via GearRequest reaching Reverse, not auto-triggered by braking at standstill --
+	// a behaviour VEH-001's input contract and RACE-002's reverse-crossing invariants
+	// were not written expecting.
+	VehicleMovementComponent->bReverseAsBrake = false;
+
+	// -- Differential. NOT written here, and that is the ticket's decision, not an
+	// omission: Chaos' FVehicleDifferentialConfig has exactly two fields and VEH-002's
+	// chassis asset owns both (written ~30 lines above). VEH-003's contribution to the
+	// differential is this comment and the topology cross-check the chassis asset already
+	// performs. See UVehicleTuneDataAsset's header.
+
+	// -- Steering. The second project-enum-to-Chaos-enum mapping this pawn owns.
+	// Enumerator-for-enumerator rather than a static_cast, for the same reason as
+	// EVehicleDrivetrainLayout above: two independently-versioned enums must not be
+	// assumed to share a numeric layout.
+	FVehicleSteeringConfig& Steering = VehicleMovementComponent->SteeringSetup;
+	switch (TuneAsset->SteeringModel)
+	{
+	case EVehicleSteeringModel::SingleAngle:
+		Steering.SteeringType = ESteeringType::SingleAngle;
+		break;
+	case EVehicleSteeringModel::Ackermann:
+		Steering.SteeringType = ESteeringType::Ackermann;
+		break;
+	case EVehicleSteeringModel::AngleRatio:
+	default:
+		Steering.SteeringType = ESteeringType::AngleRatio;
+		break;
+	}
+	Steering.AngleRatio = TuneAsset->OuterInnerAngleRatio;
+
+	// The single-authority rule for speed-sensitive steering, enforced rather than
+	// documented. Chaos samples SteeringCurve with CmSToMPH(ForwardSpeed) and its own
+	// InitDefaults authors a curve falling to 0.3 by 120 mph; VEH-001's input layer
+	// applies a second scale in km/h. Left alone the two MULTIPLY, and neither asset
+	// reads as if it were doing so.
+	if (TuneAsset->SteerSpeedAuthority == EVehicleSteerSpeedAuthority::ChaosCurve)
+	{
+		Steering.SteeringCurve = TuneAsset->SteerScaleBySpeedMphCurve;
+
+		if (InputConfigAsset != nullptr && InputConfigAsset->SteerSpeedScaleMode != ESteerSpeedScaleMode::Off)
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s': TuneAsset '%s' claims ChaosCurve steer-speed authority but InputConfigAsset '%s' SteerSpeedScaleMode is %s -- the two scales MULTIPLY. Set the input config to Off, or set the tune to InputLayer."),
+				*GetNameSafe(this), *GetNameSafe(TuneAsset), *GetNameSafe(InputConfigAsset),
+				*UEnum::GetValueAsString(InputConfigAsset->SteerSpeedScaleMode));
+		}
+	}
+	else
+	{
+		// InputLayer authority: overwrite Chaos' copy with a FLAT UNITY curve so the
+		// engine default cannot apply underneath VEH-001's km/h curve. Two keys, because
+		// a single-key curve is a constant only by accident of extrapolation. The domain
+		// is mph and the upper key is far past any speed this prototype reaches.
+		if (FRichCurve* UnityCurve = Steering.SteeringCurve.GetRichCurve())
+		{
+			UnityCurve->Reset();
+			UnityCurve->AddKey(0.0f, 1.0f);
+			UnityCurve->AddKey(1000.0f, 1.0f);
+		}
+
+		// The mirror image of the MULTIPLY warning above (code review, VEH-003
+		// MEDIUM-3): InputLayer authority plus the input config ALSO disabled is a
+		// silent NO-OWNER case, not a MULTIPLY -- Chaos is flattened to unity here and
+		// VEH-001 applies nothing under ESteerSpeedScaleMode::Off, so the car has NO
+		// speed-sensitive steering at all despite both assets reading as though it does.
+		if (InputConfigAsset != nullptr && InputConfigAsset->SteerSpeedScaleMode == ESteerSpeedScaleMode::Off)
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s': TuneAsset '%s' claims InputLayer steer-speed authority but InputConfigAsset '%s' SteerSpeedScaleMode is Off -- NEITHER system applies speed-sensitive steering. Set the input config to a non-Off mode, or set the tune to ChaosCurve."),
+				*GetNameSafe(this), *GetNameSafe(TuneAsset), *GetNameSafe(InputConfigAsset));
+		}
+	}
+
+	// -- Brakes and suspension are NOT written. Chaos reads MaxBrakeTorque,
+	// MaxHandBrakeTorque, SpringRate, SpringPreload, SuspensionDampingRatio,
+	// RollbarScaling, SuspensionMaxRaise/Drop and WheelLoadRatio from the wheel CLASS
+	// DEFAULT OBJECT at SetupVehicle time -- an instance write lands too late and a CDO
+	// write is process-global. So the asset declares them and this proves they agree.
+	// See PrototypeVehicleWheel.h.
+	const RacingSim::Validation::FRacingValidationResult TuneWheelMatch =
+		RacingSim::Vehicle::ValidateTuneAgainstWheelClasses(
+			TuneAsset, UPrototypeFrontWheel::StaticClass(), UPrototypeRearWheel::StaticClass());
+	for (const RacingSim::Validation::FRacingValidationIssue& Issue : TuneWheelMatch.Issues)
+	{
+		UE_LOG(LogRacingVehicle, Error,
+			TEXT("ARacingVehiclePawn '%s': %s"), *GetNameSafe(this), *Issue.Message);
+	}
+
+	bTuneApplied = true;
 }
 
 void ARacingVehiclePawn::PossessedBy(AController* NewController)

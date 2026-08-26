@@ -222,7 +222,15 @@ struct RACINGSIM_API FRacingSimVersionStamp
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Racing|Version")
 	FRacingContentVersion TrackVersion;
 
-	/** Populated by VEH-003 from the car spec / tune asset. Empty here by design. */
+	/**
+	 * Populated from the car spec / tune asset. Empty here by design.
+	 *
+	 * VEH-003 built the capability -- UVehicleTuneDataAsset::GetContentVersion() -- but
+	 * nothing calls URaceResultRecorder::SetCarSpecVersion with it yet (corrected on
+	 * code review, VEH-003 MEDIUM-2), so this field is still empty on every real
+	 * result today. Wiring is routed forward to whichever ticket first gives
+	 * URaceResultRecorder a live pawn reference.
+	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Racing|Version")
 	FRacingContentVersion CarSpecVersion;
 

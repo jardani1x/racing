@@ -8,6 +8,7 @@
 #include "PrototypeVehicleWheel.generated.h"
 
 class UVehicleChassisDataAsset;
+class UVehicleTuneDataAsset;
 
 /**
  * VEH-002: the prototype's wheels.
@@ -52,14 +53,22 @@ class UVehicleChassisDataAsset;
  * an author reads the geometry from, without the asset being able to lie about it.
  *
  * ---------------------------------------------------------------------------
- * What is a PLACEHOLDER here, and whose it is
+ * The VEH-002 placeholders are GONE. VEH-003 owns these values now.
  * ---------------------------------------------------------------------------
  *
- * Spring rate, preload, damping ratio, brake torque and handbrake torque are
- * VEH-003's ("Engine/transmission/diff/brakes/steering/suspension tune data"). They
- * carry values here only because a wheel with no suspension is a car that falls
- * through the floor, and VEH-002 cannot ship a pawn that cannot stand up. They are
- * marked in the constructor and must be replaced, not extended, by VEH-003.
+ * This section previously read "spring rate, preload, damping ratio, brake torque and
+ * handbrake torque are VEH-003's ... marked in the constructor and must be replaced,
+ * not extended, by VEH-003". VEH-003 replaced them.
+ *
+ * They are now read from RacingSim::Vehicle::PrototypeTuneDefaults
+ * (Vehicle/VehicleTuneDataAsset.h), the same constexpr block UVehicleTuneDataAsset's own
+ * property defaults read. That is a deliberate improvement on the radius/width pattern
+ * below, which duplicates its literal in two files and relies on a cross-check to notice
+ * drift: here the two CANNOT start out disagreeing, because there is one definition.
+ *
+ * The cross-check still exists and still matters --
+ * ValidateTuneAgainstWheelClasses() -- because a tune ASSET INSTANCE can be edited after
+ * construction and the wheel class cannot follow it. Validate, never write.
  *
  * ---------------------------------------------------------------------------
  * Units
@@ -133,6 +142,31 @@ namespace RacingSim::Vehicle
 	 */
 	RACINGSIM_API RacingSim::Validation::FRacingValidationResult ValidateChassisAgainstWheelClasses(
 		const UVehicleChassisDataAsset* Chassis,
+		TSubclassOf<UChaosVehicleWheel> FrontWheel,
+		TSubclassOf<UChaosVehicleWheel> RearWheel);
+
+	/**
+	 * VEH-003: prove the tune asset's declared suspension and brake values match the
+	 * wheel classes that will actually reach Chaos.
+	 *
+	 * The tune asset and the wheel classes now share ONE constexpr definition of these
+	 * values (RacingSim::Vehicle::PrototypeTuneDefaults), so a freshly constructed pair
+	 * always agrees. This exists for the case that definition cannot cover: an asset
+	 * instance edited by a designer, which the wheel class has no way to follow. A
+	 * disagreement is a validation failure naming the field, never a silent CDO write --
+	 * see the file header for why writing is not an option.
+	 *
+	 * Declared here rather than on UVehicleTuneDataAsset for the same reason its chassis
+	 * sibling is: the asset carries no ChaosVehicles include, so a Phase 2 replacement of
+	 * Chaos changes this function and nothing else.
+	 *
+	 * @param Tune         asset to check. Null is reported as a failure, never a crash.
+	 * @param FrontWheel   front wheel class. Null is reported as a failure.
+	 * @param RearWheel    rear wheel class. Null is reported as a failure.
+	 * @return             an empty result when the asset and the classes agree.
+	 */
+	RACINGSIM_API RacingSim::Validation::FRacingValidationResult ValidateTuneAgainstWheelClasses(
+		const UVehicleTuneDataAsset* Tune,
 		TSubclassOf<UChaosVehicleWheel> FrontWheel,
 		TSubclassOf<UChaosVehicleWheel> RearWheel);
 }
