@@ -259,6 +259,32 @@ public:
 	float GetPeakNormalisedTorque() const;
 
 	/**
+	 * May SteerScaleBySpeedMphCurve be handed to Chaos' FVehicleSteeringConfig?
+	 *
+	 * ADDED BY VEH-004, closing VEH-003 review pass 3 MEDIUM-1, which routed the fix
+	 * forward with the instruction "mirror the torque-curve gate onto the steering
+	 * curve BEFORE that asset can exist". Not reachable today only because no tune
+	 * .uasset exists and the constructor default is valid; the moment one is authored,
+	 * three separate faults in FVehicleSteeringConfig::FillSteeringSetup become live:
+	 *
+	 *   1. `Curve.GetRichCurveConst()->GetLastKey()` HARD-ASSERTS on an empty curve;
+	 *   2. `Eval(X) / MaxValue` is the same divide-by-peak that VEH-003 HIGH-2 closed
+	 *      for the torque curve -- a zero or non-finite peak puts NaN straight into
+	 *      Chaos' steering config, a corrupting solver state rather than a bad feel;
+	 *   3. `MaxX / NumSamples` divides by zero when the last key's TIME is 0, which a
+	 *      single-key-at-origin curve produces and no per-key range check catches.
+	 *
+	 * ValidateReadOnly() already reports all three -- but only reports, exactly as the
+	 * torque curve did before HIGH-2. This is the predicate the write is gated on.
+	 *
+	 * @param OutReason  names the specific fault when the result is false; untouched otherwise.
+	 * @return true only when the curve has at least one key, every key time and value
+	 *         is finite, the peak value is strictly positive, and the last key's time
+	 *         is strictly positive.
+	 */
+	bool IsSteerSpeedCurveUsableByChaos(FString& OutReason) const;
+
+	/**
 	 * The peak engine torque Chaos TARGETS, NEWTON-METRES -- an upper bound, not a
 	 * bit-exact runtime guarantee (softened on code review, repair cycle 2, MEDIUM-2).
 	 *

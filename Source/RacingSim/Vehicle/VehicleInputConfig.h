@@ -318,6 +318,29 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = "0.001", ClampMax = "1.0"))
 	float MaxDeltaSeconds = 0.1f;
 
+	/**
+	 * VEH-004: how long a raw device sample may go unrefreshed before every demand is
+	 * neutralised, SECONDS. 0 DISABLES the guard.
+	 *
+	 * Closes VEH-001 MEDIUM-4 ("stuck input at the browser trust boundary"), which
+	 * VEH-002 deferred and re-routed here. Enhanced Input reports a held control by
+	 * firing Triggered every frame, so a live driver's stamp is always fresh; only a
+	 * dead connection, a backgrounded tab or a lost focus stops it advancing. See
+	 * EVehicleInputCorrection::StaleSample.
+	 *
+	 * The default of 1.0 s is deliberately long. This mechanism zeroes a driver's
+	 * throttle, so a false positive is a car that mysteriously lifts off mid-corner --
+	 * far worse than a real positive detected 500 ms late, since the car is already
+	 * uncontrolled by then either way. One second is ~60 frames of total input silence
+	 * at 60 Hz, which no live session produces.
+	 *
+	 * NOT clamped to a minimum by the processor: a non-finite or negative value
+	 * disables the guard rather than arming it on some invented timescale. Failing
+	 * toward "do nothing" is the only safe direction for an intervention this strong.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Timing", meta = (ClampMin = "0.0", ClampMax = "60.0"))
+	float InputStaleAfterSeconds = 1.0f;
+
 	/** Device assumed before any input has been seen. Must have a profile; Validate() enforces that. */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Bindings")
 	ERacingInputDeviceType DefaultDeviceType = ERacingInputDeviceType::Keyboard;

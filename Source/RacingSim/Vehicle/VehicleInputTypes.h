@@ -162,7 +162,26 @@ enum class EVehicleInputCorrection : uint8
 	/** DeltaSeconds was non-finite, negative, or longer than MaxDeltaSeconds, and was clamped. */
 	DeltaClamped	= 1 << 2	UMETA(DisplayName = "Delta clamped"),
 	/** The pedal-conflict policy suppressed throttle or brake. */
-	PedalConflict	= 1 << 3	UMETA(DisplayName = "Pedal conflict resolved")
+	PedalConflict	= 1 << 3	UMETA(DisplayName = "Pedal conflict resolved"),
+
+	/**
+	 * The raw sample was older than InputStaleAfterSeconds and every demand was
+	 * neutralised (VEH-004, closing VEH-001 MEDIUM-4).
+	 *
+	 * THE THREAT MODEL, restated because it is not obvious: Enhanced Input reports a
+	 * held control by firing Triggered EVERY FRAME and a released one by firing
+	 * Completed ONCE. A Pixel Streaming disconnect, a backgrounded tab or a focus loss
+	 * produces NEITHER -- the last Triggered value simply stays in the buffer forever.
+	 * So the failure looks exactly like a driver holding the throttle down, and the
+	 * only thing that distinguishes them is that a real held control keeps refreshing
+	 * its timestamp. A held key is therefore NOT stale, which is the property
+	 * RacingSim.Vehicle.InputStaleSample exists to pin.
+	 *
+	 * Unlike the other four corrections this one is also surfaced on the telemetry
+	 * snapshot and raised as EVehicleFailureFlag::StaleInput, because "the car stopped
+	 * responding" needs to distinguish a broken solver from a silent browser.
+	 */
+	StaleSample		= 1 << 4	UMETA(DisplayName = "Stale sample neutralised")
 };
 ENUM_CLASS_FLAGS(EVehicleInputCorrection);
 

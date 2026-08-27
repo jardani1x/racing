@@ -1085,7 +1085,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-001 | Keyboard/gamepad input mappings | vehicle-physics-engineer | CORE-001 | B | **DONE** 2026-08-25 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM — device-switch mapping-context bug, untested `ConfigureFromAsset`/steer-scale seam ×2, no stuck-input timeout — plus 3 LOW, all routed forward to `VEH-002`/`STREAM-001`, none blocking a contract-only ticket with no consumer yet). Independently confirmed the two loop-premise test fixes are genuine, the no-hard-coded-keys source scan is real, and the processor has no `UObject`/actor dependency. Both targets build clean and Smoke `succeeded=495` (baseline 486 + 9 new `RacingSim.Vehicle.Input*` tests, `failed=0, notRun=0`). Merged to `main`. |
 | VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | **DONE** 2026-08-25 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: input never bound so the car could never actually be driven; drivetrain layout silently inert because `AxleType` was never set on the wheel classes — plus 5 MEDIUM); repair cycle 1 closed both HIGH and all 5 MEDIUM (tick-prerequisite ordering, `MaxSteerAngleDegrees` cross-validation, transmission-mode agreement check, idempotency guard, corrected a false VEH-001-findings-closure claim, and fixed a genuine Unity-Build duplicate-symbol collision surfaced by the rebuild); re-review returned APPROVED WITH FOLLOW-UPS, with one doc-wording overstatement corrected (the tick-ordering fix only closes half the claimed guarantee). `test-engineer` independently confirmed both targets build clean (0 warnings, verified via captured build logs and per-file `.sarif` diagnostics) and Smoke `succeeded=500, failed=0, notRun=0`, all five new `RacingSim.Vehicle.*` tests `Success` including the two that gained repair-cycle assertions. Merged to `main`. Two acceptance criteria (VEH-001 MEDIUM-4 stuck-input timeout; telemetry snapshot) explicitly left unclosed and routed forward to `VEH-004` rather than faked |
 | VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | **DONE** 2026-08-26 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: torque-curve peak formula wrong given Chaos's internal re-normalisation; an unvalidated/unusable torque curve reaching the physics solver — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and all MEDIUM, but re-review found HIGH-1's fix still order-dependent (`FMath::Max(finite, NaN)` returns the finite operand) and one MEDIUM fix targeted the wrong Chaos field (`bUseAutoReverse` vs. the actually-read `bReverseAsBrake`); repair cycle 2 closed both for real, independently re-verified against engine source (`ChaosWheeledVehicleMovementComponent.h`/`.cpp`, `ChaosVehicleMovementComponent.cpp`). Final re-review: APPROVED WITH FOLLOW-UPS — both build logs inspected directly (`Result: Succeeded`, 0 real warnings, both targets). `test-engineer` gate folded into the orchestrating session's own build/Smoke verification at each cycle: Smoke `succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all five new `RacingSim.Vehicle.Tune*` tests `Success`. Merged to `main`. Two items (an identical divide-by-peak hazard on the steering curve, `bUseAutoReverse` ownership) routed forward to `VEH-004`, the first ticket to author a tune content asset |
-| VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002 | C | OPEN |
+| VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002, VEH-003 | C | **IN REVIEW** 2026-08-27 — acceptance criteria written below and implemented on branch `worktree-agent-ab84387278caba0a0`. Eight routed items closed (VEH-001 MEDIUM-2/3/4 and LOW-2; VEH-002's deferred telemetry snapshot; VEH-003 pass-3 MEDIUM-1/LOW-1/LOW-2; CORE-002's `CarSpecVersion` wiring). Awaiting the `code-reviewer` → `test-engineer` gate; **not merged** |
 | VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | OPEN |
 | VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | OPEN |
 
@@ -1717,6 +1717,264 @@ fixed there, and the work was committed on branch `worktree-agent-aee66d15f8d139
 **Consequence to handle:** the original uncommitted copy still sits in
 `agent-ad1d630fd1f4682bd` and is now *stale* — it lacks the `AllTuneValuesFinite` fix and
 this section. Discard it rather than merging it, or the collision returns.
+
+### VEH-004 — acceptance criteria, opened 2026-08-27
+
+Scope per the Epic 2 row: `Telemetry and failure detection`. Owner
+`vehicle-physics-engineer`. Gate C. Depends on `VEH-002` (**DONE**, merged) and — although
+the row does not name it — `VEH-003` (**DONE**, merged at `44bd1fa`), because three of the
+items routed into this ticket are VEH-003's. Unblocked.
+
+The Epic 2 preamble states this ticket's hard requirement verbatim: *"`VEH-004` must
+detect NaN, infinity, explosive energy, persistent penetration and unbounded wheel state
+— Gate C treats these as test failures, not warnings."* `Docs/02-VehiclePhysics.md`
+restates it under *Simulation timing* ("Detect and fail tests on NaN, infinity,
+tunneling, unstable wheel state, or runaway energy") and specifies the telemetry schema
+under *Telemetry schema*.
+
+#### Findings routed forward into this ticket
+
+Grepped `Docs/Tickets.md`, `Docs/15-ProjectStructure.md` and
+`Source/RacingSim/Core/RacingSimBuildId.h` for `VEH-004`. **Eight** items are routed here
+— more than any previous ticket in this epic, because VEH-002 and VEH-003 both deferred
+their telemetry and failure-classification work to the ticket that owns it. Each is
+closed or explicitly deferred by a criterion below.
+
+| Source | ID | Disposition in VEH-004 |
+|---|---|---|
+| VEH-001 review pass 1, re-routed by VEH-002 | MEDIUM-2 — no test proves the speed-sensitive steer scale is applied in `Tick`, or applied *after* rate limiting; every processor test uses `Configure(profile,…)`, never `ConfigureFromAsset` | **Closed here.** This ticket touches `VehicleInputProcessor.h/.cpp`, which is the condition VEH-002 attached to the re-route. `UVehicleInputConfigDataAsset` is a `UDataAsset` and is `NewObject`-able at the Smoke gate (VEH-001's own `VehicleInputConfigSpec.cpp` already does it), so there is no harness excuse: `RacingSim.Vehicle.InputConfigureFromAsset` exercises the seam directly |
+| VEH-001 review pass 1, re-routed by VEH-002 | MEDIUM-3 — `ConfigureFromAsset` entirely untested (device-recorded-on-failure, asset-sourced `TransmissionMode`/`MaxDeltaSeconds`, the `[0.001,1.0]` guard, neutral-profile fallback, the `false` return contract) | **Closed here**, same test, same seam as MEDIUM-2 |
+| VEH-001 review pass 1, re-routed by VEH-002 | MEDIUM-4 — `PendingSample` persists between Ticks and is only zeroed by an Enhanced Input `Completed` event, so a Pixel Streaming disconnect, tab backgrounding or focus loss latches the last non-zero throttle/steer indefinitely | **Closed here.** This is failure detection at the browser trust boundary, which is this ticket's subject, and it has now been deferred twice. Implemented as a stale-sample timeout inside `FVehicleInputProcessor` with a new `EVehicleInputCorrection::StaleSample` enumerator |
+| VEH-001 review pass 1, re-routed by VEH-002 | LOW-2 — `InitialiseForController`'s `bool` return conflates "content is broken" with "expected, not a local player" | **Closed here.** Routed to VEH-004 explicitly *because* VEH-004 "owns failure classification", and a two-valued return that cannot distinguish a misconfigured asset from a remote pawn is precisely a failure-classification defect |
+| VEH-002 acceptance criteria | Telemetry snapshot — deferred honestly ("a read-only pawn snapshot: wheel contact state, suspension length, mapped Chaos axes, correction bitmask") | **Closed here.** This is the ticket's headline deliverable |
+| VEH-003 review pass 3 | MEDIUM-1 (new) — `SteerScaleBySpeedMphCurve` is written to `Steering.SteeringCurve` with no peak/finiteness gate, unlike the torque curve; `FillSteeringSetup` does the identical `Eval(X)/MaxValue` divide-by-peak plus a `GetLastKey()` hard-assert on an empty curve | **Closed here.** The route said "mirror the torque-curve gate onto the steering curve **before** that asset can exist" — so it is closed *now*, in the ticket that owns NaN-into-Chaos prevention, rather than being made a precondition of a content task this ticket does not perform |
+| VEH-003 review pass 3 | LOW-1 (new) — the `MEDIUM-3` fix added an inaccurate clause claiming steering is skipped when mechanical sim is disabled; `FSimpleSteeringSim` is added *outside* the `bMechanicalSimEnabled` guard | **Closed here** — comment-only correction on `ApplyTuneAsset()`, the function this ticket already reopens for the steering-curve gate |
+| VEH-003 review pass 3 | LOW-2 (new) — `Transmission.bUseAutoReverse` left at Chaos' `InitDefaults()` value, inert today but undocumented and unowned | **Closed here** by decision, not by a write: documented as deliberately unowned, with the engine-source reason it is inert on this component's simulation path |
+| VEH-003 review pass 3 | Original LOW-1 — `RacingSimBuildId.h:19`/`:26` file-header table still reads "populated by VEH-003" without the wiring caveat | **Closed here** — the caveat is no longer needed at all once the wiring exists; corrected to name the real producer |
+| CORE-002, re-routed by VEH-003 (MEDIUM-2, pass 1) | `FRacingSimVersionStamp::CarSpecVersion` capability exists (`UVehicleTuneDataAsset::GetContentVersion()`), but nothing calls `URaceResultRecorder::SetCarSpecVersion`, so `IsPublishable()` refuses every real stamp | **Closed here.** The re-route named "whichever ticket first wires a pawn's tune to a race result", and a telemetry ticket that stamps every snapshot with the car spec version is exactly that ticket |
+
+Confirmed **not** routed here, checked rather than assumed: VEH-001 `LOW-1`
+(steer-rate selection on an ambiguous partial flick) and `LOW-3` (the no-hard-coded-keys
+scan hard-failing on zero files) were both recorded *accepted as-is* by the VEH-001
+reviewer and named no successor ticket. TRACK-002 `L2` (the graybox level has no
+collision) is a shared obligation with `VEH-002`/`VEH-006`, not with this ticket.
+
+#### The scope boundary against VEH-005, VEH-006 and STREAM-001
+
+- **`VEH-005` owns camera and the reset POSE.** VEH-004 may *detect* that a car is
+  unstable, upside down, tunnelling or wedged; it must not reposition, respawn or
+  recover it, and it does not consume `FVehicleInputCommand::bResetRequested`. The
+  detector's output is a report, never an action.
+- **`VEH-006` owns recorded manoeuvres and the 30-minute soak.** Every validation
+  manoeuvre in `Docs/02-VehiclePhysics.md` — coast-down, skidpad, step steer, braking
+  distance, curb strike, hill start — needs a car driving on a surface, and this project
+  still has no world a test can spawn into and no graybox level with collision
+  (`Docs/Environment.md`; TRACK-002 `L2`). **VEH-004 builds the instrument; VEH-006 runs
+  the experiment.** The Gate C phrase "treats these as test failures, not warnings" is
+  therefore only half-dischargeable here: this ticket owes the *detector* and proof that
+  the detector fires on synthetic corrupt state, and `VEH-006` owes the *driving test*
+  that feeds it real Chaos output. That split must be stated in the completion report
+  rather than allowed to read as a missed requirement.
+- **`STREAM-001` owns connection loss.** VEH-004 closes the stale-*sample* half of
+  VEH-001 MEDIUM-4 (no device event for N seconds ⇒ neutralise the command); an explicit
+  disconnect hook that calls `NotifyVehicleReset()` on the socket closing remains
+  `STREAM-001`'s, because no connection exists to hook.
+- **No `.uasset` is authored.** CLAUDE.md forbids editing Unreal binary assets from a
+  worktree and requires a serialized `Docs/AssetOwnership.tsv` claim. The diff must
+  contain zero `.uasset`/`.umap` files, exactly as VEH-001/002/003 did.
+
+- [x] **The telemetry snapshot is a versioned, flat, Chaos-free contract.**
+      `FVehicleTelemetrySnapshot` and `FVehicleWheelTelemetry`
+      (`Source/RacingSim/Vehicle/VehicleTelemetryTypes.h`) carry a
+      `SchemaVersion` (`VehicleTelemetrySchemaVersion`, hand-bumped) and the
+      `FRacingContentVersion` of the tune in force, so a recorded frame can always name
+      the code layout and the car that produced it. The struct declares **no
+      ChaosVehicles type** — the same Phase 2 rule `UVehicleTuneDataAsset` follows — so
+      `Docs/02-VehiclePhysics.md`'s promise that a project-owned tyre/suspension layer
+      can replace stock Chaos "without rewriting the game" stays keepable for telemetry
+      too. It does **not** duplicate `Core/RacingTelemetry.h`'s
+      `FRacingVehicleTelemetrySample`, which is the *HUD-facing* contract Race/ assembles;
+      this is the *physics-facing* one, and the relationship between the two is stated in
+      the header rather than left for a reader to infer.
+- [x] **The snapshot covers the per-wheel half of `Docs/02-VehiclePhysics.md`'s schema.**
+      Per wheel: contact state, normalised suspension length, suspension offset in
+      **centimetres**, spring force, slip angle in **degrees**, slip/skid magnitudes,
+      drive and brake torque in **N·m**, ABS state, and contact point in **centimetres**.
+      Chassis: monotonic timestamp, world location/rotation, linear velocity (cm/s),
+      angular velocity (deg/s), signed forward speed (cm/s), engine RPM, gear, and the
+      **mapped Chaos input axes** (`FVehicleChaosInput`, not the raw command) plus
+      VEH-001's `Corrections` bitmask. Fields Chaos does not expose in UE 5.8.1's public
+      API — normal load, longitudinal slip, per-wheel angular speed, aero drag/downforce,
+      TCS state, surface identifier — are named as absent in the header with the reason,
+      never silently omitted.
+- [x] **Capture is a pure function of a movement component plus a chassis primitive.**
+      `RacingSim::Vehicle::CaptureVehicleTelemetry` reads only public accessors
+      (`GetNumWheels`, `GetWheelState`, `GetForwardSpeed`, `GetEngineRotationSpeed`,
+      `GetCurrentGear`) and the chassis `UPrimitiveComponent`'s physics velocities.
+      `UChaosVehicleMovementComponent::VehicleState` is `protected` in UE 5.8.1 (verified
+      by reading `ChaosVehicleMovementComponent.h:1161,1283`) and is **not** reached for.
+      `GetWheelState(i)` indexes `WheelStatus[i]` with **no bounds check** (engine header
+      line 716-719), so the capture is bounded by `GetNumWheels()` — an out-of-range read
+      there is a crash, not a bad number.
+- [x] **Failure detection is a pure, Smoke-testable free function over plain data.**
+      `RacingSim::Vehicle::EvaluateVehicleFailures`
+      (`Source/RacingSim/Vehicle/VehicleFailureDetection.h/.cpp`) takes a previous
+      snapshot, a current snapshot, a thresholds POD and a mutable detector state, and
+      returns an `EVehicleFailureFlag` bitmask plus a human-readable reason. No actor, no
+      component, no world — the same design rule `FVehicleInputProcessor` and
+      `MapCommandToChaosInput` established, and for the same reason
+      (`Docs/Environment.md`: a Smoke test cannot construct a non-template Actor or
+      `UActorComponent` in this project).
+- [x] **Every failure class the Epic 2 preamble names is detected, and each one is
+      falsified by a test that makes it fire.** `NonFiniteState` (NaN/±Inf anywhere in
+      chassis or wheel state); `RunawayEnergy` (speed or angular speed past a plausible
+      envelope, or an acceleration no drivetrain/brake could produce); `Tunnelling`
+      (position moved further in one step than the recorded velocity can explain);
+      `UnstableWheelState` (normalised suspension length outside `[0,1]`, non-finite wheel
+      state, or all wheels off the ground beyond a threshold); `InvalidContact` (a wheel
+      reporting contact at a non-finite or implausibly distant point, or a non-finite
+      spring force); `PersistentPenetration` (suspension pinned at full compression under
+      load for longer than a threshold — the accumulating case, which is why the detector
+      carries state rather than being memoryless); `TimeAnomaly` (non-monotonic or
+      non-finite timestamps). A test that only proves the clean case passes is not
+      coverage; each flag must be shown to fire on the specific corrupt input and **not**
+      fire on the clean one.
+- [x] **Frame-rate independence of the detector is proven, not asserted.** CLAUDE.md:
+      "Keep gameplay independent from frame rate". The accumulating detectors
+      (airborne, penetration) integrate wall-clock seconds from the snapshot timestamps,
+      never a per-tick counter, so the same wall-clock event must be detected at 30 Hz,
+      60 Hz and 144 Hz within a stated tolerance. The velocity-explained tunnelling bound
+      must likewise scale with the step, so a legitimate high-speed 30 Hz step is not
+      reported as tunnelling while a real teleport at 144 Hz still is.
+- [x] **Thresholds are a typed DataAsset with CORE-003-validated ranges and validated
+      relationships.** `UVehicleFailureThresholdsDataAsset`
+      (`Source/RacingSim/Vehicle/VehicleFailureThresholdsDataAsset.h/.cpp`) declares a
+      `RacingSim::Validation::FRacingPropertyRange` table, reuses `EnforceRanges`, and
+      validates the cross-field relationships no per-field clamp can express. Per
+      CLAUDE.md: "Put tunable vehicle and race parameters in typed DataAssets or config,
+      not magic numbers in `Tick`." The asset's defaults and the POD's defaults are
+      pinned to each other **by a test**, because two independently-defaulted copies of
+      the same numbers is exactly the drift CORE-003's metadata-mirror test exists to
+      catch.
+- [x] **The detector's thresholds are prototype envelopes, not a branded specification.**
+      Per CLAUDE.md and `Docs/02-VehiclePhysics.md` ("Use envelopes rather than fake
+      precision until source data is authoritative"), every bound is an original,
+      deliberately generous outer envelope chosen to catch *simulation corruption*, not
+      to characterise handling. No manufacturer figure, no other game's numbers, no
+      screenshot-derived value.
+- [x] **The pawn is a thin adapter, and telemetry cannot destabilise the physics it
+      observes.** `ARacingVehiclePawn` gains `CaptureTelemetry()` /
+      `GetLastTelemetrySnapshot()` / `GetLastFailureReport()` and a `FailureThresholds`
+      asset property. Capture runs at a decimated rate
+      (`Docs/02-VehiclePhysics.md` item 13: "Telemetry capture at the simulation rate or
+      a documented decimation rate"), allocates nothing per frame, performs no actor
+      search and no synchronous load, and **logs on the edge only** — a per-frame
+      `UE_LOG` of a persistent failure is itself a frame-rate defect (CLAUDE.md: "Do not
+      … log noisily every frame").
+- [x] **`CarSpecVersion` is wired end to end, closing CORE-002's hole.**
+      `RacingSim::Vehicle::ResolveCarSpecVersion` (pure, Smoke-testable) decides whether a
+      tune may be published as the car spec: it returns an **unpopulated**
+      `FRacingContentVersion` when the tune is null **or was not actually applied**, so a
+      result can never name a tune the car did not run. `ARacingVehiclePawn::
+      PublishCarSpecVersionTo(URaceResultRecorder*)` is the three-line adapter, and it is
+      the first and only `Vehicle/`→`Race/` dependency in the project — recorded as a
+      deliberate architectural decision with its direction justified (the pawn is the only
+      object that knows which tune is *in force*, which a Race-side pull could not know),
+      confined to a `.cpp` include, not a header one.
+- [x] **Stuck input is neutralised, and the timeout is data.** `FVehicleInputRawSample`
+      gains a monotonic `SampleTimestampSeconds` that `UVehicleInputComponent`'s handlers
+      stamp; the processor neutralises throttle/brake/steer/handbrake/clutch and flags
+      `EVehicleInputCorrection::StaleSample` once the sample's age exceeds
+      `UVehicleInputConfigDataAsset::InputStaleAfterSeconds` (validated range, `0`
+      disables). The correction is visible on the command *and* on the telemetry
+      snapshot, so a recording answers "did the browser stop talking to us?" A held key is
+      **not** stale — Enhanced Input re-fires `Triggered` every frame while held, which is
+      what refreshes the stamp — and that distinction is tested, not assumed.
+- [x] **`InitialiseForController` classifies its failures.** Returns
+      `EVehicleInputInitResult` (`Succeeded`, `NoConfig`, `NoProfileForDevice`,
+      `NoController`, `NotLocalPlayer`, `NoInputSubsystem`, `NoMappingContext`,
+      `MappingContextLoadFailed`) instead of `bool`, and the pawn branches on it —
+      `NotLocalPlayer` is Verbose (normal for an AI/remote pawn), everything else is a
+      named Warning or Error. The `bool` overload is not kept: two return contracts for
+      one function is how the ambiguity started.
+- [x] **Nothing non-finite can reach Chaos through the steering curve either.**
+      `ApplyTuneAsset()` gates the `Steering.SteeringCurve` write on the same
+      peak/finiteness test the torque curve already uses, closing VEH-003 pass-3 MEDIUM-1
+      before any tune `.uasset` can exist. An unusable steering curve leaves Chaos'
+      own `InitDefaults()` curve in place and is refused **by name**.
+- [x] **Units and coordinate conventions are explicit at every new boundary.** Distances
+      **centimetres**, speeds **cm/s**, angular rates **degrees per second**, torques
+      **N·m**, forces **newtons**, times **seconds** (`double` for timestamps, `float` for
+      durations), RPM is RPM. Any conversion goes through `Core/RacingSimUnits.h`, never
+      an inline literal, and is asserted against an independently known value. Positive
+      steer is **right** (+Z yaw, left-handed Z-up), unchanged from VEH-001.
+- [x] **Automation is `SmokeFilter`, level-free, DataAsset-and-CDO-only, and proven
+      discovered by a `RunFilter Smoke` run.** Tests live in
+      `Source/RacingSimTests/Vehicle/`. They construct `UDataAsset`s and plain structs
+      only — never an `ARacingVehiclePawn`, a `UActorComponent` or a `UWorld` — for the
+      documented harness reason, exactly as VEH-002/VEH-003 did. The `Smoke` `succeeded`
+      count must rise from the **VEH-003 baseline of 505**, read from
+      `Saved/Automation/Report/index.json`, never from a process exit code.
+- [x] **Both targets build with zero new warnings** — `RacingSimEditor Win64 Development`
+      and `RacingSim Win64 Development`, command form per `Docs/Environment.md`, built
+      `-NoUBA`. Any new file-anonymous-namespace helper carries a **ticket-specific**
+      name: this project has hit the Unity-Build duplicate-definition bug three times
+      (`AddFailure`→`AddChassisValidationFailure`, `AllFinite`→`AllTuneValuesFinite`,
+      `HasIssueFor`→`HasTuneIssueFor`), and a fourth would be inexcusable.
+
+#### Verification status — build and test gates, run 2026-08-27
+
+Worktree `.claude/worktrees/agent-ab84387278caba0a0`, branch
+`worktree-agent-ab84387278caba0a0`, base commit `44bd1fa`.
+
+| Gate | Result |
+|---|---|
+| `RacingSimEditor Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
+| `RacingSim Win64 Development` (`-NoUBA`) | `Result: Succeeded`, **0** `warning\|error` matches |
+| `Automation RunFilter Smoke` | `reportCreatedOn 2026.08.27-03.54.36`: **succeeded=515, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0** |
+
+`succeeded` rose from the VEH-003 baseline of **505** by exactly the ten new tests, all
+`state: "Success"` in `Saved/Automation/Report/index.json`:
+`RacingSim.Vehicle.{FailureDetectionCleanState, FailureDetectionNonFinite,
+FailureDetectionRunawayAndTunnelling, FailureDetectionWheelState,
+FailureThresholdDefaultsMatchAsset, FailureThresholdsValidation,
+TelemetrySnapshotContract, TelemetryCarSpecVersion, InputConfigureFromAsset,
+InputStaleSample}`.
+
+**Three genuine defects were caught by the gates rather than by inspection**, which is
+recorded because it is the argument for running them:
+
+1. **`C2664`, first editor build.** `RacingSim::Vehicle::ResolveCarSpecVersion` was
+   declared as `const class UVehicleTuneDataAsset*` *inside* `namespace
+   RacingSim::Vehicle`. An elaborated type specifier in a namespace declares a **brand
+   new class in that namespace**, so the parameter type was
+   `RacingSim::Vehicle::UVehicleTuneDataAsset` — unrelated to the real global type. The
+   error surfaced at every call site ("Types pointed to are unrelated") and read like a
+   caller bug. Fixed with global forward declarations at the top of
+   `VehicleTelemetryTypes.h`, with the cause recorded there.
+2. **`RacingSim.Vehicle.InputConfigRanges` failed, first Smoke run.** Adding the clamped
+   `InputStaleAfterSeconds` property to `UVehicleInputConfigDataAsset` without adding it
+   to `StaticRanges()` is *exactly* the CORE-003 M-5 regression shape, and VEH-001's
+   hand-written range-count guard caught it. The range was already added; the test's
+   expected list and count were updated to match, with the catch recorded at the
+   assertion.
+3. **`RacingSim.Vehicle.FailureDetectionWheelState` failed, first Smoke run.** A test
+   defect, not a detector defect: the "landing clears the airborne accumulator" case
+   built its landed snapshot by copying the last *airborne* one, so the wheels were
+   still off the ground and the accumulator correctly kept counting (6.02 s, not 0).
+   The fixture now puts the wheels back in contact explicitly.
+
+No `Config/` churn was produced by the headless editor run (`git status --porcelain
+Config/` empty), per `Docs/Environment.md`'s standing warning.
+
+**Explicitly out of scope, and stated rather than quietly skipped:** any test that runs
+Chaos physics; every `Docs/02-VehiclePhysics.md` validation manoeuvre; a telemetry
+*recorder* (ring buffer, export file, deterministic test summary) — the schema line "Export
+deterministic test summaries rather than uncontrolled per-frame logs" needs a driving
+session to summarise and belongs with `VEH-006`; and `ApplyChassisAsset`/`ApplyTuneAsset`/
+`ApplyInputCommand`/`CaptureTelemetry` remaining untested by any live pawn spawn, which is
+the standing, explicitly-tracked harness gap this ticket inherits from VEH-002 and VEH-003
+and does **not** claim to have solved.
 
 ---
 

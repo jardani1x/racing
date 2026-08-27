@@ -14,6 +14,55 @@ class UEnhancedInputComponent;
 class UInputAction;
 
 /**
+ * Why InitialiseForController could not complete, or that it did.
+ *
+ * VEH-004, closing VEH-001 LOW-2, which was routed here explicitly because "VEH-004
+ * owns failure classification". The `bool` this replaces conflated two situations that
+ * demand opposite responses: a MISCONFIGURED ASSET (a content bug someone must fix)
+ * and a NON-LOCAL PAWN (entirely normal for an AI or remote car, and not a fault at
+ * all). A caller given only `false` had no way to log the first loudly and the second
+ * quietly, so it logged neither -- which is what the pawn did.
+ *
+ * The `bool` overload is deliberately NOT kept alongside this. Two return contracts for
+ * one function is how the ambiguity started, and a caller that ignores the enum in
+ * favour of a truthiness test is the same bug wearing a new type.
+ */
+UENUM(BlueprintType)
+enum class EVehicleInputInitResult : uint8
+{
+	/** Profile resolved, mapping context pushed. The only success value. */
+	Succeeded					UMETA(DisplayName = "Succeeded"),
+
+	/** No UVehicleInputConfigDataAsset assigned. CONTENT FAULT. */
+	NoConfig					UMETA(DisplayName = "No config asset"),
+
+	/**
+	 * The config has no FVehicleInputProfile for the requested device. CONTENT FAULT.
+	 * Neutral shaping is used -- never another device's numbers.
+	 */
+	NoProfileForDevice			UMETA(DisplayName = "No profile for device"),
+
+	/** Called with a null controller. PROGRAMMING FAULT. */
+	NoController				UMETA(DisplayName = "No controller"),
+
+	/**
+	 * The controller has no ULocalPlayer. NOT A FAULT: expected for an AI-driven,
+	 * spectated or remote pawn. This is the value the whole enum exists to separate
+	 * from the others.
+	 */
+	NotLocalPlayer				UMETA(DisplayName = "Not a local player"),
+
+	/** UEnhancedInputLocalPlayerSubsystem unavailable. ENVIRONMENT FAULT -- the plugin is disabled. */
+	NoInputSubsystem			UMETA(DisplayName = "No Enhanced Input subsystem"),
+
+	/** No UInputMappingContext configured for the device. CONTENT FAULT. */
+	NoMappingContext			UMETA(DisplayName = "No mapping context"),
+
+	/** The configured UInputMappingContext failed to load. CONTENT FAULT -- a broken or deleted asset reference. */
+	MappingContextLoadFailed	UMETA(DisplayName = "Mapping context failed to load")
+};
+
+/**
  * VEH-001: the Enhanced Input adapter. Plumbing only.
  *
  * ---------------------------------------------------------------------------
@@ -76,11 +125,36 @@ public:
 	 * when the lights go out is worse than a load hitch on a loading screen. It must
 	 * never be called from a racing state.
 	 *
-	 * @return false when there is no config or no profile for the device. The
-	 *         component stays alive and keeps producing safe commands.
+	 * @return EVehicleInputInitResult::Succeeded, or the specific reason it could not.
+	 *         The component stays alive and keeps producing safe commands in EVERY
+	 *         failure case -- a car that cannot be driven says so far more usefully
+	 *         than a crash on possession does. See EVehicleInputInitResult for why this
+	 *         is not a bool (VEH-004, closing VEH-001 LOW-2).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Vehicle|Input")
-	bool InitialiseForController(APlayerController* Controller, ERacingInputDeviceType DeviceType);
+	EVehicleInputInitResult InitialiseForController(APlayerController* Controller, ERacingInputDeviceType DeviceType);
+
+	/** True only for EVehicleInputInitResult::Succeeded. A named predicate, so no caller re-derives success from enum ordering. */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Input")
+	static bool IsVehicleInputInitSuccess(const EVehicleInputInitResult Result)
+	{
+		return Result == EVehicleInputInitResult::Succeeded;
+	}
+
+	/**
+	 * True when this result describes a CONTENT/PROGRAMMING fault someone must fix,
+	 * false for the expected NotLocalPlayer case (and for success).
+	 *
+	 * This predicate is the entire point of the enum: it is what lets the pawn log a
+	 * broken asset as an Error and a remote pawn at Verbose, which the old bool could
+	 * not express.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Input")
+	static bool IsVehicleInputInitFault(const EVehicleInputInitResult Result)
+	{
+		return Result != EVehicleInputInitResult::Succeeded
+			&& Result != EVehicleInputInitResult::NotLocalPlayer;
+	}
 
 	/** Bind the configured UInputAction assets to this component's handlers. Call from the pawn's SetupPlayerInputComponent. */
 	void BindActions(UEnhancedInputComponent* EnhancedInput);
@@ -178,6 +252,16 @@ private:
 
 	/** Resolve one configured slot, or null. Synchronous; initialisation-time only. */
 	UInputAction* ResolveAction(EVehicleInputAction Slot) const;
+
+	/**
+	 * VEH-004: stamp PendingSample with the current monotonic time.
+	 *
+	 * Called by EVERY handler. See FVehicleInputRawSample::SampleTimestampSeconds and
+	 * EVehicleInputCorrection::StaleSample -- a handler that updates a value without
+	 * refreshing the stamp would let the processor neutralise a control the driver is
+	 * actively using.
+	 */
+	void MarkSampleFresh();
 
 	/** All the rules live here. See the class comment. */
 	FVehicleInputProcessor Processor;

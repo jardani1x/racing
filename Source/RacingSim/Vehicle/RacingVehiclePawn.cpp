@@ -6,7 +6,13 @@
 #include "Core/RacingSimLog.h"
 #include "EnhancedInputComponent.h"
 #include "GameFramework/PlayerController.h"
+// VEH-004: the project's first Vehicle/ -> Race/ dependency, confined to this .cpp.
+// The direction is justified in ARacingVehiclePawn::PublishCarSpecVersionTo's header
+// comment -- only the pawn knows whether a tune was APPLIED as opposed to referenced,
+// so a Race-side pull could not be correct.
+#include "Race/RaceResult.h"
 #include "Vehicle/PrototypeVehicleWheel.h"
+#include "Vehicle/VehicleFailureThresholdsDataAsset.h"
 #include "Vehicle/VehicleInputComponent.h"
 #include "Vehicle/VehicleInputConfig.h"
 #include "Vehicle/VehicleInputTypes.h"
@@ -57,6 +63,33 @@ void ARacingVehiclePawn::BeginPlay()
 	Super::BeginPlay();
 
 	ApplyChassisAsset();
+
+	// VEH-004: report the thresholds in force once, at start, rather than leaving a
+	// reader to guess which numbers a failure report was judged against. A null asset
+	// is the expected configuration today and is NOT an error -- but it must be said,
+	// because "the detector used defaults" and "the detector used the asset you edited"
+	// look identical in a log otherwise.
+	if (FailureThresholdsAsset == nullptr)
+	{
+		UE_LOG(LogRacingVehicle, Log,
+			TEXT("ARacingVehiclePawn '%s': no FailureThresholdsAsset; VEH-004 failure detection uses FVehicleFailureThresholds' built-in defaults."),
+			*GetNameSafe(this));
+	}
+	else
+	{
+		// Report-only, same policy as the chassis and tune assets: this pawn does not
+		// own the asset and must not mutate a threshold set a designer will later open
+		// and find changed.
+		const RacingSim::Validation::FRacingValidationResult ThresholdValidation =
+			FailureThresholdsAsset->ValidateReadOnly();
+
+		for (const RacingSim::Validation::FRacingValidationIssue& Issue : ThresholdValidation.Issues)
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s': failure-threshold validation issue on '%s': %s"),
+				*GetNameSafe(this), *Issue.PropertyName.ToString(), *Issue.Message);
+		}
+	}
 }
 
 void ARacingVehiclePawn::ApplyChassisAsset()
@@ -230,8 +263,16 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 	// UChaosWheeledVehicleMovementComponent::SetupVehicle disables mechanical
 	// simulation entirely for an empty curve (logs its own "no torque curve defined"
 	// warning) -- it is not "Chaos' engine defaults" driving the car, it is no
-	// mechanical simulation at all, which also means the transmission and steering
-	// values this function writes below are not applied either.
+	// mechanical simulation at all, which also means the TRANSMISSION values this
+	// function writes below are not applied either.
+	//
+	// CORRECTED BY VEH-004 (VEH-003 review pass 3, LOW-1): the previous version of this
+	// comment also claimed steering was skipped. It is not. FSimpleSteeringSim is added
+	// in UChaosWheeledVehicleMovementComponent::SetupVehicle OUTSIDE the
+	// bMechanicalSimEnabled guard, so the SteeringSetup written below is applied
+	// whether or not the engine curve was usable. An inaccurate comment about which
+	// subsystems survive a refusal is exactly the kind of thing that sends the next
+	// investigation to the wrong file.
 	if (TuneAsset->GetPeakNormalisedTorque() > 0.0f)
 	{
 		FVehicleEngineConfig& Engine = VehicleMovementComponent->EngineSetup;
@@ -280,6 +321,20 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 	// were not written expecting.
 	VehicleMovementComponent->bReverseAsBrake = false;
 
+	// FVehicleTransmissionConfig::bUseAutoReverse OWNERSHIP, decided and recorded by
+	// VEH-004 (VEH-003 review pass 3, LOW-2, which asked for a decision rather than a
+	// write). It is DELIBERATELY LEFT UNSET, at Chaos' own InitDefaults() value.
+	//
+	// Setting it would be theatre: SetupVehicle instantiates FSimpleTransmissionSim,
+	// which never reads Setup().AutoReverse at all -- only the separate, unused modular
+	// vehicle path (SimModule/TransmissionModule.cpp) does. Writing an inert field to
+	// make an ownership table look complete is how the previous repair cycle produced a
+	// no-op fix that read as a real one. The behaviour this project actually cares
+	// about ("does braking at standstill reverse the car") is governed by
+	// bReverseAsBrake, set immediately above, and that is where the ownership sits. If
+	// this project ever adopts the modular vehicle path, this field becomes live and
+	// must be set to false there for the same reason bReverseAsBrake is.
+
 	// -- Differential. NOT written here, and that is the ticket's decision, not an
 	// omission: Chaos' FVehicleDifferentialConfig has exactly two fields and VEH-002's
 	// chassis asset owns both (written ~30 lines above). VEH-003's contribution to the
@@ -313,7 +368,29 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 	// reads as if it were doing so.
 	if (TuneAsset->SteerSpeedAuthority == EVehicleSteerSpeedAuthority::ChaosCurve)
 	{
-		Steering.SteeringCurve = TuneAsset->SteerScaleBySpeedMphCurve;
+		// VEH-004, closing VEH-003 review pass 3 MEDIUM-1: the steering curve now gets
+		// the same gate the torque curve got at HIGH-2, and for the same three reasons
+		// (an empty-curve GetLastKey() assert, an Eval(X)/MaxValue divide-by-peak that
+		// puts NaN into Chaos, and a MaxX/NumSamples divide-by-zero on a zero-domain
+		// curve). ValidateReadOnly() above already REPORTS all three; reporting is not
+		// a gate, which is exactly the lesson HIGH-2 taught on the other curve.
+		FString SteerCurveReason;
+		if (TuneAsset->IsSteerSpeedCurveUsableByChaos(SteerCurveReason))
+		{
+			Steering.SteeringCurve = TuneAsset->SteerScaleBySpeedMphCurve;
+		}
+		else
+		{
+			// Chaos' own InitDefaults() steering curve is left in place. Unlike the
+			// engine case, that is a genuine fallback rather than a disabled subsystem:
+			// FSimpleSteeringSim is added at ChaosWheeledVehicleMovementComponent.cpp
+			// OUTSIDE the bMechanicalSimEnabled guard, so steering is applied whatever
+			// happens to the engine. (That fact also closes VEH-003 pass 3 LOW-1, which
+			// found the opposite claim written into the engine-refusal comment below.)
+			UE_LOG(LogRacingVehicle, Error,
+				TEXT("ARacingVehiclePawn '%s': TuneAsset '%s' claims ChaosCurve steer-speed authority but SteerScaleBySpeedMphCurve is unusable -- %s. Refusing to write it; Chaos' own default steering curve remains in force."),
+				*GetNameSafe(this), *GetNameSafe(TuneAsset), *SteerCurveReason);
+		}
 
 		if (InputConfigAsset != nullptr && InputConfigAsset->SteerSpeedScaleMode != ESteerSpeedScaleMode::Off)
 		{
@@ -400,7 +477,29 @@ void ARacingVehiclePawn::PossessedBy(AController* NewController)
 
 	if (APlayerController* PlayerController = Cast<APlayerController>(NewController))
 	{
-		VehicleInputComp->InitialiseForController(PlayerController, InitialInputDeviceType);
+		// VEH-004, closing VEH-001 LOW-2. The return value used to be a bool this
+		// function DISCARDED -- which was the only sane thing to do with it, because
+		// `false` meant either "the content is broken" or "this is a remote pawn and
+		// everything is fine" and there was no way to tell. Now the two are
+		// distinguishable, so they get different verbosities and the fault case names
+		// itself.
+		const EVehicleInputInitResult InitResult =
+			VehicleInputComp->InitialiseForController(PlayerController, InitialInputDeviceType);
+
+		if (UVehicleInputComponent::IsVehicleInputInitFault(InitResult))
+		{
+			UE_LOG(LogRacingVehicle, Error,
+				TEXT("ARacingVehiclePawn '%s': input initialisation failed with '%s'; the car will accept no input beyond the safe standing-still command."),
+				*GetNameSafe(this), *UEnum::GetValueAsString(InitResult));
+		}
+		else if (InitResult == EVehicleInputInitResult::NotLocalPlayer)
+		{
+			// Expected for an AI-driven, spectated or remote pawn. Verbose, so it does
+			// not read as a fault in a shipping log.
+			UE_LOG(LogRacingVehicle, Verbose,
+				TEXT("ARacingVehiclePawn '%s': controller has no local player; no mapping context pushed (expected for a non-local pawn)."),
+				*GetNameSafe(this));
+		}
 	}
 	// A non-player controller (AI, or none) legitimately has no local player; the
 	// input component logs that at Verbose and keeps producing the safe standing-
@@ -444,6 +543,70 @@ void ARacingVehiclePawn::UnPossessed()
 	{
 		VehicleInputComp->NotifyVehicleReset();
 	}
+
+	// The telemetry half of the same event. Unpossession is a discontinuity: the next
+	// possession's first sample must not be compared against a snapshot from before it,
+	// or a car that sat unpossessed for a minute reports a time anomaly and a teleport.
+	NotifyTelemetryDiscontinuity();
+}
+
+void ARacingVehiclePawn::NotifyTelemetryDiscontinuity()
+{
+	// Deliberately does NOT clear LastSnapshot or LastFailureReport: those are the
+	// record of what happened, and a consumer inspecting why a car was reset must still
+	// be able to read the sample that preceded it. What is cleared is the COMPARISON
+	// BASIS and the accumulators, which is what would otherwise manufacture a fault.
+	PreviousSnapshot = FVehicleTelemetrySnapshot();
+	FailureState.Reset();
+	LoggedFailureFlags = 0;
+	NextCaptureTimeSeconds = 0.0;
+}
+
+FVehicleFailureThresholds ARacingVehiclePawn::ResolveFailureThresholds() const
+{
+	// A null asset is the expected configuration today (VEH-004 authors no .uasset,
+	// per CLAUDE.md) and yields the POD defaults -- which are the same numbers the
+	// asset defaults to, pinned together by
+	// RacingSim.Vehicle.FailureThresholdDefaultsMatchAsset.
+	return (FailureThresholdsAsset != nullptr)
+		? FailureThresholdsAsset->GetThresholds()
+		: FVehicleFailureThresholds();
+}
+
+bool ARacingVehiclePawn::HasPublishableCarSpecVersion() const
+{
+	return RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneApplied).IsPopulated();
+}
+
+bool ARacingVehiclePawn::PublishCarSpecVersionTo(URaceResultRecorder* Recorder)
+{
+	if (Recorder == nullptr)
+	{
+		return false;
+	}
+
+	const FRacingContentVersion Version = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneApplied);
+
+	if (!Version.IsPopulated())
+	{
+		// Refused, loudly, and NOTHING is written. Leaving the recorder's unpopulated
+		// default in place is what makes FRacingSimVersionStamp::IsPublishable() refuse
+		// the result -- which is the correct outcome for a run whose car cannot be
+		// named. Writing a plausible-looking version here would produce a result that
+		// passes every check and describes a car nobody drove.
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s': no publishable car spec version (TuneAsset '%s', applied: %s); the race result will remain unsubmittable, which is correct rather than a defect."),
+			*GetNameSafe(this), *GetNameSafe(TuneAsset), bTuneApplied ? TEXT("true") : TEXT("false"));
+		return false;
+	}
+
+	Recorder->SetCarSpecVersion(Version);
+
+	UE_LOG(LogRacingVehicle, Log,
+		TEXT("ARacingVehiclePawn '%s': published car spec version '%s' to the race result recorder."),
+		*GetNameSafe(this), *Version.ToString());
+
+	return true;
 }
 
 void ARacingVehiclePawn::Tick(const float DeltaSeconds)
@@ -460,10 +623,103 @@ void ARacingVehiclePawn::Tick(const float DeltaSeconds)
 	// physics step, which is the freshest value available at TG_PrePhysics.
 	VehicleInputComp->SetVehicleSpeedCms(VehicleMovementComponent->GetForwardSpeed());
 
-	ApplyInputCommand(VehicleInputComp->GetCommand());
+	const FVehicleInputCommand Command = VehicleInputComp->GetCommand();
+
+	// VEH-004: the mapped input is RETURNED rather than re-derived. Calling
+	// MapCommandToChaosInput a second time for the telemetry would be cheap but wrong
+	// in principle -- the recording must be of the values that were actually pushed,
+	// not of a second independent evaluation that a future change could make diverge.
+	const FVehicleChaosInput AppliedInput = ApplyInputCommand(Command);
+
+	// LAST in the Tick on purpose: capturing before ApplyInputCommand would record last
+	// frame's axes, producing a recording that is off by one frame in exactly the place
+	// an input-latency investigation would look.
+	CaptureAndEvaluateTelemetry(AppliedInput, Command, DeltaSeconds);
 }
 
-void ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputCommand& Command)
+void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
+	const FVehicleChaosInput& AppliedInput,
+	const FVehicleInputCommand& Command,
+	const float DeltaSeconds)
+{
+	if (!(TelemetrySampleRateHz > 0.0f) || !FMath::IsFinite(TelemetrySampleRateHz))
+	{
+		// 0 (or a corrupt value) disables capture. Explicitly, and without arming
+		// anything: a telemetry system that decides its own rate when misconfigured is
+		// a telemetry system that costs frame time nobody budgeted for.
+		return;
+	}
+
+	// FPlatformTime::Seconds() -- the same monotonic source RACE-001 uses for lap
+	// timing and VEH-001's component passes to the processor. Deliberately NOT world
+	// time, which a pause or a time dilation moves, and deliberately not accumulated
+	// from DeltaSeconds, which drifts.
+	const double NowSeconds = FPlatformTime::Seconds();
+
+	if (NowSeconds < NextCaptureTimeSeconds)
+	{
+		return;
+	}
+
+	const double IntervalSeconds = 1.0 / static_cast<double>(TelemetrySampleRateHz);
+
+	// Re-based on NOW rather than advanced by one interval from the last due time. The
+	// alternative accumulates a backlog after a hitch and then fires every frame to
+	// "catch up", which is a burst of capture cost at precisely the moment the frame is
+	// already late. Telemetry must never be the reason a hitch gets worse.
+	NextCaptureTimeSeconds = NowSeconds + IntervalSeconds;
+
+	++CaptureIndex;
+
+	FVehicleTelemetryCaptureInput CaptureInput;
+	CaptureInput.Movement = VehicleMovementComponent;
+	CaptureInput.Chassis = ChassisCollision;
+	CaptureInput.ChaosInput = AppliedInput;
+	CaptureInput.ClutchInput = Command.Clutch;
+	CaptureInput.InputCorrections = Command.Corrections;
+	CaptureInput.InputDeviceType = Command.DeviceType;
+	CaptureInput.CarSpecVersion = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneApplied);
+	CaptureInput.TimestampSeconds = NowSeconds;
+	CaptureInput.FrameDeltaSeconds = DeltaSeconds;
+	CaptureInput.CaptureIndex = CaptureIndex;
+
+	PreviousSnapshot = LastSnapshot;
+	LastSnapshot = RacingSim::Vehicle::CaptureVehicleTelemetry(CaptureInput);
+
+	LastFailureReport = RacingSim::Vehicle::EvaluateVehicleFailures(
+		PreviousSnapshot, LastSnapshot, ResolveFailureThresholds(), FailureState);
+
+	// EDGE-TRIGGERED LOGGING. A persistent fault -- and every fault this detector finds
+	// is persistent, because a corrupted solver does not recover -- would otherwise emit
+	// one line per capture forever, which is both a frame-time cost and an active
+	// obstruction: the line that matters is the FIRST one, and it would be buried under
+	// a hundred thousand identical successors. Logging only on a change of flags means
+	// the log records when each class of fault began.
+	if (LastFailureReport.Flags != LoggedFailureFlags)
+	{
+		if (LastFailureReport.HasAnyFailure())
+		{
+			UE_LOG(LogRacingVehicle, Error,
+				TEXT("ARacingVehiclePawn '%s' VEH-004 failure detected at capture %lld (t=%f, step=%f s) [%s]: %s"),
+				*GetNameSafe(this),
+				LastFailureReport.CaptureIndex,
+				LastFailureReport.TimestampSeconds,
+				LastFailureReport.MeasuredStepSeconds,
+				*RacingSim::Vehicle::DescribeVehicleFailureFlags(LastFailureReport.Flags),
+				*LastFailureReport.Reason);
+		}
+		else
+		{
+			UE_LOG(LogRacingVehicle, Log,
+				TEXT("ARacingVehiclePawn '%s': vehicle state returned clean at capture %lld."),
+				*GetNameSafe(this), LastFailureReport.CaptureIndex);
+		}
+
+		LoggedFailureFlags = LastFailureReport.Flags;
+	}
+}
+
+FVehicleChaosInput ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputCommand& Command)
 {
 	// All the mapping decisions -- steer sign, the handbrake threshold, the
 	// manual-only gear gate, the non-finite refusal, the stated clutch omission --
@@ -484,4 +740,10 @@ void ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputCommand& Command)
 	// on Command.bResetRequested. VEH-001's input-side reset (NotifyVehicleReset)
 	// only clears input smoothing state, and is called from UnPossessed/an external
 	// reset trigger, not from a one-shot flag read every Tick.
+	//
+	// VEH-004 NOTE FOR VEH-005: whatever acts on bResetRequested must also call
+	// NotifyTelemetryDiscontinuity(), or the deliberate reposition will be detected and
+	// reported as tunnelling. That is the detector working correctly on the wrong
+	// event, and it is the one integration obligation this ticket hands forward.
+	return ChaosInput;
 }

@@ -227,12 +227,19 @@ bool FRacingSimVehicleInputConfigRangesTest::RunTest(const FString& Parameters)
 		const FName Expected[] =
 		{
 			TEXT("MaxDeltaSeconds"),
+			// VEH-004 added InputStaleAfterSeconds, the stuck-input timeout that closes
+			// VEH-001 MEDIUM-4. Listing it here is not bookkeeping: this guard is the
+			// only thing that would have caught the new clamped property being added to
+			// the header and forgotten in StaticRanges, which is exactly the CORE-003
+			// M-5 regression shape. It DID catch it -- this test failed on VEH-004's
+			// first Smoke run and the count below was wrong, not the property.
+			TEXT("InputStaleAfterSeconds"),
 			TEXT("FullAuthoritySpeedKph"),
 			TEXT("MinAuthoritySpeedKph"),
 			TEXT("MinSteerScale")
 		};
 
-		TestEqual(TEXT("StaticRanges declares every flat clamped property"), Ranges.Num(), 4);
+		TestEqual(TEXT("StaticRanges declares every flat clamped property"), Ranges.Num(), 5);
 
 		for (const FName Name : Expected)
 		{

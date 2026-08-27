@@ -158,6 +158,7 @@ bool FVehicleInputProcessor::ConfigureFromAsset(
 		Profile = FVehicleInputProfile();
 		TransmissionMode = ETransmissionInputMode::Automatic;
 		MaxDeltaSeconds = 0.1f;
+		InputStaleAfterSeconds = 0.0f;
 		return false;
 	}
 
@@ -167,6 +168,14 @@ bool FVehicleInputProcessor::ConfigureFromAsset(
 	// guarantees Validate() ran on this asset, and a MaxDeltaSeconds of 0 would
 	// freeze every rate-limited axis permanently.
 	MaxDeltaSeconds = FMath::Clamp(Config->MaxDeltaSeconds, 0.001f, 1.0f);
+
+	// VEH-004. Guarded the same way, and asymmetrically: a non-finite or negative
+	// timeout DISABLES the guard rather than being clamped up to some minimum. This
+	// mechanism can zero a driver's throttle, so a broken configuration must fail
+	// toward "do nothing", never toward "intervene on a timescale nobody authored".
+	InputStaleAfterSeconds = FMath::IsFinite(Config->InputStaleAfterSeconds)
+		? FMath::Max(Config->InputStaleAfterSeconds, 0.0f)
+		: 0.0f;
 
 	if (const FVehicleInputProfile* Found = Config->FindProfile(InDeviceType))
 	{
@@ -185,12 +194,16 @@ void FVehicleInputProcessor::Configure(
 	const FVehicleInputProfile& InProfile,
 	const ERacingInputDeviceType InDeviceType,
 	const ETransmissionInputMode InTransmissionMode,
-	const float InMaxDeltaSeconds)
+	const float InMaxDeltaSeconds,
+	const float InInputStaleAfterSeconds)
 {
 	Profile = InProfile;
 	DeviceType = InDeviceType;
 	TransmissionMode = InTransmissionMode;
 	MaxDeltaSeconds = FMath::Clamp(InMaxDeltaSeconds, 0.001f, 1.0f);
+	InputStaleAfterSeconds = FMath::IsFinite(InInputStaleAfterSeconds)
+		? FMath::Max(InInputStaleAfterSeconds, 0.0f)
+		: 0.0f;
 
 	// Explicitly cleared: this overload is the "no asset" path, and leaving a stale
 	// asset from an earlier ConfigureFromAsset would silently reintroduce
@@ -228,7 +241,7 @@ void FVehicleInputProcessor::ResetState()
 }
 
 FVehicleInputCommand FVehicleInputProcessor::Tick(
-	const FVehicleInputRawSample& Raw,
+	const FVehicleInputRawSample& IncomingRaw,
 	const double DeltaSeconds,
 	const double TimestampSeconds)
 {
@@ -257,6 +270,60 @@ FVehicleInputCommand FVehicleInputProcessor::Tick(
 	else
 	{
 		SafeDelta = static_cast<float>(DeltaSeconds);
+	}
+
+	// -- Staleness (VEH-004, closing VEH-001 MEDIUM-4) ------------------------
+	//
+	// The browser trust boundary's second failure mode. VEH-001 already rejects a
+	// HOSTILE value; this rejects the ABSENCE of values -- a Pixel Streaming
+	// disconnect, a backgrounded tab or a focus loss produces neither a Triggered nor
+	// a Completed event, so the last non-zero throttle and steer stay latched in the
+	// component's buffer indefinitely and the car drives itself into the scenery.
+	//
+	// The distinguishing signal is the SAMPLE's own timestamp, not the frame's:
+	// Enhanced Input re-fires Triggered every frame for a genuinely held control, so a
+	// held key keeps its stamp fresh and is correctly NOT stale, while a dead
+	// connection's stamp stops advancing. That distinction is the whole mechanism, and
+	// it is what RacingSim.Vehicle.InputStaleSample pins.
+	//
+	// Opt-in from both ends: a timeout must be configured AND the sample must actually
+	// carry a stamp (see FVehicleInputRawSample::SampleTimestampSeconds on why 0 is
+	// "never stamped" rather than "infinitely old"). A mechanism that can zero a
+	// driver's throttle must not arm itself by accident.
+	FVehicleInputRawSample Raw = IncomingRaw;
+
+	const bool bStalenessArmed =
+		InputStaleAfterSeconds > 0.0f
+		&& FMath::IsFinite(TimestampSeconds)
+		&& FMath::IsFinite(IncomingRaw.SampleTimestampSeconds)
+		&& IncomingRaw.SampleTimestampSeconds > 0.0;
+
+	if (bStalenessArmed
+		&& (TimestampSeconds - IncomingRaw.SampleTimestampSeconds) > static_cast<double>(InputStaleAfterSeconds))
+	{
+		Corrections |= static_cast<uint8>(EVehicleInputCorrection::StaleSample);
+
+		// Neutralised, not zeroed-on-output: the demands become zero TARGETS and the
+		// rate limiter ramps them down, so a lost connection at speed lifts off and
+		// unwinds the lock rather than snapping to zero -- which at 200 km/h is its own
+		// loss of control. Same reasoning as resolving the pedal conflict before the
+		// limiter rather than after it.
+		Raw.Throttle = 0.0;
+		Raw.Brake = 0.0;
+		Raw.Steer = 0.0;
+		Raw.Handbrake = 0.0;
+		Raw.Clutch = 0.0;
+
+		// The held flags go too. Left standing, a stale "shift up held" would fire a
+		// phantom edge the moment the connection returned, and a stale "reset held"
+		// would keep accumulating toward a reset that permanently invalidates the lap
+		// -- a disconnected player must not be able to destroy their own run.
+		Raw.bShiftUpHeld = false;
+		Raw.bShiftDownHeld = false;
+		Raw.bResetHeld = false;
+
+		// SpeedCms is deliberately NOT neutralised. It is vehicle state pushed by the
+		// pawn, not a device value, and it stays true while the connection is dead.
 	}
 
 	// -- Raw axes -------------------------------------------------------------

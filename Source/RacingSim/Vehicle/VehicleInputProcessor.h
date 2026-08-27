@@ -94,6 +94,23 @@ struct FVehicleInputRawSample
 	 * (which is every caller until VEH-002), giving full steering authority.
 	 */
 	double SpeedCms = 0.0;
+
+	/**
+	 * VEH-004: monotonic SECONDS at which a device event last wrote into this sample.
+	 *
+	 * Closes VEH-001 MEDIUM-4, deferred by VEH-002 and re-routed here. See
+	 * EVehicleInputCorrection::StaleSample for the threat model. UVehicleInputComponent
+	 * stamps this in EVERY Enhanced Input handler; a caller that never stamps it leaves
+	 * it at 0.
+	 *
+	 * ZERO MEANS "NEVER STAMPED", AND IS DELIBERATELY NOT TREATED AS INFINITELY OLD.
+	 * A processor driven by a test or by a caller that does not stamp would otherwise
+	 * neutralise every command it ever produced. Staleness is only evaluated when this
+	 * is strictly positive AND a timeout is configured -- so the guard is opt-in from
+	 * both ends, which is the only safe default for a mechanism that can zero a
+	 * driver's throttle.
+	 */
+	double SampleTimestampSeconds = 0.0;
 };
 
 /**
@@ -129,7 +146,8 @@ public:
 		const FVehicleInputProfile& Profile,
 		ERacingInputDeviceType DeviceType,
 		ETransmissionInputMode TransmissionMode,
-		float MaxDeltaSeconds);
+		float MaxDeltaSeconds,
+		float InputStaleAfterSeconds = 0.0f);
 
 	/**
 	 * Advance one sample.
@@ -176,12 +194,49 @@ public:
 		return LastCommand;
 	}
 
+	/**
+	 * The three values ConfigureFromAsset resolves from the asset, exposed read-only.
+	 *
+	 * ADDED BY VEH-004 to close VEH-001 MEDIUM-3, which had been open across two
+	 * tickets for a reason worth recording: ConfigureFromAsset's effects were only
+	 * observable indirectly (drive a hitched frame and infer MaxDeltaSeconds from
+	 * whether the axis moved), so the test that "covered" it would have passed against
+	 * a function that ignored the asset entirely. A seam that cannot be observed cannot
+	 * be tested, and the fix is an accessor, not a cleverer test.
+	 */
+	ETransmissionInputMode GetTransmissionMode() const
+	{
+		return TransmissionMode;
+	}
+
+	/** The clamped MaxDeltaSeconds in force, SECONDS. See ConfigureFromAsset's [0.001, 1.0] guard. */
+	float GetMaxDeltaSeconds() const
+	{
+		return MaxDeltaSeconds;
+	}
+
+	/** The stale-sample timeout in force, SECONDS. <= 0 means the guard is disabled. */
+	float GetInputStaleAfterSeconds() const
+	{
+		return InputStaleAfterSeconds;
+	}
+
 private:
 	/** Configuration. Default profile is linear/instant, which is the neutral behaviour. */
 	FVehicleInputProfile Profile;
 	ERacingInputDeviceType DeviceType = ERacingInputDeviceType::Unknown;
 	ETransmissionInputMode TransmissionMode = ETransmissionInputMode::Automatic;
 	float MaxDeltaSeconds = 0.1f;
+
+	/**
+	 * VEH-004 stale-sample timeout, SECONDS. <= 0 disables the guard entirely.
+	 *
+	 * Defaults to DISABLED, not to a value. The Configure(profile,...) overload has no
+	 * asset to read a timeout from, and silently arming a mechanism that zeroes a
+	 * driver's throttle would be the wrong default for a path whose whole purpose is
+	 * "no UObject involved". ConfigureFromAsset supplies the authored value.
+	 */
+	float InputStaleAfterSeconds = 0.0f;
 
 	/** Held weakly: input config is content and may be unloaded under a raw pointer. */
 	TWeakObjectPtr<const UVehicleInputConfigDataAsset> ConfigAsset;
