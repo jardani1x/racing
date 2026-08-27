@@ -82,7 +82,13 @@ enum class EVehicleFailureFlag : uint8
 	/** Normalised suspension length outside [0,1], or all wheels off the ground for longer than the threshold. */
 	UnstableWheelState		= 1 << 3	UMETA(DisplayName = "Unstable wheel state"),
 
-	/** A wheel claims ground contact at a non-finite or implausibly distant point, or reports a non-finite spring force. */
+	/**
+	 * A wheel in contact reports its contact point implausibly far from the chassis.
+	 * Corrected on code review (VEH-004 MEDIUM-3): a non-finite contact point or spring
+	 * force is caught by UnstableWheelState instead, before this check ever runs --
+	 * see EvaluateVehicleFailures' per-wheel IsFinite() guard. This flag is genuinely
+	 * the FINITE-but-impossible case (a real number, just an absurd one).
+	 */
 	InvalidContact			= 1 << 4	UMETA(DisplayName = "Invalid contact"),
 
 	/** Suspension pinned at full compression under load for longer than the threshold: the body is inside the world, not resting on it. */

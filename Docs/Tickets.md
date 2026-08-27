@@ -1976,6 +1976,40 @@ session to summarise and belongs with `VEH-006`; and `ApplyChassisAsset`/`ApplyT
 the standing, explicitly-tracked harness gap this ticket inherits from VEH-002 and VEH-003
 and does **not** claim to have solved.
 
+### VEH-004 — review findings, pass 1, 2026-08-27
+
+Verdict: **CHANGES REQUESTED**. 2 HIGH, 5 MEDIUM, 4 LOW. Both HIGH and three MEDIUM closed
+in repair cycle 1, independently re-verified against actual Enhanced Input/Chaos behaviour
+rather than trusted from the fix's own comment.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 | The stale-input guard fired the instant the timeout elapsed regardless of what the stale sample contained — including during ordinary idle coasting with every control released, which produces no Enhanced Input events at all and looks identical to a dead connection. This fed straight into an Error-level "VEH-004 failure detected" log on every normal coast, grid wait, or straight — the exact "detector that cries wolf" failure mode this ticket's own design doc warns against | **Fixed** — staleness is now only reported when the stale sample itself still names a non-zero demand or a held control (something that would actually stay dangerously latched). An already-neutral stale sample reports nothing. New test `RacingSim.Vehicle.InputStaleSample` extended to cover the released-controls case explicitly |
+| HIGH-2 | `bTuneApplied` was set unconditionally on every path past the null-`TuneAsset` check, including when the torque-curve write was refused (VEH-003's own gate). `ResolveCarSpecVersion`/`PublishCarSpecVersionTo` would therefore stamp a race result naming a tune whose engine was never actually written into Chaos — the exact "passes every check while describing a car nobody drove" outcome the design claims to prevent | **Fixed** — split into two flags: `bTuneApplied` (re-entry guard only) and `bTuneEngineApplied` (set only when the engine write genuinely succeeds). All three `ResolveCarSpecVersion` call sites and the diagnostic log now use the correct flag |
+| MEDIUM-1 | The telemetry-capture-ordering comment claimed capturing before `ApplyInputCommand` would produce a fresher physics-state pairing. Backwards: at `TG_PrePhysics`, the chassis/wheel state is necessarily last step's regardless of where in the Tick the capture runs, since Chaos has not stepped yet this frame | **Fixed** — comment corrected to state the real reason (capture must follow `ApplyInputCommand` because `AppliedInput` does not exist until it returns), and that input[n]:state[n-1] pairing is honest and unavoidable at this tick group |
+| MEDIUM-2 | Clearing the held shift/reset flags during a stale gap had inverted reasoning: clearing `bShiftUpHeld` forces `bShiftUpWasHeld` false too, so the NEXT genuinely-held sample reads as a rising edge and fires the exact phantom shift the comment claimed this prevented. Clearing `bResetHeld` drives the "released" branch, which clears `bResetLatched` too — re-arming a second reset for a player who never released the key, exactly what `ResetState()` itself warns against | **Fixed** — held flags are no longer force-cleared; they pass through unchanged, which is correct in both the genuinely-held and genuinely-released cases. Existing `InputStaleSample` test corrected: a still-held reset across a stale gap now correctly continues accumulating rather than snapping to zero |
+| MEDIUM-3 | Both non-finite sub-checks inside `InvalidContact` (a non-finite `ContactPointCm`, a non-finite `SpringForceN`) were unreachable dead code — `Wheel.IsFinite()`'s own `continue` (checked first, per-wheel) already catches both fields as part of the whole wheel struct and skips the rest of the loop body before either check runs | **Fixed** — dead branches removed; the now-unused `IsWithinVehicleFailureLimit` helper deleted (would have been an unreferenced-function warning); `InvalidContact`'s doc comment corrected to state it is genuinely the finite-but-implausible case only |
+| MEDIUM-4 | `CaptureAndEvaluateTelemetry`/`PublishCarSpecVersionTo`/`NotifyTelemetryDiscontinuity`/the steering-curve gate in `ApplyTuneAsset()` have zero automated coverage — this project's harness cannot construct a live pawn at any recorded gate | **Acknowledged, not newly introduced** — same standing harness limitation VEH-002/VEH-003 both carry; this is precisely the blind spot that let HIGH-1/HIGH-2 ship undetected in the first pass, recorded as a standing risk on the vehicle epic rather than re-accepted silently |
+| MEDIUM-5 | `GetSuspensionOffset()` is disclosed as "a non-const virtual" without stating it actually mutates cached wheel state (an exponential-smoothing filter write-back) and can synchronously scene-sweep per wheel on the non-cached branch — benign today only because `SuspensionSmoothing` defaults to 0 and `CacheSuspensionOffset` defaults true, neither overridden by this project | **Accepted, routed forward** — the criterion "capture is a pure function" is overclaimed; correct the doc and/or guard against a future designer raising `SuspensionSmoothing` when a later ticket next touches `VehicleTelemetryTypes.cpp` |
+| LOW-1 | `EVehicleFailureFlag::TimeAnomaly`'s doc claims coverage ("timestamps that stood still across a moving sample") the implementation deliberately does not provide | **Accepted, routed forward** — doc/code disagreement, non-blocking |
+| LOW-2 | A penetration-vs-suspension-tolerance validation rationale doesn't actually hold (the two checks don't overlap regardless of the relationship) — the constraint itself is harmless, the stated reason is wrong | **Accepted, routed forward** — non-blocking |
+| LOW-3 | The Vehicle→Race dependency direction (`PublishCarSpecVersionTo` calling into `Race/RaceResult.h`) is architecturally sound (no rule in `CLAUDE.md`/`Docs/01-Architecture.md` forbids this direction; the include is `.cpp`-confined) but the defence lives only in a code comment and this ticket file, not in `Docs/01-Architecture.md` itself, which still describes a `UVehicleTelemetryComponent` this ticket deliberately did not build | **Accepted, routed forward** — update `Docs/01-Architecture.md` when a later ticket next touches the Vehicle/Race boundary |
+| LOW-4 | The `NotifyTelemetryDiscontinuity()` obligation for whatever acts on `bResetRequested` (likely `VEH-005`) exists only in code comments, not in a routing table `Docs/Tickets.md` itself carries | **Accepted, routed forward** — recorded explicitly below rather than left to a comment alone |
+
+**Routed forward to `VEH-005`:** whatever consumes `FVehicleInputCommand::bResetRequested`
+**must** call `ARacingVehiclePawn::NotifyTelemetryDiscontinuity()` in the same code path, or
+a deliberate reset will be misreported by this ticket's tunnelling detector as a physics
+fault. The call site is marked in `RacingVehiclePawn.cpp`'s `ApplyInputCommand` comment;
+this is the routing-table copy of that obligation.
+
+**Re-verified after repair cycle 1, `reportCreatedOn 2026.08.27-07.56.16`: succeeded=515,
+failed=0, notRun=0.** Both targets re-built `Result: Succeeded`, 0 `warning|error` matches
+(`-NoUBA`). One genuine test failure surfaced and was fixed during this cycle:
+`RacingSim.Vehicle.InputStaleSample`'s old assertion expected a still-held reset to reset
+to zero progress across a stale gap — that was asserting the MEDIUM-2 bug's own behaviour;
+corrected to expect the reset hold to keep accumulating normally, which is what the
+MEDIUM-2 fix actually delivers.
+
 ---
 
 ## Epic 3 — track and race

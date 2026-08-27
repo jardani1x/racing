@@ -298,7 +298,25 @@ FVehicleInputCommand FVehicleInputProcessor::Tick(
 		&& FMath::IsFinite(IncomingRaw.SampleTimestampSeconds)
 		&& IncomingRaw.SampleTimestampSeconds > 0.0;
 
+	// Corrected on code review (VEH-004 HIGH-1): this used to fire the instant the
+	// timeout elapsed, with no regard for what the stale sample actually contained.
+	// That makes it fire on every ordinary coast, grid wait, or straight where the
+	// driver simply isn't touching anything -- exactly the "detector that cries wolf
+	// during normal racing" failure mode this ticket's own design doc warns against,
+	// and it fed straight into an Error-level "VEH-004 failure detected" log with
+	// nothing wrong at all. The ORIGINAL threat (VEH-001 MEDIUM-4) was never "the
+	// timestamp stopped advancing" in the abstract -- it was "a NON-ZERO demand or a
+	// HELD control stays latched forever because nothing is left to zero it". If the
+	// stale sample was already neutral, there is nothing dangerous to protect against
+	// and nothing to report: idle coasting with the pad on the table is not staleness,
+	// it is the car doing exactly what it should.
+	const bool bStaleSampleHadLatchedDemand =
+		IncomingRaw.Throttle != 0.0 || IncomingRaw.Brake != 0.0 || IncomingRaw.Steer != 0.0
+		|| IncomingRaw.Handbrake != 0.0 || IncomingRaw.Clutch != 0.0
+		|| IncomingRaw.bShiftUpHeld || IncomingRaw.bShiftDownHeld || IncomingRaw.bResetHeld;
+
 	if (bStalenessArmed
+		&& bStaleSampleHadLatchedDemand
 		&& (TimestampSeconds - IncomingRaw.SampleTimestampSeconds) > static_cast<double>(InputStaleAfterSeconds))
 	{
 		Corrections |= static_cast<uint8>(EVehicleInputCorrection::StaleSample);
@@ -314,13 +332,19 @@ FVehicleInputCommand FVehicleInputProcessor::Tick(
 		Raw.Handbrake = 0.0;
 		Raw.Clutch = 0.0;
 
-		// The held flags go too. Left standing, a stale "shift up held" would fire a
-		// phantom edge the moment the connection returned, and a stale "reset held"
-		// would keep accumulating toward a reset that permanently invalidates the lap
-		// -- a disconnected player must not be able to destroy their own run.
-		Raw.bShiftUpHeld = false;
-		Raw.bShiftDownHeld = false;
-		Raw.bResetHeld = false;
+		// The held flags are deliberately NOT cleared here -- corrected on code review
+		// (VEH-004 MEDIUM-2), which found the previous reasoning backwards. Clearing
+		// bShiftUpHeld/bShiftDownHeld to false sets bShiftUpWasHeld/bShiftDownWasHeld
+		// to false too (the edge tracker below), so the NEXT sample where the key is
+		// still genuinely held reads as a rising edge and fires the exact phantom
+		// shift the old comment claimed this prevented. Worse for reset: forcing
+		// bResetHeld to false drives the "released" branch, which clears BOTH
+		// ResetHeldSeconds AND bResetLatched (see ResetState()'s own warning against
+		// exactly this) -- re-arming a second reset one hold-threshold after the
+		// stale gap ends, for a player who never released the key. Leaving the held
+		// flags exactly as received means a genuinely-held key stays held (correct:
+		// no edge, no re-arm) and a genuinely-released key was already false (also
+		// correct) -- there is no case where passing them through is wrong.
 
 		// SpeedCms is deliberately NOT neutralised. It is vehicle state pushed by the
 		// pawn, not a device value, and it stays true while the connection is dead.

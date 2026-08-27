@@ -31,11 +31,11 @@ namespace
 		Report.Reason.Append(MoveTemp(Detail));
 	}
 
-	/** True when the value is finite and its magnitude is within Limit. A non-finite value is NOT within any limit. */
-	bool IsWithinVehicleFailureLimit(const double Value, const double Limit)
-	{
-		return FMath::IsFinite(Value) && FMath::Abs(Value) <= Limit;
-	}
+	// IsWithinVehicleFailureLimit was removed here on code review (VEH-004 MEDIUM-3):
+	// its only two call sites were both dead code (a non-finite Wheel.SpringForceN or
+	// Wheel.ContactPointCm can never reach them -- Wheel.IsFinite() already `continue`s
+	// past the whole wheel before either check runs), and an unused static helper is
+	// its own maintenance hazard. Other magnitude bounds in this file compare directly.
 }
 
 namespace RacingSim::Vehicle
@@ -257,19 +257,23 @@ namespace RacingSim::Vehicle
 			{
 				++WheelsInContact;
 
+				// Distance-bound only -- corrected on code review (VEH-004 MEDIUM-3),
+				// which found the non-finite sub-checks this block used to carry were
+				// dead code. Wheel.IsFinite() (checked above, with its own `continue`)
+				// already covers ContactPointCm and SpringForceN as part of the whole
+				// wheel struct, so a non-finite contact point or spring force can never
+				// reach this line -- it was reported as UnstableWheelState and skipped
+				// before this block runs. InvalidContact is therefore genuinely the
+				// FINITE-but-impossible case: a contact point that is a real number,
+				// just an absurd one (the collision query returning nonsense), which is
+				// a different cause from the solver producing NaN.
 				const double ContactDistanceCm = FVector::Dist(Current.LocationCm, Wheel.ContactPointCm);
-				if (!FMath::IsFinite(ContactDistanceCm) || ContactDistanceCm > Thresholds.MaxContactDistanceCm)
+				if (ContactDistanceCm > Thresholds.MaxContactDistanceCm)
 				{
 					RaiseVehicleFailure(Report, EVehicleFailureFlag::InvalidContact,
 						FString::Printf(
 							TEXT("wheel %d reports contact %f cm from the body, beyond the %f cm bound"),
 							WheelIndex, ContactDistanceCm, Thresholds.MaxContactDistanceCm));
-				}
-
-				if (!IsWithinVehicleFailureLimit(Wheel.SpringForceN, TNumericLimits<float>::Max()))
-				{
-					RaiseVehicleFailure(Report, EVehicleFailureFlag::InvalidContact,
-						FString::Printf(TEXT("wheel %d reports a non-finite spring force"), WheelIndex));
 				}
 			}
 

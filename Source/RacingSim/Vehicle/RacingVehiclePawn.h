@@ -260,6 +260,16 @@ private:
 	 * only on its caller's bChassisApplied guard, which is correct today because
 	 * ApplyChassisAsset() is this function's only caller, but left this function without
 	 * a guard of its own despite being documented as "guarded and idempotent".
+	 *
+	 * `bTuneApplied` (re-entry guard, set unconditionally once this function has RUN) and
+	 * `bTuneEngineApplied` (set only when the engine write actually SUCCEEDED) are
+	 * deliberately two different flags -- corrected on code review (VEH-004 HIGH-2). The
+	 * previous version used `bTuneApplied` for both purposes: it was set `true` on every
+	 * path past the null-check, including when the torque-curve write was refused
+	 * (VEH-003 HIGH-2's own gate), which meant `ResolveCarSpecVersion` -- and therefore a
+	 * submitted race result -- would stamp a car-spec version for a tune whose engine was
+	 * never actually written into Chaos. `bTuneEngineApplied` is the one that must gate
+	 * publishability; `bTuneApplied` only stops this function from re-running.
 	 */
 	void ApplyTuneAsset();
 
@@ -283,6 +293,7 @@ private:
 
 	bool bChassisApplied = false;
 	bool bTuneApplied = false;
+	bool bTuneEngineApplied = false;
 
 	// -- VEH-004 telemetry state. All fixed-size; none of it allocates. ------
 

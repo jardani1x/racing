@@ -283,6 +283,11 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 		Engine.EngineBrakeEffect = TuneAsset->EngineBrakeEffect;
 		Engine.EngineRevUpMOI = TuneAsset->EngineRevUpMoi;
 		Engine.EngineRevDownRate = TuneAsset->EngineRevDownRate;
+
+		// The car-spec-version gate (VEH-004 HIGH-2, see the header comment on
+		// ApplyTuneAsset()): only set once the engine has genuinely been written, so a
+		// refused tune cannot be named in a submitted race result.
+		bTuneEngineApplied = true;
 	}
 	else
 	{
@@ -575,7 +580,7 @@ FVehicleFailureThresholds ARacingVehiclePawn::ResolveFailureThresholds() const
 
 bool ARacingVehiclePawn::HasPublishableCarSpecVersion() const
 {
-	return RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneApplied).IsPopulated();
+	return RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneEngineApplied).IsPopulated();
 }
 
 bool ARacingVehiclePawn::PublishCarSpecVersionTo(URaceResultRecorder* Recorder)
@@ -585,7 +590,7 @@ bool ARacingVehiclePawn::PublishCarSpecVersionTo(URaceResultRecorder* Recorder)
 		return false;
 	}
 
-	const FRacingContentVersion Version = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneApplied);
+	const FRacingContentVersion Version = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneEngineApplied);
 
 	if (!Version.IsPopulated())
 	{
@@ -595,8 +600,8 @@ bool ARacingVehiclePawn::PublishCarSpecVersionTo(URaceResultRecorder* Recorder)
 		// named. Writing a plausible-looking version here would produce a result that
 		// passes every check and describes a car nobody drove.
 		UE_LOG(LogRacingVehicle, Warning,
-			TEXT("ARacingVehiclePawn '%s': no publishable car spec version (TuneAsset '%s', applied: %s); the race result will remain unsubmittable, which is correct rather than a defect."),
-			*GetNameSafe(this), *GetNameSafe(TuneAsset), bTuneApplied ? TEXT("true") : TEXT("false"));
+			TEXT("ARacingVehiclePawn '%s': no publishable car spec version (TuneAsset '%s', engine applied: %s); the race result will remain unsubmittable, which is correct rather than a defect."),
+			*GetNameSafe(this), *GetNameSafe(TuneAsset), bTuneEngineApplied ? TEXT("true") : TEXT("false"));
 		return false;
 	}
 
@@ -631,9 +636,15 @@ void ARacingVehiclePawn::Tick(const float DeltaSeconds)
 	// not of a second independent evaluation that a future change could make diverge.
 	const FVehicleChaosInput AppliedInput = ApplyInputCommand(Command);
 
-	// LAST in the Tick on purpose: capturing before ApplyInputCommand would record last
-	// frame's axes, producing a recording that is off by one frame in exactly the place
-	// an input-latency investigation would look.
+	// LAST in the Tick because AppliedInput does not exist until ApplyInputCommand
+	// returns it -- corrected on code review (VEH-004 MEDIUM-1), which found the
+	// previous comment's ordering claim backwards. This call happens at TG_PrePhysics,
+	// BEFORE Chaos steps this frame, so the chassis/wheel state this snapshot reads is
+	// necessarily still last physics step's regardless of where in this Tick the
+	// capture runs -- capturing earlier would not have paired input with a fresher
+	// physics state, only with a stale AppliedInput. The pairing this snapshot records
+	// is honestly this frame's input against last step's physics state, matching
+	// GetForwardSpeed()'s own comment above.
 	CaptureAndEvaluateTelemetry(AppliedInput, Command, DeltaSeconds);
 }
 
@@ -678,7 +689,7 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	CaptureInput.ClutchInput = Command.Clutch;
 	CaptureInput.InputCorrections = Command.Corrections;
 	CaptureInput.InputDeviceType = Command.DeviceType;
-	CaptureInput.CarSpecVersion = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneApplied);
+	CaptureInput.CarSpecVersion = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneEngineApplied);
 	CaptureInput.TimestampSeconds = NowSeconds;
 	CaptureInput.FrameDeltaSeconds = DeltaSeconds;
 	CaptureInput.CaptureIndex = CaptureIndex;

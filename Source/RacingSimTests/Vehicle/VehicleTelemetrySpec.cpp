@@ -433,18 +433,56 @@ bool FRacingSimVehicleInputStaleSampleTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("...throttle is neutralised"), Stale.Throttle, 0.0f);
 		TestEqual(TEXT("...steering is neutralised"), Stale.Steer, 0.0f);
 		TestEqual(TEXT("...brake stays zero rather than being slammed on"), Stale.Brake, 0.0f);
-		// A stale "shift up held" must not fire a phantom edge when the connection
-		// returns, and a stale "reset held" must not accumulate toward a reset that
-		// permanently invalidates the lap. A disconnected player must not be able to
-		// destroy their own run.
+		// A stale "shift up held" must not fire a phantom edge, and the still-held reset
+		// continues accumulating exactly as it would if the connection had never
+		// dropped -- corrected on code review (VEH-004 MEDIUM-2). The held flags are no
+		// longer force-cleared during a stale gap (see the processor's own comment on
+		// why clearing them was backwards: it force-cleared bResetLatched too, which
+		// would have RE-ARMED a second reset for a player who never released the key).
+		// No edge fires here because bShiftUpHeld was already true on the previous
+		// (not-yet-stale) tick, so the rising-edge detector correctly sees no change --
+		// the same reason a key held continuously across an ordinary frame never
+		// double-fires. Two Tick() calls at the default 0.5 s ResetHoldSeconds
+		// accumulate 2*(1/60)/0.5 = ~0.0667 of progress, same as if the gap had not
+		// happened at all.
 		TestEqual(TEXT("...no phantom gear request is produced"),
 			Stale.GearRequest, EVehicleGearRequest::None);
-		TestFalse(TEXT("...and no reset is requested"), Stale.bResetRequested);
-		TestEqual(TEXT("...with the reset hold not accumulating"), Stale.ResetHoldProgress, 0.0f);
+		TestFalse(TEXT("...and no reset FIRES yet (progress is below the hold threshold)"),
+			Stale.bResetRequested);
+		TestTrue(TEXT("...and the still-held reset keeps accumulating normally, unaffected by the stale gap"),
+			FMath::IsNearlyEqual(Stale.ResetHoldProgress, 2.0f * (1.0f / 60.0f) / 0.5f, 1.0e-4f));
 
 		// The output guarantee still holds under the neutralisation path.
 		TestTrue(TEXT("A neutralised command is still finite and in range"),
 			Stale.IsFiniteAndInRange());
+	}
+
+	// -- IDLE COASTING IS NOT STALENESS (code review, VEH-004 HIGH-1). A player who has
+	// released every control -- coasting down a straight, waiting on the grid, pad on
+	// the table with nothing held -- produces no Enhanced Input events at all, so the
+	// sample's timestamp genuinely stops advancing exactly as it would during a real
+	// disconnect. The previous version of this mechanism could not tell the two apart
+	// and raised StaleSample (and an Error-level "VEH-004 failure detected" log) on
+	// every ordinary coast. The fix: staleness is only reported when the STALE SAMPLE
+	// ITSELF still names a non-zero demand or a held control -- i.e. when there is
+	// something that would actually stay dangerously latched if left alone. A sample
+	// that was already neutral when the events stopped has nothing to protect against.
+	{
+		FVehicleInputProcessor Processor;
+		Processor.Configure(Instant, ERacingInputDeviceType::Keyboard, ETransmissionInputMode::Automatic, 0.1f, 1.0f);
+
+		const double LastEventTime = 100.0;
+
+		FVehicleInputRawSample Neutral;
+		// Every field left at its default: 0.0 for the axes, false for the held flags --
+		// exactly what Enhanced Input's own Completed handlers already wrote once the
+		// driver let go of everything.
+		Neutral.SampleTimestampSeconds = LastEventTime;
+
+		const FVehicleInputCommand Command = Processor.Tick(Neutral, 1.0 / 60.0, LastEventTime + 5.0);
+		TestFalse(TEXT("An already-neutral sample past the timeout is NOT reported stale"),
+			Command.HasCorrection(EVehicleInputCorrection::StaleSample));
+		TestEqual(TEXT("...and stays a clean, coasting command"), Command.Throttle, 0.0f);
 	}
 
 	// -- The guard is OPT-IN FROM BOTH ENDS. A mechanism that can zero a driver's
