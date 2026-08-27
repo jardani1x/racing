@@ -282,6 +282,61 @@ float UVehicleTuneDataAsset::GetPeakNormalisedTorque() const
 	return FMath::IsFinite(MaxValue) ? MaxValue : 0.0f;
 }
 
+bool UVehicleTuneDataAsset::IsSteerSpeedCurveUsableByChaos(FString& OutReason) const
+{
+	const FRichCurve* Curve = SteerScaleBySpeedMphCurve.GetRichCurveConst();
+
+	if (Curve == nullptr || Curve->GetNumKeys() == 0)
+	{
+		// FVehicleSteeringConfig::FillSteeringSetup calls GetLastKey() on this curve,
+		// which hard-asserts on an empty key array. This is not a degraded-quality
+		// case; it is a crash.
+		OutReason = TEXT("the curve has no keys (FillSteeringSetup's GetLastKey() would assert)");
+		return false;
+	}
+
+	// Explicit key iteration for the same order-independence reason
+	// GetPeakNormalisedTorque() uses it (VEH-003 repair cycle 2, HIGH-1):
+	// FRichCurve::GetValueRange folds with FMath::Max, and Max(finite, NaN) returns the
+	// FINITE operand, so a non-finite key can hide behind a finite one depending purely
+	// on comparison order. One non-finite key anywhere disqualifies the curve.
+	float MaxValue = -MAX_FLT;
+	for (int32 KeyIndex = 0; KeyIndex < Curve->GetNumKeys(); ++KeyIndex)
+	{
+		const FRichCurveKey& Key = Curve->Keys[KeyIndex];
+		if (!FMath::IsFinite(Key.Time) || !FMath::IsFinite(Key.Value))
+		{
+			OutReason = FString::Printf(
+				TEXT("key %d is non-finite (time %f, value %f); Chaos' Eval(X)/MaxValue would put a NaN into the steering config"),
+				KeyIndex, Key.Time, Key.Value);
+			return false;
+		}
+		MaxValue = FMath::Max(MaxValue, Key.Value);
+	}
+
+	if (!(MaxValue > 0.0f))
+	{
+		OutReason = FString::Printf(
+			TEXT("the curve's peak value is %f; FillSteeringSetup divides by that peak, so a non-positive peak is a division by zero"),
+			MaxValue);
+		return false;
+	}
+
+	// MaxX / NumSamples inside FillSteeringSetup. A curve whose last key sits at time 0
+	// -- a single key at the origin, say -- makes that a division by zero, and every
+	// per-key range check in this asset passes such a curve happily.
+	const float LastKeyTime = Curve->Keys[Curve->GetNumKeys() - 1].Time;
+	if (!(LastKeyTime > 0.0f))
+	{
+		OutReason = FString::Printf(
+			TEXT("the last key's time is %f; FillSteeringSetup resamples over MaxX/NumSamples and a zero domain is a division by zero"),
+			LastKeyTime);
+		return false;
+	}
+
+	return true;
+}
+
 float UVehicleTuneDataAsset::GetOverallRatioForGear(const int32 ForwardGear) const
 {
 	// 1-based, as a driver counts gears -- deliberately not matching the array index, so a

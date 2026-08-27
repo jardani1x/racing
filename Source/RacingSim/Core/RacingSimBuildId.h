@@ -16,7 +16,7 @@
  *   1. game build ID                 -> GameBuildId
  *   2. engine patch                  -> EngineVersion, EngineChangelist
  *   3. track definition/version hash -> TrackVersion       (populated by TRACK-001)
- *   4. car spec/tune version         -> CarSpecVersion     (populated by VEH-003)
+ *   4. car spec/tune version         -> CarSpecVersion     (VEH-003 built it, VEH-004 wires it)
  *   5. physics policy version        -> PhysicsPolicyVersion
  *   6. assist preset                 -> AssistPreset
  *   7. input type                    -> InputDeviceType
@@ -223,13 +223,19 @@ struct RACINGSIM_API FRacingSimVersionStamp
 	FRacingContentVersion TrackVersion;
 
 	/**
-	 * Populated from the car spec / tune asset. Empty here by design.
+	 * Populated from the car spec / tune asset. Empty on a stamp nobody has filled.
 	 *
-	 * VEH-003 built the capability -- UVehicleTuneDataAsset::GetContentVersion() -- but
-	 * nothing calls URaceResultRecorder::SetCarSpecVersion with it yet (corrected on
-	 * code review, VEH-003 MEDIUM-2), so this field is still empty on every real
-	 * result today. Wiring is routed forward to whichever ticket first gives
-	 * URaceResultRecorder a live pawn reference.
+	 * VEH-003 built the capability (UVehicleTuneDataAsset::GetContentVersion()) and
+	 * VEH-004 wired it: ARacingVehiclePawn::PublishCarSpecVersionTo() calls
+	 * URaceResultRecorder::SetCarSpecVersion, and the decision of whether a tune may be
+	 * published at all lives in RacingSim::Vehicle::ResolveCarSpecVersion.
+	 *
+	 * IT IS STILL LEGITIMATELY EMPTY IN TWO CASES, and both are deliberate: a pawn with
+	 * no tune, and a pawn whose tune was REFERENCED but never APPLIED (no chassis, so
+	 * ApplyTuneAsset() was never reached; or an unusable torque curve, so the engine
+	 * write was refused). In both the car did not run that tune, so naming it would
+	 * produce a result that passes IsPublishable() and describes a car nobody drove.
+	 * Empty and refused beats plausible and wrong.
 	 */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Racing|Version")
 	FRacingContentVersion CarSpecVersion;

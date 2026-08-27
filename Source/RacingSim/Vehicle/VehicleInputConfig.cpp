@@ -248,6 +248,21 @@ TConstArrayView<RacingSim::Validation::FRacingPropertyRange> UVehicleInputConfig
 	static const FRacingPropertyRange Ranges[] =
 	{
 		FRacingPropertyRange::Between(TEXT("MaxDeltaSeconds"), 0.001, 1.0).WithReplacement(0.1),
+
+		// VEH-004. Declares a replacement for the OPPOSITE reason to MaxDeltaSeconds:
+		// its minimum (0.0) means "guard disabled", so clamping a broken value to the
+		// bound would silently DISARM the stuck-input protection -- the same shape of
+		// hazard URacingSimSettings::TelemetryStaleAfterSeconds forced
+		// FRacingPropertyRange::ReplacementValue into existence for. A corrupt value
+		// therefore returns to the authored 1.0 s default, guard armed.
+		//
+		// This is intentionally NOT the same policy the processor applies. The processor
+		// receives a value from any caller and fails toward "do nothing"; this asset is
+		// authored content whose author demonstrably wanted the guard, and restoring
+		// their intent is the safe correction here. Both directions are deliberate and
+		// both are tested.
+		FRacingPropertyRange::Between(TEXT("InputStaleAfterSeconds"), 0.0, 60.0).WithReplacement(1.0),
+
 		FRacingPropertyRange::Between(TEXT("FullAuthoritySpeedKph"), 0.0, 1000.0),
 		FRacingPropertyRange::Between(TEXT("MinAuthoritySpeedKph"), 0.0, 1000.0).WithReplacement(250.0),
 		FRacingPropertyRange::Between(TEXT("MinSteerScale"), 0.05, 1.0).WithReplacement(1.0)

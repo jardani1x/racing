@@ -8,9 +8,13 @@
 #include "GameFramework/Pawn.h"
 #include "Vehicle/VehicleChaosInputMapping.h"
 #include "Vehicle/VehicleChassisDataAsset.h"
+#include "Vehicle/VehicleFailureDetection.h"
+#include "Vehicle/VehicleTelemetryTypes.h"
 #include "RacingVehiclePawn.generated.h"
 
 class UBoxComponent;
+class URaceResultRecorder;
+class UVehicleFailureThresholdsDataAsset;
 class UVehicleInputComponent;
 class UVehicleTuneDataAsset;
 struct FVehicleInputCommand;
@@ -76,6 +80,36 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle")
 	ERacingInputDeviceType InitialInputDeviceType = ERacingInputDeviceType::Keyboard;
 
+	/**
+	 * VEH-004 failure envelopes. Null is legal and uses FVehicleFailureThresholds'
+	 * built-in defaults -- which are the same numbers the asset defaults to -- reported
+	 * ONCE at BeginPlay rather than silently. No .uasset is authored by VEH-004
+	 * (CLAUDE.md forbids editing Unreal binary assets from a worktree), so null is the
+	 * expected configuration today.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle|Telemetry")
+	TObjectPtr<UVehicleFailureThresholdsDataAsset> FailureThresholdsAsset;
+
+	/**
+	 * Telemetry capture rate, HERTZ. 0 disables capture entirely.
+	 *
+	 * Docs/02-VehiclePhysics.md item 13: "Telemetry capture at the simulation rate or a
+	 * DOCUMENTED DECIMATION RATE." This is the documented decimation rate, and it is a
+	 * property rather than a constant because a soak run and a race want different
+	 * answers. 60 Hz matches the Gate E frame budget: capture runs at most once per
+	 * frame at the target rate and skips frames on a faster one.
+	 *
+	 * DECIMATION DOES NOT WEAKEN FAILURE DETECTION in the way it might appear to. The
+	 * accumulating detectors integrate the MEASURED interval between captures, not a
+	 * frame count, so a 60 Hz capture on a 144 Hz render still measures real seconds.
+	 * What it does cost is resolution on single-step events -- a tunnelling step
+	 * shorter than the capture interval is observed as part of a longer step -- which
+	 * is why the tunnelling bound scales with the measured interval rather than an
+	 * assumed one.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle|Telemetry", meta = (ClampMin = "0.0", ClampMax = "1000.0"))
+	float TelemetrySampleRateHz = 60.0f;
+
 	/** True once ChassisAsset has been applied to the movement component and wheel setups. False for a pawn spawned with no chassis (a validation failure, not a crash). */
 	UFUNCTION(BlueprintPure, Category = "Vehicle")
 	bool IsChassisApplied() const
@@ -89,6 +123,104 @@ public:
 	{
 		return VehicleMovementComponent;
 	}
+
+	// =======================================================================
+	// VEH-004 -- telemetry and failure detection
+	// =======================================================================
+
+	/**
+	 * The most recent telemetry sample. bIsValid is false before the first capture.
+	 *
+	 * READ-ONLY BY CONTRACT and by return type: a copy, not a reference, so a consumer
+	 * cannot retain a pointer into a struct this pawn overwrites every capture.
+	 * Trivially copyable and fixed-size (see FVehicleTelemetrySnapshot), so the copy
+	 * costs no allocation.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Telemetry")
+	FVehicleTelemetrySnapshot GetLastTelemetrySnapshot() const
+	{
+		return LastSnapshot;
+	}
+
+	/** How many samples have been captured this session. Gaps against the wall clock mean capture was decimated or skipped. */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Telemetry")
+	int64 GetTelemetryCaptureCount() const
+	{
+		return CaptureIndex;
+	}
+
+	/** Bitmask of EVehicleFailureFlag from the most recent evaluation. 0 when the last sample was clean. */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Telemetry")
+	uint8 GetLastFailureFlags() const
+	{
+		return LastFailureReport.Flags;
+	}
+
+	/** Human-readable reasoning for the most recent evaluation. Empty when clean. */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Telemetry")
+	FString GetLastFailureReason() const
+	{
+		return LastFailureReport.Reason;
+	}
+
+	/** The full report. Not a UFUNCTION: FVehicleFailureReport is a plain struct, not a USTRUCT, because the detector must stay UObject-free. */
+	const FVehicleFailureReport& GetLastFailureReport() const
+	{
+		return LastFailureReport;
+	}
+
+	/**
+	 * Drop accumulated failure history and the previous snapshot.
+	 *
+	 * MUST be called on any DELIBERATE discontinuity -- a reset, a teleport, a session
+	 * restart -- for the same reason FVehicleInputProcessor::ResetState exists. Without
+	 * it, VEH-005's reset would present to the detector as a teleport and be reported
+	 * as tunnelling, which is correct behaviour applied to the wrong event.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Vehicle|Telemetry")
+	void NotifyTelemetryDiscontinuity();
+
+	/**
+	 * The car spec version this pawn may publish, or an UNPOPULATED version when the
+	 * tune is missing or was never applied.
+	 *
+	 * The decision lives in RacingSim::Vehicle::ResolveCarSpecVersion, which is a pure
+	 * function and therefore testable; this is the accessor that supplies it the one
+	 * fact only the pawn knows (whether ApplyTuneAsset actually ran).
+	 */
+	UFUNCTION(BlueprintPure, Category = "Vehicle|Telemetry")
+	bool HasPublishableCarSpecVersion() const;
+
+	/**
+	 * Hand this car's spec version to a race result recorder.
+	 *
+	 * ---------------------------------------------------------------------
+	 * THIS IS THE PROJECT'S FIRST Vehicle/ -> Race/ DEPENDENCY. It is deliberate.
+	 * ---------------------------------------------------------------------
+	 *
+	 * CORE-002 opened FRacingSimVersionStamp::CarSpecVersion and documented it as
+	 * VEH-003's to fill. VEH-003 delivered the CAPABILITY
+	 * (UVehicleTuneDataAsset::GetContentVersion) but nothing ever called
+	 * URaceResultRecorder::SetCarSpecVersion, so IsPublishable() refused every real
+	 * stamp -- a hole re-routed to "whichever ticket first wires a pawn's tune to a
+	 * race result".
+	 *
+	 * The direction was a real choice. A Race-side pull (`Recorder->ReadCarFrom(Pawn)`)
+	 * would keep Vehicle/ independent, but Race/ cannot answer the question that
+	 * actually matters: whether the tune was APPLIED, as opposed to merely referenced.
+	 * A pawn with a TuneAsset but no ChassisAsset never reaches ApplyTuneAsset() at all
+	 * (see its early return), and a tune with an unusable torque curve has its engine
+	 * write refused -- in both cases the car did not run that tune, and a result naming
+	 * it would be plausible and wrong. Only the pawn knows. So the push direction is
+	 * the one that can be correct, and the include is confined to this class's .cpp.
+	 *
+	 * @return true if a POPULATED version was published. False means the recorder was
+	 *         null, or this pawn has nothing honest to publish -- in which case nothing
+	 *         is written and the recorder keeps its unpopulated default, which
+	 *         IsSubmittable() correctly refuses.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Vehicle|Telemetry")
+	bool PublishCarSpecVersionTo(URaceResultRecorder* Recorder);
 
 protected:
 	virtual void BeginPlay() override;
@@ -128,12 +260,70 @@ private:
 	 * only on its caller's bChassisApplied guard, which is correct today because
 	 * ApplyChassisAsset() is this function's only caller, but left this function without
 	 * a guard of its own despite being documented as "guarded and idempotent".
+	 *
+	 * `bTuneApplied` (re-entry guard, set unconditionally once this function has RUN) and
+	 * `bTuneEngineApplied` (set only when the engine write actually SUCCEEDED) are
+	 * deliberately two different flags -- corrected on code review (VEH-004 HIGH-2). The
+	 * previous version used `bTuneApplied` for both purposes: it was set `true` on every
+	 * path past the null-check, including when the torque-curve write was refused
+	 * (VEH-003 HIGH-2's own gate), which meant `ResolveCarSpecVersion` -- and therefore a
+	 * submitted race result -- would stamp a car-spec version for a tune whose engine was
+	 * never actually written into Chaos. `bTuneEngineApplied` is the one that must gate
+	 * publishability; `bTuneApplied` only stops this function from re-running.
 	 */
 	void ApplyTuneAsset();
 
 	/** Maps FVehicleInputCommand onto the movement component's SetThrottleInput/SetBrakeInput/SetSteeringInput/SetHandbrakeInput. The one Tick-time consumer of VEH-001's contract. */
-	void ApplyInputCommand(const FVehicleInputCommand& Command);
+	/** @return the mapped axes actually pushed, so VEH-004's capture records those rather than re-deriving them. */
+	FVehicleChaosInput ApplyInputCommand(const FVehicleInputCommand& Command);
+
+	/**
+	 * VEH-004: capture one snapshot and evaluate it, if the decimation clock allows.
+	 *
+	 * Called at the END of Tick, after ApplyInputCommand, so the recorded ChaosInput is
+	 * the one actually pushed this frame rather than last frame's. Allocates nothing on
+	 * the clean path and logs only on a CHANGE of failure flags -- a per-frame UE_LOG of
+	 * a persistent fault is itself a frame-time defect, and it would also bury the
+	 * moment the fault began under ten thousand identical lines.
+	 */
+	void CaptureAndEvaluateTelemetry(const FVehicleChaosInput& AppliedInput, const FVehicleInputCommand& Command, float DeltaSeconds);
+
+	/** Thresholds from FailureThresholdsAsset, or FVehicleFailureThresholds' defaults when it is null. */
+	FVehicleFailureThresholds ResolveFailureThresholds() const;
 
 	bool bChassisApplied = false;
 	bool bTuneApplied = false;
+	bool bTuneEngineApplied = false;
+
+	// -- VEH-004 telemetry state. All fixed-size; none of it allocates. ------
+
+	/** The most recent capture. See GetLastTelemetrySnapshot. */
+	FVehicleTelemetrySnapshot LastSnapshot;
+
+	/**
+	 * The capture before it, kept so the detector can measure rates.
+	 *
+	 * A separate member rather than a two-element ring: the detector needs exactly one
+	 * step of history and nothing else, and a buffer would invite a consumer to start
+	 * treating this pawn as a telemetry recorder -- which is VEH-006's job, not this
+	 * ticket's.
+	 */
+	FVehicleTelemetrySnapshot PreviousSnapshot;
+
+	/** The detector's accumulators. Held per pawn, so two cars cannot contaminate each other's history. */
+	FVehicleFailureDetectorState FailureState;
+
+	FVehicleFailureReport LastFailureReport;
+
+	/** 1-based; see FVehicleTelemetrySnapshot::CaptureIndex. */
+	int64 CaptureIndex = 0;
+
+	/** Monotonic SECONDS at which the next capture is due. 0 means "capture on the next Tick". */
+	double NextCaptureTimeSeconds = 0.0;
+
+	/**
+	 * Flags at the last log emission, so a persistent fault logs ONCE and a newly
+	 * raised flag logs again. Edge-triggered logging, not level-triggered.
+	 */
+	uint8 LoggedFailureFlags = 0;
 };

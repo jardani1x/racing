@@ -25,7 +25,7 @@ UVehicleInputComponent::UVehicleInputComponent()
 	PrimaryComponentTick.TickGroup = TG_PrePhysics;
 }
 
-bool UVehicleInputComponent::InitialiseForController(
+EVehicleInputInitResult UVehicleInputComponent::InitialiseForController(
 	APlayerController* Controller,
 	const ERacingInputDeviceType DeviceType)
 {
@@ -37,7 +37,7 @@ bool UVehicleInputComponent::InitialiseForController(
 		UE_LOG(LogRacingVehicle, Warning,
 			TEXT("UVehicleInputComponent on '%s' has no UVehicleInputConfigDataAsset; the vehicle will not respond to input."),
 			*GetNameSafe(GetOwner()));
-		return false;
+		return EVehicleInputInitResult::NoConfig;
 	}
 
 	const bool bHasProfile = Processor.ConfigureFromAsset(Config, DeviceType);
@@ -58,7 +58,7 @@ bool UVehicleInputComponent::InitialiseForController(
 		UE_LOG(LogRacingVehicle, Warning,
 			TEXT("UVehicleInputComponent on '%s' initialised with a null controller; no mapping context was pushed."),
 			*GetNameSafe(GetOwner()));
-		return false;
+		return EVehicleInputInitResult::NoController;
 	}
 
 	// ULocalPlayer, not APlayerController, owns the Enhanced Input subsystem. A
@@ -70,7 +70,7 @@ bool UVehicleInputComponent::InitialiseForController(
 		UE_LOG(LogRacingVehicle, Verbose,
 			TEXT("Controller '%s' has no ULocalPlayer; no mapping context pushed (expected for non-local pawns)."),
 			*GetNameSafe(Controller));
-		return false;
+		return EVehicleInputInitResult::NotLocalPlayer;
 	}
 
 	UEnhancedInputLocalPlayerSubsystem* Subsystem =
@@ -80,7 +80,7 @@ bool UVehicleInputComponent::InitialiseForController(
 	{
 		UE_LOG(LogRacingVehicle, Error,
 			TEXT("UEnhancedInputLocalPlayerSubsystem is unavailable; the EnhancedInput plugin may be disabled."));
-		return false;
+		return EVehicleInputInitResult::NoInputSubsystem;
 	}
 
 	const TSoftObjectPtr<UInputMappingContext>* ContextPtr = Config->MappingContexts.Find(DeviceType);
@@ -90,7 +90,7 @@ bool UVehicleInputComponent::InitialiseForController(
 			TEXT("No UInputMappingContext configured for device '%s' in '%s'; no controls are bound."),
 			*UEnum::GetValueAsString(DeviceType),
 			*GetNameSafe(Config));
-		return false;
+		return EVehicleInputInitResult::NoMappingContext;
 	}
 
 	// Synchronous load. See the header: this runs at possession, never during a race,
@@ -101,7 +101,7 @@ bool UVehicleInputComponent::InitialiseForController(
 	{
 		UE_LOG(LogRacingVehicle, Error,
 			TEXT("Failed to load UInputMappingContext '%s'."), *ContextPtr->ToString());
-		return false;
+		return EVehicleInputInitResult::MappingContextLoadFailed;
 	}
 
 	// Remove the PREVIOUS context this component pushed (VEH-002, fixing VEH-001
@@ -121,7 +121,12 @@ bool UVehicleInputComponent::InitialiseForController(
 		TEXT("Vehicle input initialised for device '%s' using context '%s' at priority %d."),
 		*UEnum::GetValueAsString(DeviceType), *GetNameSafe(Context), MappingContextPriority);
 
-	return bHasProfile;
+	// The context IS pushed and the component IS usable at this point even with no
+	// profile -- neutral shaping still drives a car. But the missing profile is a
+	// content fault and must not be reported as success, which is exactly what the old
+	// `return bHasProfile` did while every other failure path returned a bare `false`:
+	// one function, two meanings of the same value.
+	return bHasProfile ? EVehicleInputInitResult::Succeeded : EVehicleInputInitResult::NoProfileForDevice;
 }
 
 UInputAction* UVehicleInputComponent::ResolveAction(const EVehicleInputAction Slot) const
@@ -189,31 +194,49 @@ void UVehicleInputComponent::BindActions(UEnhancedInputComponent* EnhancedInput)
 	BindAxis(EVehicleInputAction::Reset,     &UVehicleInputComponent::HandleReset);
 }
 
-// Handlers. Every one of these records a raw value and does nothing else -- see the
-// class comment on why no decision may live in this file.
+void UVehicleInputComponent::MarkSampleFresh()
+{
+	// VEH-004. The one line that makes the stale-sample guard work, and it must run in
+	// EVERY handler -- a slot that updates its value without refreshing the stamp would
+	// be neutralised while the driver was actively using it.
+	//
+	// FPlatformTime::Seconds() is the same monotonic source RACE-001 uses for lap
+	// timing and TickComponent already passes to the processor. Sampled here rather
+	// than in Tick because the question is "when did a DEVICE last speak", which a
+	// per-frame timestamp cannot answer: Tick runs whether or not anything was received.
+	PendingSample.SampleTimestampSeconds = FPlatformTime::Seconds();
+}
+
+// Handlers. Every one of these records a raw value and stamps the sample, and does
+// nothing else -- see the class comment on why no decision may live in this file.
 void UVehicleInputComponent::HandleThrottle(const FInputActionValue& Value)
 {
 	PendingSample.Throttle = Value.Get<float>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleBrake(const FInputActionValue& Value)
 {
 	PendingSample.Brake = Value.Get<float>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleSteer(const FInputActionValue& Value)
 {
 	PendingSample.Steer = Value.Get<float>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleHandbrake(const FInputActionValue& Value)
 {
 	PendingSample.Handbrake = Value.Get<float>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleClutch(const FInputActionValue& Value)
 {
 	PendingSample.Clutch = Value.Get<float>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleShiftUp(const FInputActionValue& Value)
@@ -223,16 +246,19 @@ void UVehicleInputComponent::HandleShiftUp(const FInputActionValue& Value)
 	// because the action assets do not exist yet and VEH-001 must not constrain how
 	// whoever authors them sets the value type.
 	PendingSample.bShiftUpHeld = Value.Get<bool>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleShiftDown(const FInputActionValue& Value)
 {
 	PendingSample.bShiftDownHeld = Value.Get<bool>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::HandleReset(const FInputActionValue& Value)
 {
 	PendingSample.bResetHeld = Value.Get<bool>();
+	MarkSampleFresh();
 }
 
 void UVehicleInputComponent::SetVehicleSpeedCms(const float SpeedCms)
