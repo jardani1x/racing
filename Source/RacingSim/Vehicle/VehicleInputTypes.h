@@ -165,8 +165,12 @@ enum class EVehicleInputCorrection : uint8
 	PedalConflict	= 1 << 3	UMETA(DisplayName = "Pedal conflict resolved"),
 
 	/**
-	 * The raw sample was older than InputStaleAfterSeconds and every demand was
-	 * neutralised (VEH-004, closing VEH-001 MEDIUM-4).
+	 * The raw sample was older than InputStaleAfterSeconds AND still named a non-zero
+	 * demand or a held control, so every demand was neutralised (VEH-004, closing
+	 * VEH-001 MEDIUM-4). Corrected on re-review, VEH-004 pass 2: an already-neutral
+	 * stale sample (ordinary idle coasting) never sets this -- there is nothing
+	 * dangerous to neutralise, and reporting it there was the exact "detector that
+	 * cries wolf during normal racing" defect this flag exists to avoid.
 	 *
 	 * THE THREAT MODEL, restated because it is not obvious: Enhanced Input reports a
 	 * held control by firing Triggered EVERY FRAME and a released one by firing

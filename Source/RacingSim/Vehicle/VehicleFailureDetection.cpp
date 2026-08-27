@@ -349,7 +349,7 @@ namespace RacingSim::Vehicle
 		if ((Current.InputCorrections & static_cast<uint8>(EVehicleInputCorrection::StaleSample)) != 0)
 		{
 			RaiseVehicleFailure(Report, EVehicleFailureFlag::StaleInput,
-				TEXT("the input layer neutralised a stale device sample (no device event within the configured timeout)"));
+				TEXT("the input layer neutralised a stale device sample (a demand or held control survived silence past the configured timeout)"));
 		}
 
 		return Report;

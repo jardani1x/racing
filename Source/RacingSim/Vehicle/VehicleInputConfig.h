@@ -328,6 +328,12 @@ public:
 	 * dead connection, a backgrounded tab or a lost focus stops it advancing. See
 	 * EVehicleInputCorrection::StaleSample.
 	 *
+	 * ONE CORRECTION (re-review, VEH-004 pass 2): this guard only ever ACTS when the
+	 * stale sample still names a non-zero demand or a held control. A driver who
+	 * released every control before the connection died has nothing to neutralise, and
+	 * this timeout never fires for them -- it is not "how long until the input layer
+	 * intervenes at all", only "how long a still-latched demand may survive silence".
+	 *
 	 * The default of 1.0 s is deliberately long. This mechanism zeroes a driver's
 	 * throttle, so a false positive is a car that mysteriously lifts off mid-corner --
 	 * far worse than a real positive detected 500 ms late, since the car is already

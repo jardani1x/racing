@@ -1085,7 +1085,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-001 | Keyboard/gamepad input mappings | vehicle-physics-engineer | CORE-001 | B | **DONE** 2026-08-25 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM — device-switch mapping-context bug, untested `ConfigureFromAsset`/steer-scale seam ×2, no stuck-input timeout — plus 3 LOW, all routed forward to `VEH-002`/`STREAM-001`, none blocking a contract-only ticket with no consumer yet). Independently confirmed the two loop-premise test fixes are genuine, the no-hard-coded-keys source scan is real, and the processor has no `UObject`/actor dependency. Both targets build clean and Smoke `succeeded=495` (baseline 486 + 9 new `RacingSim.Vehicle.Input*` tests, `failed=0, notRun=0`). Merged to `main`. |
 | VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | **DONE** 2026-08-25 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: input never bound so the car could never actually be driven; drivetrain layout silently inert because `AxleType` was never set on the wheel classes — plus 5 MEDIUM); repair cycle 1 closed both HIGH and all 5 MEDIUM (tick-prerequisite ordering, `MaxSteerAngleDegrees` cross-validation, transmission-mode agreement check, idempotency guard, corrected a false VEH-001-findings-closure claim, and fixed a genuine Unity-Build duplicate-symbol collision surfaced by the rebuild); re-review returned APPROVED WITH FOLLOW-UPS, with one doc-wording overstatement corrected (the tick-ordering fix only closes half the claimed guarantee). `test-engineer` independently confirmed both targets build clean (0 warnings, verified via captured build logs and per-file `.sarif` diagnostics) and Smoke `succeeded=500, failed=0, notRun=0`, all five new `RacingSim.Vehicle.*` tests `Success` including the two that gained repair-cycle assertions. Merged to `main`. Two acceptance criteria (VEH-001 MEDIUM-4 stuck-input timeout; telemetry snapshot) explicitly left unclosed and routed forward to `VEH-004` rather than faked |
 | VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | **DONE** 2026-08-26 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: torque-curve peak formula wrong given Chaos's internal re-normalisation; an unvalidated/unusable torque curve reaching the physics solver — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and all MEDIUM, but re-review found HIGH-1's fix still order-dependent (`FMath::Max(finite, NaN)` returns the finite operand) and one MEDIUM fix targeted the wrong Chaos field (`bUseAutoReverse` vs. the actually-read `bReverseAsBrake`); repair cycle 2 closed both for real, independently re-verified against engine source (`ChaosWheeledVehicleMovementComponent.h`/`.cpp`, `ChaosVehicleMovementComponent.cpp`). Final re-review: APPROVED WITH FOLLOW-UPS — both build logs inspected directly (`Result: Succeeded`, 0 real warnings, both targets). `test-engineer` gate folded into the orchestrating session's own build/Smoke verification at each cycle: Smoke `succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all five new `RacingSim.Vehicle.Tune*` tests `Success`. Merged to `main`. Two items (an identical divide-by-peak hazard on the steering curve, `bUseAutoReverse` ownership) routed forward to `VEH-004`, the first ticket to author a tune content asset |
-| VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002, VEH-003 | C | **IN REVIEW** 2026-08-27 — acceptance criteria written below and implemented on branch `worktree-agent-ab84387278caba0a0`. Eight routed items closed (VEH-001 MEDIUM-2/3/4 and LOW-2; VEH-002's deferred telemetry snapshot; VEH-003 pass-3 MEDIUM-1/LOW-1/LOW-2; CORE-002's `CarSpecVersion` wiring). Awaiting the `code-reviewer` → `test-engineer` gate; **not merged** |
+| VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002, VEH-003 | C | **DONE** 2026-08-27 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: a stale-input detector that cried wolf on ordinary idle coasting; a refused tune write that could still stamp a race result with a car-spec version — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and 3 MEDIUM; re-review returned APPROVED WITH FOLLOW-UPS with 5 doc/comment corrections applied in a follow-up pass (no logic change) rather than a second repair cycle. Both targets build clean (0 warnings, `-NoUBA`) and Smoke `succeeded=515, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, 10 new `RacingSim.Vehicle.*` tests `Success`. Merged to `main`. Two items routed forward to `VEH-005` (a `NotifyTelemetryDiscontinuity()` call obligation, and a reset-accumulation-during-stale-gap trade to resolve); the standing pawn-adapter test-coverage gap (shared with VEH-002/VEH-003) is acknowledged, not solved |
 | VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | OPEN |
 | VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | OPEN |
 
@@ -2002,13 +2002,50 @@ a deliberate reset will be misreported by this ticket's tunnelling detector as a
 fault. The call site is marked in `RacingVehiclePawn.cpp`'s `ApplyInputCommand` comment;
 this is the routing-table copy of that obligation.
 
+**Second obligation routed forward to `VEH-005` (re-review, pass 2):** the repair-cycle-1
+fix to MEDIUM-2 stopped the phantom-shift and reset-re-arm hazards by leaving the held
+shift/reset flags unchanged through a stale gap, but that trade means `ResetHeldSeconds`
+keeps accumulating for the *entire* gap — a reset hold that was still short of the
+threshold when the connection died can complete on its own partway through the gap, firing
+`bResetRequested` for a hold the driver never finished. Latent today because nothing reads
+`bResetRequested` yet. **`VEH-005` must either freeze `ResetHeldSeconds` while
+`EVehicleInputCorrection::StaleSample` is set (advance neither it nor `bResetLatched`), or
+explicitly accept a self-completing reset as correct behaviour** — not inherit the current
+pass-through silently. See `VehicleInputProcessor.cpp`'s own comment on this trade.
+
+### VEH-004 — review findings, pass 2 (re-review of repair cycle 1), 2026-08-27
+
+Verdict: **APPROVED WITH FOLLOW-UPS. Ready to merge — no code re-implementation required.**
+Both HIGH findings and MEDIUM-1/3 independently re-verified closed against actual Enhanced
+Input/Chaos behaviour. MEDIUM-2's fix is correct on its own stated terms but trades one
+hazard for a different, lower-severity one that the diff did not name — closed here by
+naming it (the routing note above) and softening the code comment's absolute claim.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM (new) | `EVehicleInputCorrection::StaleSample`'s doc comment, `InputStaleAfterSeconds`'s designer-facing tooltip, and the `StaleInput` failure-reason string all still described the pre-fix semantics ("no device event within the timeout") without the new precondition (a latched demand must survive the silence) | **Fixed** — all three corrected in `VehicleInputTypes.h`, `VehicleInputConfig.h`, and `VehicleFailureDetection.cpp` |
+| MEDIUM (new) | The MEDIUM-2 fix's own comment claimed "there is no case where passing them through is wrong" — false on the reset path, see the routing note above | **Fixed** — comment softened to name the trade explicitly and point to the routing obligation |
+| MEDIUM (new) | The `InputStaleSample` test's phantom-shift assertion (`Stale.GearRequest == None`) runs under `ETransmissionInputMode::Automatic`, which hard-gates all gear requests regardless of held state — the assertion would pass identically with the phantom-edge bug present, so MEDIUM-2's headline claim has zero test coverage | **Accepted, routed forward** — a Manual-transmission stale-gap test is needed to actually prove the phantom-shift fix; left for the next ticket that touches `VehicleInputProcessorSpec.cpp`/`VehicleTelemetrySpec.cpp` |
+| MEDIUM (new) | `bTuneEngineApplied` gates publishability on the engine write alone — a refused steering curve or a chassis/wheel-class geometry mismatch both leave the flag `true`, so a race result can still be stamped for a tune whose steering or declared brake/suspension values were rejected | **Accepted, routed forward** — same defect class as HIGH-2, narrower scope (scale factor and declared-only values rather than the whole engine); decide and close when a later Vehicle ticket next touches `ApplyTuneAsset()` |
+| LOW (new) | The completion evidence quoted `succeeded=515` without noting the report's `succeededWithWarnings=2` (517 total tests) | **Fixed** — see the corrected evidence line below |
+| LOW (new) | No UBT build log was retained in the worktree; the "0 warnings" claim for both targets rested on console output alone | **Acknowledged** — compilation success is evidenced by the automation run and binary timestamps; the zero-warning claim specifically is not independently re-inspectable after the fact. Routed forward as a process note: retain build logs for future repair cycles |
+
 **Re-verified after repair cycle 1, `reportCreatedOn 2026.08.27-07.56.16`: succeeded=515,
-failed=0, notRun=0.** Both targets re-built `Result: Succeeded`, 0 `warning|error` matches
-(`-NoUBA`). One genuine test failure surfaced and was fixed during this cycle:
-`RacingSim.Vehicle.InputStaleSample`'s old assertion expected a still-held reset to reset
-to zero progress across a stale gap — that was asserting the MEDIUM-2 bug's own behaviour;
-corrected to expect the reset hold to keep accumulating normally, which is what the
-MEDIUM-2 fix actually delivers.
+succeededWithWarnings=2 (pre-existing `RacingSim.Race.Track*` tests, unrelated), failed=0,
+notRun=0 — 517 tests total.** One genuine test failure surfaced and was fixed during this
+cycle: `RacingSim.Vehicle.InputStaleSample`'s old assertion expected a still-held reset to
+reset to zero progress across a stale gap — that was asserting the MEDIUM-2 bug's own
+behaviour; corrected to expect the reset hold to keep accumulating normally, which is what
+the MEDIUM-2 fix actually delivers (see the routed-forward obligation above for the trade
+this creates).
+
+**Re-verified again after the pass-2 doc corrections (comment/tooltip fixes, no logic
+change), `reportCreatedOn 2026.08.27-08.17.42`: succeeded=515, failed=0, notRun=0.** Both
+targets independently rebuilt `Result: Succeeded`, 0 `warning|error` matches (`-NoUBA`),
+log paths captured this time: `RacingSimEditor` log at `%TEMP%\veh004_final_editor.log`,
+`RacingSim` log at `%TEMP%\veh004_final_game.log` (transient session temp, not repo-tracked
+— the LOW finding on build-log retention is closed for this cycle's own evidence, not as a
+standing process change).
 
 ---
 

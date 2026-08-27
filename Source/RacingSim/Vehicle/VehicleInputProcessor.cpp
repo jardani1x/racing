@@ -342,9 +342,18 @@ FVehicleInputCommand FVehicleInputProcessor::Tick(
 		// ResetHeldSeconds AND bResetLatched (see ResetState()'s own warning against
 		// exactly this) -- re-arming a second reset one hold-threshold after the
 		// stale gap ends, for a player who never released the key. Leaving the held
-		// flags exactly as received means a genuinely-held key stays held (correct:
-		// no edge, no re-arm) and a genuinely-released key was already false (also
-		// correct) -- there is no case where passing them through is wrong.
+		// flags exactly as received avoids both of those.
+		//
+		// TRADE-OFF, named rather than hidden (re-review, VEH-004 pass 2): passing
+		// bResetHeld through unchanged means ResetHeldSeconds keeps accumulating for
+		// the WHOLE stale gap, and a hold that was still short of the threshold when
+		// the connection died can complete on its own partway through the gap -- a
+		// reset the driver never finished pressing. There is no reset consumer yet
+		// (bResetRequested has no reader until VEH-005), so this is latent, not live.
+		// The correct fix once a consumer exists is almost certainly to FREEZE
+		// ResetHeldSeconds while StaleSample is set (advance neither it nor
+		// bResetLatched) rather than either clearing or passing it through -- routed
+		// forward to VEH-005 in Docs/Tickets.md rather than solved speculatively here.
 
 		// SpeedCms is deliberately NOT neutralised. It is vehicle state pushed by the
 		// pawn, not a device value, and it stays true while the connection is dead.
