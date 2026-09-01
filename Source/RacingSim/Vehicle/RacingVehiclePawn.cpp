@@ -2,20 +2,30 @@
 
 #include "Vehicle/RacingVehiclePawn.h"
 
+#include "Camera/CameraComponent.h"
+#include "CollisionQueryParams.h"
 #include "Components/BoxComponent.h"
 #include "Core/RacingSimLog.h"
 #include "EnhancedInputComponent.h"
+#include "Engine/HitResult.h"
+#include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
-// VEH-004: the project's first Vehicle/ -> Race/ dependency, confined to this .cpp.
+#include "GameFramework/SpringArmComponent.h"
+// VEH-004/VEH-005: the project's Vehicle/ -> Race/ dependencies, confined to this .cpp.
 // The direction is justified in ARacingVehiclePawn::PublishCarSpecVersionTo's header
 // comment -- only the pawn knows whether a tune was APPLIED as opposed to referenced,
-// so a Race-side pull could not be correct.
+// and only the pawn knows where it actually ended up after a reset, so a Race-side pull
+// could not be correct for either.
+#include "Race/RaceLapTracker.h"
 #include "Race/RaceResult.h"
+#include "Race/TrackDefinitionActor.h"
 #include "Vehicle/PrototypeVehicleWheel.h"
+#include "Vehicle/VehicleCameraDataAsset.h"
 #include "Vehicle/VehicleFailureThresholdsDataAsset.h"
 #include "Vehicle/VehicleInputComponent.h"
 #include "Vehicle/VehicleInputConfig.h"
 #include "Vehicle/VehicleInputTypes.h"
+#include "Vehicle/VehicleResetMath.h"
 #include "Vehicle/VehicleTuneDataAsset.h"
 
 ARacingVehiclePawn::ARacingVehiclePawn(const FObjectInitializer& ObjectInitializer)
@@ -56,6 +66,21 @@ ARacingVehiclePawn::ARacingVehiclePawn(const FObjectInitializer& ObjectInitializ
 	// stale command -- not incorrect input, but a possible extra frame of latency
 	// that would vary run to run.
 	AddTickPrerequisiteComponent(VehicleInputComp);
+
+	// VEH-005: same construction-time pattern VEH-002 used for ChassisCollision --
+	// native components, no .uasset, so no license-ledger entry is owed. Root-attached
+	// per the ticket; ApplyCameraSettings (called from BeginPlay) is what actually sets
+	// the rig geometry from CameraAsset, so the literals here only matter before that
+	// first BeginPlay runs (e.g. an editor viewport preview of the placed pawn).
+	CameraBoom = CreateDefaultSubobject<USpringArmComponent>(TEXT("CameraBoom"));
+	CameraBoom->SetupAttachment(RootComponent);
+	CameraBoom->bDoCollisionTest = true;
+	CameraBoom->bUsePawnControlRotation = false;
+	CameraBoom->TargetArmLength = 600.0f;
+
+	FollowCamera = CreateDefaultSubobject<UCameraComponent>(TEXT("FollowCamera"));
+	FollowCamera->SetupAttachment(CameraBoom, USpringArmComponent::SocketName);
+	FollowCamera->bUsePawnControlRotation = false;
 }
 
 void ARacingVehiclePawn::BeginPlay()
@@ -90,6 +115,29 @@ void ARacingVehiclePawn::BeginPlay()
 				*GetNameSafe(this), *Issue.PropertyName.ToString(), *Issue.Message);
 		}
 	}
+
+	// VEH-005: same report-only policy as FailureThresholdsAsset above. A null
+	// CameraAsset is the expected configuration today (no .uasset authored, per
+	// CLAUDE.md) and falls back to FVehicleCameraSettings' own defaults.
+	if (CameraAsset == nullptr)
+	{
+		UE_LOG(LogRacingVehicle, Log,
+			TEXT("ARacingVehiclePawn '%s': no CameraAsset; VEH-005 camera rig uses FVehicleCameraSettings' built-in defaults."),
+			*GetNameSafe(this));
+	}
+	else
+	{
+		const RacingSim::Validation::FRacingValidationResult CameraValidation = CameraAsset->ValidateReadOnly();
+
+		for (const RacingSim::Validation::FRacingValidationIssue& Issue : CameraValidation.Issues)
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s': camera validation issue on '%s': %s"),
+				*GetNameSafe(this), *Issue.PropertyName.ToString(), *Issue.Message);
+		}
+	}
+
+	ApplyCameraSettings();
 }
 
 void ARacingVehiclePawn::ApplyChassisAsset()
@@ -546,7 +594,10 @@ void ARacingVehiclePawn::UnPossessed()
 
 	if (VehicleInputComp != nullptr)
 	{
-		VehicleInputComp->NotifyVehicleReset();
+		// code-reviewer VEH-005 MEDIUM-B: NotifyVehicleReset() preserves held flags for a
+		// future Enhanced Input callback to correct; unpossession has no such callback,
+		// so this uses the unpossession-specific counterpart instead.
+		VehicleInputComp->NotifyUnpossessed();
 	}
 
 	// The telemetry half of the same event. Unpossession is a discontinuity: the next
@@ -576,6 +627,49 @@ FVehicleFailureThresholds ARacingVehiclePawn::ResolveFailureThresholds() const
 	return (FailureThresholdsAsset != nullptr)
 		? FailureThresholdsAsset->GetThresholds()
 		: FVehicleFailureThresholds();
+}
+
+FVehicleCameraSettings ARacingVehiclePawn::ResolveCameraSettings() const
+{
+	// Same null-fallback shape as ResolveFailureThresholds() above, same reason: no
+	// .uasset is authored by this ticket, so a null CameraAsset is the expected
+	// configuration today, not an error.
+	return (CameraAsset != nullptr)
+		? CameraAsset->GetSettings()
+		: FVehicleCameraSettings();
+}
+
+void ARacingVehiclePawn::ApplyCameraSettings()
+{
+	if (CameraBoom == nullptr || FollowCamera == nullptr)
+	{
+		return;
+	}
+
+	const FVehicleCameraSettings Settings = ResolveCameraSettings();
+
+	CameraBoom->TargetArmLength = Settings.ArmLengthCm;
+	CameraBoom->SocketOffset = FVector(Settings.SocketForwardOffsetCm, 0.0, Settings.SocketHeightCm);
+	CameraBoom->SetRelativeRotation(FRotator(Settings.CameraPitchDegrees, 0.0f, 0.0f));
+
+	// 0 disables lag rather than merely slowing it to a crawl -- matches
+	// USpringArmComponent's own documented meaning for CameraLagSpeed/
+	// CameraRotationLagSpeed of 0, so bEnable* here is redundant with the speed being 0
+	// in practice, but explicit rather than relying on that engine behaviour silently.
+	CameraBoom->bEnableCameraLag = Settings.CameraLagSpeed > 0.0f;
+	CameraBoom->CameraLagSpeed = Settings.CameraLagSpeed;
+	CameraBoom->bEnableCameraRotationLag = Settings.CameraRotationLagSpeed > 0.0f;
+	CameraBoom->CameraRotationLagSpeed = Settings.CameraRotationLagSpeed;
+
+	// Base FOV only -- the speed-adjusted boost is re-applied every Tick (see Tick()
+	// below), since it depends on the car's current speed, not just the authored asset.
+	//
+	// code-reviewer VEH-005 MEDIUM-A2 (repair cycle 2 re-review): this is the OTHER
+	// FieldOfView apply site besides Tick's, and it was left unclamped -- reachable
+	// whenever Tick's own clamped assignment never runs (its `!bChassisApplied` early
+	// return, LOW-2's accepted freeze), leaving this raw, editor-only-bounded value on
+	// the camera permanently rather than for one frame. Same runtime safety net as Tick.
+	FollowCamera->FieldOfView = RacingSim::Vehicle::ClampFieldOfViewForApplyDegrees(Settings.BaseFieldOfViewDegrees);
 }
 
 bool ARacingVehiclePawn::HasPublishableCarSpecVersion() const
@@ -614,6 +708,142 @@ bool ARacingVehiclePawn::PublishCarSpecVersionTo(URaceResultRecorder* Recorder)
 	return true;
 }
 
+void ARacingVehiclePawn::ExecuteSafeReset(
+	const ATrackDefinitionActor* Track, URaceLapTracker* LapTracker, const double LastValidProgressDistanceCm)
+{
+	if (!IsValid(Track))
+	{
+		// Documented no-op, not a crash and not a guessed pose: there is nothing to
+		// reset onto without a track. IsValid(), not a raw null check -- Track can be
+		// pending-kill (session restart, level reload) independently of this pawn, per
+		// this class's own header comment on why the pointer is parameter-injected
+		// rather than stored, code-reviewer MEDIUM-4.
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset called with a null/invalid Track; no-op."),
+			*GetNameSafe(this));
+		return;
+	}
+
+	// DELIBERATE SUBSTITUTION, DISCLOSED: the ticket text names
+	// GetResetTransformAtOrBeforeDistanceCm + GetResetSampleDistanceCm as two calls.
+	// GetResetPoseAtOrBeforeDistanceCm (TrackDefinitionActor.h) is that actor's own
+	// documented "prefer this overload at every reset site" -- a single call proven
+	// equivalent to the two-call form, and it is what CenterlineAmbiguity's own tests
+	// exercise. Using it here instead of the literal two-call combination is exactly
+	// the substitution this class's header comment tells code-reviewer to expect.
+	int32 ResetSampleIndex = INDEX_NONE;
+	double ResetSampleDistanceCm = 0.0;
+	const FTransform ResetSeedTransform =
+		Track->GetResetPoseAtOrBeforeDistanceCm(LastValidProgressDistanceCm, ResetSampleIndex, ResetSampleDistanceCm);
+
+	// Same documented no-op as a null Track: an unbuilt/invalid-centerline track (no
+	// reset samples yet) returns the sentinel pair (INDEX_NONE, InvalidDistanceCm) and
+	// FTransform::Identity -- teleporting to that would put the car at world origin and
+	// hand the lap tracker a -1.0 "progress" distance, code-reviewer HIGH-1.
+	if (!RacingSim::Vehicle::IsResetSampleValid(
+			ResetSampleIndex, ResetSampleDistanceCm, ATrackDefinitionActor::InvalidDistanceCm))
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset's track has no valid reset sample (unbuilt or empty ")
+			TEXT("centerline); no-op rather than teleporting to a guessed pose."),
+			*GetNameSafe(this));
+		return;
+	}
+
+	// RACE-002 M3 precondition, CHECKED rather than assumed. GetResetPoseAtOrBeforeDistanceCm
+	// already guarantees this by construction, so this is defence-in-depth against a
+	// future caller's bug (e.g. passing a distance ahead of the car's real last-valid
+	// progress), not a re-implementation of the actor's own guarantee. A failure here is
+	// logged and the reset still proceeds -- the pose came from the actor's own
+	// guaranteed-safe accessor, so this check exists to surface a caller bug, not to
+	// gate the reset on its own output.
+	// Derived from the track's own authored spacing, not a literal -- code-reviewer
+	// MEDIUM-3. RebuildResetSamples can produce an effective step up to
+	// ResetSampleSpacingCm on a track short enough to hit MaxGeneratedSamples, so 2x
+	// stays generous without hard-coding a number that silently drifts from the track.
+	const double MaxBackwardGapCm = FMath::Max(2.0 * Track->ResetSampleSpacingCm, 100.0);
+	if (!RacingSim::Vehicle::IsResetDistanceAtOrBeforeQuery(
+			LastValidProgressDistanceCm, ResetSampleDistanceCm, Track->GetTrackLengthCm(), MaxBackwardGapCm))
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset's resolved reset distance (%f cm) failed the ")
+			TEXT("at-or-before-query defence-in-depth check against the requested distance (%f cm); proceeding ")
+			TEXT("with the track's own returned pose regardless, since GetResetPoseAtOrBeforeDistanceCm is the ")
+			TEXT("authority, not this check."),
+			*GetNameSafe(this), ResetSampleDistanceCm, LastValidProgressDistanceCm);
+	}
+
+	// One-shot ground trace, not per-Tick: corrects height for a crested or banked reset
+	// point rather than blindly trusting the seed's fixed PoseHeightOffsetCm lift.
+	const FVector SeedLocation = ResetSeedTransform.GetLocation();
+	const double GroundClearanceCm = Track->PoseHeightOffsetCm;
+
+	FHitResult Hit;
+	bool bTraceHit = false;
+	double TraceHitZCm = 0.0;
+	if (UWorld* World = GetWorld())
+	{
+		const FVector TraceStart = SeedLocation + FVector(0.0, 0.0, GroundClearanceCm * 2.0);
+		const FVector TraceEnd = SeedLocation - FVector(0.0, 0.0, GroundClearanceCm * 10.0);
+		FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(VehicleSafeResetGroundTrace), /*bTraceComplex=*/false, this);
+		bTraceHit = World->LineTraceSingleByChannel(Hit, TraceStart, TraceEnd, ECC_WorldStatic, QueryParams);
+		TraceHitZCm = Hit.ImpactPoint.Z;
+	}
+
+	if (!bTraceHit)
+	{
+		UE_LOG(LogRacingVehicle, Log,
+			TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset's ground trace found nothing at reset distance %f cm; ")
+			TEXT("falling back to the seed pose's own fixed PoseHeightOffsetCm lift."),
+			*GetNameSafe(this), ResetSampleDistanceCm);
+	}
+
+	FVector ResetLocation = SeedLocation;
+	ResetLocation.Z = RacingSim::Vehicle::ResolveGroundCorrectedResetZCm(SeedLocation.Z, GroundClearanceCm, bTraceHit, TraceHitZCm);
+	const FRotator ResetRotation = ResetSeedTransform.Rotator();
+
+	// Teleport BEFORE ResetVehicle(), so Chaos never sees a one-frame velocity spike
+	// computed from the position jump.
+	SetActorLocationAndRotation(ResetLocation, ResetRotation, /*bSweep=*/false, nullptr, ETeleportType::TeleportPhysics);
+
+	if (VehicleMovementComponent != nullptr)
+	{
+		VehicleMovementComponent->ResetVehicle();
+	}
+
+	if (ChassisCollision != nullptr)
+	{
+		ChassisCollision->SetPhysicsLinearVelocity(FVector::ZeroVector);
+		ChassisCollision->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
+	}
+
+	// VEH-004's own stated obligation for whatever acts on a reset: without this, the
+	// deliberate reposition above is reported as tunnelling rather than the
+	// discontinuity it actually is.
+	NotifyTelemetryDiscontinuity();
+
+	if (VehicleInputComp != nullptr)
+	{
+		// Input-side half of the same discontinuity: drops the rate-limiter/latch state
+		// so a car reset at full lock or full throttle does not resume at full lock or
+		// full throttle on the grid.
+		VehicleInputComp->NotifyVehicleReset();
+	}
+
+	if (IsValid(LapTracker))
+	{
+		// RACE-002's contract: a reset must not itself award progress. Parameter
+		// injection, not a stored pointer -- this pawn never keeps LapTracker beyond
+		// this call, same pattern as PublishCarSpecVersionTo's Recorder above. IsValid(),
+		// not a raw null check, for the same pending-kill reason as Track above.
+		LapTracker->NotifyVehicleReset(ResetLocation, ResetSampleDistanceCm);
+	}
+
+	UE_LOG(LogRacingVehicle, Log,
+		TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset placed the car at distance %f cm (requested %f cm)."),
+		*GetNameSafe(this), ResetSampleDistanceCm, LastValidProgressDistanceCm);
+}
+
 void ARacingVehiclePawn::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
@@ -627,6 +857,26 @@ void ARacingVehiclePawn::Tick(const float DeltaSeconds)
 	// consumes it is read this same frame -- GetForwardSpeed() reflects last frame's
 	// physics step, which is the freshest value available at TG_PrePhysics.
 	VehicleInputComp->SetVehicleSpeedCms(VehicleMovementComponent->GetForwardSpeed());
+
+	// VEH-005: FOV is the one camera property that is speed-DEPENDENT rather than a
+	// fixed rig setting, so unlike ApplyCameraSettings() (BeginPlay, once) this reruns
+	// every Tick. ResolveCameraSettings() is a small POD copy, not an allocation or a
+	// search, so this is within the module's no-per-frame-allocation rule.
+	if (FollowCamera != nullptr)
+	{
+		const FVehicleCameraSettings CameraSettings = ResolveCameraSettings();
+		const float UnclampedFovDegrees = RacingSim::Vehicle::ComputeSpeedAdjustedFieldOfViewDegrees(
+			CameraSettings.BaseFieldOfViewDegrees,
+			CameraSettings.MaxFieldOfViewBoostDegrees,
+			VehicleMovementComponent->GetForwardSpeed(),
+			CameraSettings.SpeedForMaxFovBoostCms);
+
+		// code-reviewer VEH-005 MEDIUM-A: UCameraComponent::FieldOfView has no enforcing
+		// runtime ceiling of its own (its [5, 170] is UIMin/UIMax, editor-only) -- this is
+		// the actual safety net against a misauthored base+boost sum producing a
+		// degenerate, negative-tangent projection matrix.
+		FollowCamera->FieldOfView = RacingSim::Vehicle::ClampFieldOfViewForApplyDegrees(UnclampedFovDegrees);
+	}
 
 	const FVehicleInputCommand Command = VehicleInputComp->GetCommand();
 
@@ -747,14 +997,15 @@ FVehicleChaosInput ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputComm
 	VehicleMovementComponent->SetChangeUpInput(ChaosInput.bChangeUp);
 	VehicleMovementComponent->SetChangeDownInput(ChaosInput.bChangeDown);
 
-	// Reset is VEH-005's scope (the reset POSE); this pawn deliberately does not act
-	// on Command.bResetRequested. VEH-001's input-side reset (NotifyVehicleReset)
-	// only clears input smoothing state, and is called from UnPossessed/an external
-	// reset trigger, not from a one-shot flag read every Tick.
-	//
-	// VEH-004 NOTE FOR VEH-005: whatever acts on bResetRequested must also call
-	// NotifyTelemetryDiscontinuity(), or the deliberate reposition will be detected and
-	// reported as tunnelling. That is the detector working correctly on the wrong
-	// event, and it is the one integration obligation this ticket hands forward.
+	// Reset is VEH-005's scope (the reset POSE), delivered as the public
+	// ExecuteSafeReset(Track, LapTracker, LastValidProgressDistanceCm) below -- but this
+	// pawn still deliberately does not act on Command.bResetRequested itself. Wiring the
+	// one-shot flag to a call needs a Track and a race-progress distance neither this
+	// pawn nor VehicleInputComp owns; a future GameMode/RaceDirector ticket is the
+	// intended caller, per VEH-005's own acceptance criteria. VEH-001's input-side reset
+	// (NotifyVehicleReset) only clears input smoothing state and is called from
+	// UnPossessed today; ExecuteSafeReset calls it too, alongside
+	// NotifyTelemetryDiscontinuity(), so both halves of a wired reset are already
+	// covered once that future caller exists.
 	return ChaosInput;
 }

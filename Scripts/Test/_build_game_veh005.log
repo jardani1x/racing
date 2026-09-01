@@ -1,0 +1,37 @@
+﻿Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" RacingSim Win64 Development "-project=C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" -waitmutex -NoUBA
+Log file: C:\Users\jun yi\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (14 physical cores, 18 logical cores)
+  Executing up to 14 processes, one per physical core
+  Requested 1.5 GB memory per action, 160.77 MB available: limiting max parallel actions to 1
+Using 'git status' to determine working set for adaptive non-unity build (C:\Users\jun yi\Documents\central-command\racing).
+UbaSessionServer - Disable remote execution (remote sessions will finish current processes)
+Invalidating makefile for RacingSim (source file added)
+UHT compiled-in object format Default
+UHT processed RacingSim in 13.4610146 seconds (44 generated files written)
+Building RacingSim...
+===== Toolchain Information =====
+Using ISPC compiler (C:\Program Files\Epic Games\UE_5.8\Engine\Source\ThirdParty\Intel\ISPC\bin\Windows\ispc.exe)
+  Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build commit  @ 20250404, LLVM 18.1.2) 
+Using Visual Studio 14.44.35222 toolchain (C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207) and Windows 10.0.26100.0 SDK (C:\Program Files (x86)\Windows Kits\10).
+[Adaptive Build] Excluded from RacingSim unity file: RacingVehiclePawn.cpp, VehicleCameraDataAsset.cpp, VehicleCameraMath.cpp, VehicleInputProcessor.cpp, VehicleResetMath.cpp
+=================================
+Using Unreal Build Accelerator local executor to run 8 action(s)
+  CPU 14 physical cores, 18 logical cores
+  Memory 15.7 GB physical, 40.63 GB/62.54 GB committed
+  UBA Storage capacity 40 GB
+[1/8] Compile [x64] Module.RacingSim.cpp [NoUba]
+[2/8] Compile [x64] RacingVehiclePawn.cpp [NoUba]
+[3/8] Compile [x64] VehicleCameraDataAsset.cpp [NoUba]
+[4/8] Compile [x64] VehicleCameraMath.cpp [NoUba]
+[5/8] Compile [x64] VehicleInputProcessor.cpp [NoUba]
+[6/8] Compile [x64] VehicleResetMath.cpp [NoUba]
+[7/8] Link [x64] RacingSim.exe [NoUba]
+[8/8] WriteMetadata RacingSim.target [NoUba]
+
+Total time in Unreal Build Accelerator local executor: 272.32 seconds
+Output binary: C:\Users\jun yi\Documents\central-command\racing\Binaries\Win64\RacingSim.exe
+
+Result: Succeeded
+Total execution time: 292.62 seconds
+Trace written to file C:\Users\jun yi\AppData\Local\UnrealBuildTool\Trace.uba with size 27.4kb

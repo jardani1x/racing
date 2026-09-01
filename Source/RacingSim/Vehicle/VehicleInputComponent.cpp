@@ -274,15 +274,43 @@ void UVehicleInputComponent::NotifyVehicleReset()
 {
 	Processor.ResetState();
 
-	// The buffered axis values are cleared too, and this is not redundant with
+	// The buffered AXIS values are cleared, and this is not redundant with
 	// ResetState. PendingSample holds the last value Enhanced Input reported; after a
 	// reset, the very next Tick would otherwise feed the pre-reset throttle straight
 	// back into a freshly cleared rate limiter, undoing the clear within one frame.
 	//
-	// The button HELD flags are cleared here where the processor deliberately keeps
-	// them, and that is safe for the opposite reason: Enhanced Input re-reports a
-	// still-held key on the next Triggered callback, so a genuinely held button
-	// restores itself immediately, whereas the processor has no such source of truth.
+	// The button HELD flags are PRESERVED here -- corrected on code review (VEH-005
+	// MEDIUM-1). They used to be cleared on the theory that Enhanced Input re-reports a
+	// still-held key before this component's own next TickComponent runs, but nothing
+	// enforces that ordering: Enhanced Input's Triggered callback and this component's
+	// TG_PrePhysics tick have no declared prerequisite between them. If TickComponent
+	// ran first, a genuinely still-held reset key would read as bResetHeld == false for
+	// one frame, which drives the processor's "released" branch and clears BOTH
+	// ResetHeldSeconds and bResetLatched -- exactly the re-arm ResetState()'s own
+	// comment says must never happen (it lets a continued hold fire a second reset one
+	// HoldThreshold later, repeating forever). Preserving the held flags here, the same
+	// way ResetState() preserves the processor's own latch, closes that race instead of
+	// depending on tick order to avoid it.
+	const bool bShiftUpHeld = PendingSample.bShiftUpHeld;
+	const bool bShiftDownHeld = PendingSample.bShiftDownHeld;
+	const bool bResetHeld = PendingSample.bResetHeld;
+	const float SpeedCms = PendingSample.SpeedCms;
+
+	PendingSample = FVehicleInputRawSample();
+
+	PendingSample.bShiftUpHeld = bShiftUpHeld;
+	PendingSample.bShiftDownHeld = bShiftDownHeld;
+	PendingSample.bResetHeld = bResetHeld;
+	PendingSample.SpeedCms = SpeedCms;
+}
+
+void UVehicleInputComponent::NotifyUnpossessed()
+{
+	Processor.ResetState();
+
+	// Unlike NotifyVehicleReset(), the held flags are NOT preserved -- see this
+	// function's header comment (VEH-005 MEDIUM-B). Unbinding the input actions means
+	// no future Enhanced Input callback will ever correct a stale true here.
 	PendingSample = FVehicleInputRawSample();
 }
 

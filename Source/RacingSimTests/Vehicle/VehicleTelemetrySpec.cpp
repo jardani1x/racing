@@ -433,24 +433,29 @@ bool FRacingSimVehicleInputStaleSampleTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("...throttle is neutralised"), Stale.Throttle, 0.0f);
 		TestEqual(TEXT("...steering is neutralised"), Stale.Steer, 0.0f);
 		TestEqual(TEXT("...brake stays zero rather than being slammed on"), Stale.Brake, 0.0f);
-		// A stale "shift up held" must not fire a phantom edge, and the still-held reset
-		// continues accumulating exactly as it would if the connection had never
-		// dropped -- corrected on code review (VEH-004 MEDIUM-2). The held flags are no
+		// A stale "shift up held" must not fire a phantom edge. The held flags are no
 		// longer force-cleared during a stale gap (see the processor's own comment on
 		// why clearing them was backwards: it force-cleared bResetLatched too, which
 		// would have RE-ARMED a second reset for a player who never released the key).
 		// No edge fires here because bShiftUpHeld was already true on the previous
 		// (not-yet-stale) tick, so the rising-edge detector correctly sees no change --
 		// the same reason a key held continuously across an ordinary frame never
-		// double-fires. Two Tick() calls at the default 0.5 s ResetHoldSeconds
-		// accumulate 2*(1/60)/0.5 = ~0.0667 of progress, same as if the gap had not
-		// happened at all.
+		// double-fires.
+		//
+		// The still-held reset, however, does NOT keep accumulating through the stale
+		// gap -- RESOLVED by VEH-005 (see VehicleInputProcessor.cpp's own TRADE-OFF
+		// comment). Letting ResetHeldSeconds accumulate unattended during a dead
+		// connection would let a hold that was still short of the threshold complete on
+		// its own mid-outage, resetting the car for a driver who never finished
+		// pressing. So only the one Fresh (not-yet-stale) tick above contributes:
+		// 1*(1/60)/0.5, not the two ticks a naive "ignore staleness" implementation
+		// would have accumulated.
 		TestEqual(TEXT("...no phantom gear request is produced"),
 			Stale.GearRequest, EVehicleGearRequest::None);
 		TestFalse(TEXT("...and no reset FIRES yet (progress is below the hold threshold)"),
 			Stale.bResetRequested);
-		TestTrue(TEXT("...and the still-held reset keeps accumulating normally, unaffected by the stale gap"),
-			FMath::IsNearlyEqual(Stale.ResetHoldProgress, 2.0f * (1.0f / 60.0f) / 0.5f, 1.0e-4f));
+		TestTrue(TEXT("...and the still-held reset FREEZES during the stale gap, not accumulating further"),
+			FMath::IsNearlyEqual(Stale.ResetHoldProgress, 1.0f * (1.0f / 60.0f) / 0.5f, 1.0e-4f));
 
 		// The output guarantee still holds under the neutralisation path.
 		TestTrue(TEXT("A neutralised command is still finite and in range"),

@@ -1,0 +1,16 @@
+﻿Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" RacingSim Win64 Development "-project=C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" -waitmutex
+Log file: C:\Users\jun yi\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (14 physical cores, 18 logical cores)
+  Executing up to 14 processes, one per physical core
+  Requested 1.5 GB memory per action, 803.83 MB available: limiting max parallel actions to 1
+Using 'git status' to determine working set for adaptive non-unity build (C:\Users\jun yi\Documents\central-command\racing).
+UbaServer - Listening on 0.0.0.0:1345
+Target is up to date
+Using Unreal Build Accelerator local executor to run 0 action(s)
+Total time in Unreal Build Accelerator local executor: 0.60 seconds
+Output binary: C:\Users\jun yi\Documents\central-command\racing\Binaries\Win64\RacingSim.exe
+
+Result: Succeeded
+Total execution time: 2.98 seconds
+Trace written to file C:\Users\jun yi\AppData\Local\UnrealBuildTool\Trace.uba with size 2.8kb

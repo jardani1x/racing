@@ -6,14 +6,20 @@
 #include "CoreMinimal.h"
 #include "Core/RacingSimTypes.h"
 #include "GameFramework/Pawn.h"
+#include "Vehicle/VehicleCameraMath.h"
 #include "Vehicle/VehicleChaosInputMapping.h"
 #include "Vehicle/VehicleChassisDataAsset.h"
 #include "Vehicle/VehicleFailureDetection.h"
 #include "Vehicle/VehicleTelemetryTypes.h"
 #include "RacingVehiclePawn.generated.h"
 
+class ATrackDefinitionActor;
 class UBoxComponent;
+class UCameraComponent;
+class URaceLapTracker;
 class URaceResultRecorder;
+class USpringArmComponent;
+class UVehicleCameraDataAsset;
 class UVehicleFailureThresholdsDataAsset;
 class UVehicleInputComponent;
 class UVehicleTuneDataAsset;
@@ -89,6 +95,15 @@ public:
 	 */
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle|Telemetry")
 	TObjectPtr<UVehicleFailureThresholdsDataAsset> FailureThresholdsAsset;
+
+	/**
+	 * VEH-005 camera tunables. Null is legal and uses FVehicleCameraSettings' own
+	 * defaults, reported ONCE at BeginPlay -- the same fallback VEH-004 established for
+	 * a null FailureThresholdsAsset. No .uasset is authored by this ticket (CLAUDE.md's
+	 * binary-asset rule), so null is the expected configuration today.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle|Camera")
+	TObjectPtr<UVehicleCameraDataAsset> CameraAsset;
 
 	/**
 	 * Telemetry capture rate, HERTZ. 0 disables capture entirely.
@@ -222,6 +237,65 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Vehicle|Telemetry")
 	bool PublishCarSpecVersionTo(URaceResultRecorder* Recorder);
 
+	// =======================================================================
+	// VEH-005 -- safe reset
+	// =======================================================================
+
+	/**
+	 * Teleport this car back onto the track at or before its last valid progress, per
+	 * `Docs/02-VehiclePhysics.md` item 12 ("reset/recovery that preserves race validity
+	 * rules") and Gate B's "reset cannot award progress" rule.
+	 *
+	 * ---------------------------------------------------------------------
+	 * PARAMETER INJECTION, NOT A STORED REFERENCE -- same shape as
+	 * PublishCarSpecVersionTo(URaceResultRecorder*).
+	 * ---------------------------------------------------------------------
+	 *
+	 * Vehicle must not hold a persistent pointer to a placed Race actor: a track or a
+	 * lap tracker can be destroyed and recreated (session restart, level reload)
+	 * independently of this pawn, and a pawn that cached one would either dangle or
+	 * silently keep resetting onto a stale track. Both Track and LapTracker are
+	 * forward-declared here and their real headers are included only in this class's
+	 * .cpp, exactly as PublishCarSpecVersionTo confines its Race/ include.
+	 *
+	 * THIS PAWN DOES NOT CALL THIS METHOD ITSELF. Nothing in ApplyInputCommand invokes
+	 * it when Command.bResetRequested is set -- per this ticket's acceptance criteria,
+	 * a race-context owner (a GameMode/RaceDirector, which does not exist as a ticket
+	 * yet) is the intended caller, because only that owner knows the current
+	 * LastValidProgressDistanceCm and which LapTracker/Track are live. Wiring an
+	 * internal call here would mean guessing at both.
+	 *
+	 * ---------------------------------------------------------------------
+	 * Precondition this method trusts, and does not re-derive
+	 * ---------------------------------------------------------------------
+	 *
+	 * RACE-002 `M3`: the caller's LastValidProgressDistanceCm must genuinely be the
+	 * car's last-valid progress, not a distance ahead of it. This method sources the
+	 * reset pose from ATrackDefinitionActor::GetResetPoseAtOrBeforeDistanceCm, which is
+	 * ALREADY GUARANTEED, by construction and by TrackDefinitionActorSpec.cpp's own
+	 * exhaustive tests, to return a distance at or before its input. If a future caller
+	 * passes a distance ahead of the car's real last-valid progress, that is the
+	 * caller's bug, not this method's -- this method adds a defence-in-depth check
+	 * (RacingSim::Vehicle::IsResetDistanceAtOrBeforeQuery) that logs, rather than
+	 * silently accepting, a returned distance that fails the bounded at-or-before test
+	 * against the queried distance.
+	 *
+	 * RACE-002 `L1` (FindFirstGateCrossing vs EvaluateCrossings): N/A, verified -- this
+	 * reset path reads track arc-length distance only and never touches checkpoint
+	 * gate-crossing order.
+	 *
+	 * @param Track                        the track to reset onto. Null is a documented
+	 *                                     no-op (nothing to reset onto), not a crash and
+	 *                                     not a guessed pose.
+	 * @param LapTracker                   notified of the reset when non-null, so
+	 *                                     RACE-002's "reset cannot award progress"
+	 *                                     mechanism actually runs.
+	 * @param LastValidProgressDistanceCm  the car's own last-valid arc-length progress,
+	 *                                     CENTIMETRES. See the precondition above.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Vehicle")
+	void ExecuteSafeReset(const ATrackDefinitionActor* Track, URaceLapTracker* LapTracker, double LastValidProgressDistanceCm);
+
 protected:
 	virtual void BeginPlay() override;
 
@@ -236,6 +310,20 @@ private:
 	/** VEH-001's input contract. Owned here rather than by the controller so a spectated or AI-driven pawn still has one. */
 	UPROPERTY(VisibleAnywhere, Category = "Vehicle")
 	TObjectPtr<UVehicleInputComponent> VehicleInputComp;
+
+	/** VEH-005 camera hook. Root-attached, collision test enabled. VisibleAnywhere so a Blueprint child can retarget or extend it. */
+	UPROPERTY(VisibleAnywhere, Category = "Vehicle|Camera")
+	TObjectPtr<USpringArmComponent> CameraBoom;
+
+	/** VEH-005 camera hook. Child of CameraBoom. VisibleAnywhere so a Blueprint child can retarget or extend it. */
+	UPROPERTY(VisibleAnywhere, Category = "Vehicle|Camera")
+	TObjectPtr<UCameraComponent> FollowCamera;
+
+	/** Settings from CameraAsset, or FVehicleCameraSettings' own defaults when it is null. Mirrors ResolveFailureThresholds. */
+	FVehicleCameraSettings ResolveCameraSettings() const;
+
+	/** Applies ResolveCameraSettings() to CameraBoom/FollowCamera. Called once, from BeginPlay. */
+	void ApplyCameraSettings();
 
 	/**
 	 * Builds WheelSetups and Mass/aerodynamics from ChassisAsset, and sets the Chaos

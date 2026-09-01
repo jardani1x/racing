@@ -704,6 +704,118 @@ bool FRacingSimVehicleInputResetTest::RunTest(const FString& Parameters)
 }
 
 // ---------------------------------------------------------------------------
+// Reset hold, frozen across a stale-connection gap (VEH-005)
+// ---------------------------------------------------------------------------
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRacingSimVehicleInputResetStaleFreezeTest,
+	"RacingSim.Vehicle.InputResetStaleFreeze",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRacingSimVehicleInputResetStaleFreezeTest::RunTest(const FString& Parameters)
+{
+	// Resolves the TRADE-OFF VEH-004 pass 2 named and deferred to this ticket
+	// (VehicleInputProcessor.cpp's ProcessSample stale-handling block): a reset key
+	// that is still genuinely held stays a latched demand and is NOT neutralised
+	// during a stale gap, so ResetHeldSeconds must not complete a hold purely because
+	// the connection died mid-press -- no consumer ever observed the hold in progress.
+	// ResetHeldSeconds/bResetLatched must FREEZE for the whole gap, not accumulate and
+	// not clear.
+
+	constexpr float HoldSeconds = 0.5f;
+	constexpr float StaleAfterSeconds = 0.1f;
+
+	FVehicleInputProfile Profile = MakeNeutralProfile();
+	Profile.ResetHoldSeconds = HoldSeconds;
+
+	FVehicleInputProcessor Processor;
+	Processor.Configure(Profile, ERacingInputDeviceType::Keyboard, ETransmissionInputMode::Automatic,
+		/*MaxDeltaSeconds=*/1.0f, /*InputStaleAfterSeconds=*/StaleAfterSeconds);
+
+	// -- Prime a partial hold on a fresh, correctly-stamped sample -----------
+	FVehicleInputRawSample Held;
+	Held.bResetHeld = true;
+	Held.SampleTimestampSeconds = 1.0;
+
+	// 0.3 s of 0.5 s needed -- short of the threshold, but a non-trivial amount of
+	// progress to prove frozen later, rather than merely proving "stayed at zero".
+	const FVehicleInputCommand Primed = Processor.Tick(Held, 0.3, 1.0);
+	TestTrue(TEXT("Precondition: the primed hold is short of the threshold"), !Primed.bResetRequested);
+	TestTrue(TEXT("Precondition: the primed sample is not stale"), !Primed.HasCorrection(EVehicleInputCorrection::StaleSample));
+	TestTrue(TEXT("Precondition: some hold progress was made"), Primed.ResetHoldProgress > 0.0f);
+
+	// -- Go stale: the device stamp stops advancing even though wall time does, while
+	// the key is still (as far as the last real sample showed) held down ------------
+	FVehicleInputRawSample Stale = Held;
+	// Stale.SampleTimestampSeconds stays fixed at 1.0 -- the dead connection's last
+	// known stamp -- for the whole block below.
+
+	double Elapsed = 1.2; // already past the 0.1 s staleness threshold relative to the frozen stamp.
+	FVehicleInputCommand LastStaleCommand = Processor.Tick(Stale, 0.2, Elapsed);
+
+	for (int32 Index = 0; Index < 20; ++Index)
+	{
+		TestTrue(*FString::Printf(TEXT("Stale tick %d is reported as StaleSample"), Index),
+			LastStaleCommand.HasCorrection(EVehicleInputCorrection::StaleSample));
+		TestTrue(*FString::Printf(TEXT("Stale tick %d must not request a reset"), Index),
+			!LastStaleCommand.bResetRequested);
+
+		Elapsed += 0.05;
+		LastStaleCommand = Processor.Tick(Stale, 0.05, Elapsed);
+	}
+
+	// Well over a full second of "held" wall time has now passed since priming --
+	// easily enough to complete the remaining 0.2 s of hold if the accumulator were
+	// not frozen. FROZEN means unchanged, not merely "did not fire": progress must sit
+	// exactly where the primed tick left it.
+	TestNearlyEqual(TEXT("Hold progress is frozen at its pre-stale value throughout the gap"),
+		LastStaleCommand.ResetHoldProgress, Primed.ResetHoldProgress, 1.0e-6f);
+
+	// -- Fresh samples resume: the hold must still need its REMAINING time, not fire
+	// immediately from an accumulator that secretly kept advancing during the gap ----
+	const double FreshStartElapsed = Elapsed;
+	FVehicleInputRawSample Fresh = Held;
+
+	int32 RequestCount = 0;
+	double FiredAt = -1.0;
+	for (int32 Index = 0; Index < 40; ++Index)
+	{
+		Elapsed += 0.016;
+		Fresh.SampleTimestampSeconds = Elapsed; // connection resumed: stamp tracks wall time again.
+
+		const FVehicleInputCommand Command = Processor.Tick(Fresh, 0.016, Elapsed);
+		TestFalse(*FString::Printf(TEXT("Resumed tick %d is not reported as stale"), Index),
+			Command.HasCorrection(EVehicleInputCorrection::StaleSample));
+
+		if (Command.bResetRequested)
+		{
+			++RequestCount;
+			if (FiredAt < 0.0)
+			{
+				FiredAt = Elapsed;
+			}
+		}
+	}
+
+	TestEqual(TEXT("Exactly one reset fires once fresh samples resume"), RequestCount, 1);
+
+	// The remaining hold needed is HoldSeconds - 0.3 == 0.2 s. Asserting THIS bound,
+	// not merely "eventually fired", is what catches a freeze that silently degraded
+	// back into accumulate-through-stale: that bug would fire on the very first
+	// resumed tick instead.
+	const double AdditionalHoldNeeded = FiredAt - FreshStartElapsed;
+	const double ExpectedRemainingHold = HoldSeconds - 0.3;
+	TestTrue(
+		*FString::Printf(TEXT("The reset needed its remaining ~%.2f s of hold after resuming, not zero (got %.3f s)"),
+			ExpectedRemainingHold, AdditionalHoldNeeded),
+		AdditionalHoldNeeded >= ExpectedRemainingHold - 0.05 && AdditionalHoldNeeded <= ExpectedRemainingHold + 0.05);
+
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // Gear requests, pedal conflict, device profiles
 // ---------------------------------------------------------------------------
 

@@ -344,16 +344,14 @@ FVehicleInputCommand FVehicleInputProcessor::Tick(
 		// stale gap ends, for a player who never released the key. Leaving the held
 		// flags exactly as received avoids both of those.
 		//
-		// TRADE-OFF, named rather than hidden (re-review, VEH-004 pass 2): passing
-		// bResetHeld through unchanged means ResetHeldSeconds keeps accumulating for
-		// the WHOLE stale gap, and a hold that was still short of the threshold when
-		// the connection died can complete on its own partway through the gap -- a
-		// reset the driver never finished pressing. There is no reset consumer yet
-		// (bResetRequested has no reader until VEH-005), so this is latent, not live.
-		// The correct fix once a consumer exists is almost certainly to FREEZE
-		// ResetHeldSeconds while StaleSample is set (advance neither it nor
-		// bResetLatched) rather than either clearing or passing it through -- routed
-		// forward to VEH-005 in Docs/Tickets.md rather than solved speculatively here.
+		// TRADE-OFF, named rather than hidden (re-review, VEH-004 pass 2), RESOLVED by
+		// VEH-005: passing bResetHeld through unchanged here means ResetHeldSeconds
+		// would otherwise keep accumulating for the whole stale gap, letting a hold
+		// that was still short of the threshold complete on its own mid-outage -- a
+		// reset the driver never finished pressing. The reset-hold block below now
+		// FREEZES ResetHeldSeconds and bResetLatched while EVehicleInputCorrection::
+		// StaleSample is set (advances neither), rather than clearing or passing them
+		// through, so a hold must still be completed once fresh samples resume.
 
 		// SpeedCms is deliberately NOT neutralised. It is vehicle state pushed by the
 		// pawn, not a device value, and it stays true while the connection is dead.
@@ -496,7 +494,22 @@ FVehicleInputCommand FVehicleInputProcessor::Tick(
 	// first frame the key is touched -- exactly the accident the hold prevents.
 	const float HoldThreshold = FMath::Clamp(Profile.ResetHoldSeconds, 0.05f, 10.0f);
 
-	if (Raw.bResetHeld)
+	// VEH-005: resolves the TRADE-OFF this function's stale-handling block names above
+	// (VEH-004 pass 2) rather than leaving it latent. FROZEN, not accumulated and not
+	// cleared, while the sample is stale: Raw.bResetHeld passes through unmodified
+	// during a stale gap (see that block's own reasoning), so accumulating against it
+	// here would let a hold COMPLETE mid-outage with no consumer having observed the
+	// hold in progress -- a reset the driver only half-pressed before the connection
+	// dropped. Freezing means a hold must still be completed once fresh samples resume,
+	// exactly matching what a player watching their own input would expect.
+	const bool bStaleSample = (Corrections & static_cast<uint8>(EVehicleInputCorrection::StaleSample)) != 0;
+
+	if (bStaleSample)
+	{
+		// Neither branch below runs: ResetHeldSeconds and bResetLatched hold whatever
+		// they were the instant the sample went stale.
+	}
+	else if (Raw.bResetHeld)
 	{
 		if (!bResetLatched)
 		{

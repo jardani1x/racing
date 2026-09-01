@@ -187,6 +187,29 @@ public:
 	void NotifyVehicleReset();
 
 	/**
+	 * Drop ALL input state, including the button HELD flags, on unpossession.
+	 *
+	 * Added on code review (VEH-005 MEDIUM-B): NotifyVehicleReset() deliberately
+	 * PRESERVES bShiftUpHeld/bShiftDownHeld/bResetHeld across the call (see its own
+	 * comment) because a still-held key's next Enhanced Input Triggered/Completed
+	 * callback is what eventually corrects the flag. UnPossessed() has no such future
+	 * callback -- unbinding the input component's actions means a key released after
+	 * unpossession, or the pawn later being re-possessed by a different controller,
+	 * never fires the event that would clear a stale true. Calling
+	 * NotifyVehicleReset() from UnPossessed() would therefore leave a phantom
+	 * "held" reset/shift flag latched with nothing left to unlatch it. This function
+	 * is the unpossession-specific counterpart: same smoothing-state clear as
+	 * NotifyVehicleReset(), but PendingSample is fully reset (FVehicleInputRawSample())
+	 * rather than reconstructed field-by-field -- so unlike NotifyVehicleReset(), the
+	 * held flags AND SpeedCms are both dropped, not preserved. Corrected on code review
+	 * (VEH-005 LOW-4, repair cycle 2 re-review): SpeedCms is set fresh next Tick by
+	 * whatever repossesses the pawn regardless, so dropping it here is harmless, but the
+	 * comment previously undersold what actually gets cleared.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Vehicle|Input")
+	void NotifyUnpossessed();
+
+	/**
 	 * Feed the vehicle's forward speed for speed-sensitive steering.
 	 *
 	 * CENTIMETRES PER SECOND, signed, the project storage unit per

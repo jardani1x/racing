@@ -1086,7 +1086,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-002 | Prototype chassis/wheels/collision, Chaos baseline | vehicle-physics-engineer | VEH-001 | C | **DONE** 2026-08-25 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: input never bound so the car could never actually be driven; drivetrain layout silently inert because `AxleType` was never set on the wheel classes — plus 5 MEDIUM); repair cycle 1 closed both HIGH and all 5 MEDIUM (tick-prerequisite ordering, `MaxSteerAngleDegrees` cross-validation, transmission-mode agreement check, idempotency guard, corrected a false VEH-001-findings-closure claim, and fixed a genuine Unity-Build duplicate-symbol collision surfaced by the rebuild); re-review returned APPROVED WITH FOLLOW-UPS, with one doc-wording overstatement corrected (the tick-ordering fix only closes half the claimed guarantee). `test-engineer` independently confirmed both targets build clean (0 warnings, verified via captured build logs and per-file `.sarif` diagnostics) and Smoke `succeeded=500, failed=0, notRun=0`, all five new `RacingSim.Vehicle.*` tests `Success` including the two that gained repair-cycle assertions. Merged to `main`. Two acceptance criteria (VEH-001 MEDIUM-4 stuck-input timeout; telemetry snapshot) explicitly left unclosed and routed forward to `VEH-004` rather than faked |
 | VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | **DONE** 2026-08-26 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: torque-curve peak formula wrong given Chaos's internal re-normalisation; an unvalidated/unusable torque curve reaching the physics solver — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and all MEDIUM, but re-review found HIGH-1's fix still order-dependent (`FMath::Max(finite, NaN)` returns the finite operand) and one MEDIUM fix targeted the wrong Chaos field (`bUseAutoReverse` vs. the actually-read `bReverseAsBrake`); repair cycle 2 closed both for real, independently re-verified against engine source (`ChaosWheeledVehicleMovementComponent.h`/`.cpp`, `ChaosVehicleMovementComponent.cpp`). Final re-review: APPROVED WITH FOLLOW-UPS — both build logs inspected directly (`Result: Succeeded`, 0 real warnings, both targets). `test-engineer` gate folded into the orchestrating session's own build/Smoke verification at each cycle: Smoke `succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all five new `RacingSim.Vehicle.Tune*` tests `Success`. Merged to `main`. Two items (an identical divide-by-peak hazard on the steering curve, `bUseAutoReverse` ownership) routed forward to `VEH-004`, the first ticket to author a tune content asset |
 | VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002, VEH-003 | C | **DONE** 2026-08-27 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: a stale-input detector that cried wolf on ordinary idle coasting; a refused tune write that could still stamp a race result with a car-spec version — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and 3 MEDIUM; re-review returned APPROVED WITH FOLLOW-UPS with 5 doc/comment corrections applied in a follow-up pass (no logic change) rather than a second repair cycle. Both targets build clean (0 warnings, `-NoUBA`) and Smoke `succeeded=515, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, 10 new `RacingSim.Vehicle.*` tests `Success`. Merged to `main`. Two items routed forward to `VEH-005` (a `NotifyTelemetryDiscontinuity()` call obligation, and a reset-accumulation-during-stale-gap trade to resolve); the standing pawn-adapter test-coverage gap (shared with VEH-002/VEH-003) is acknowledged, not solved |
-| VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | OPEN |
+| VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | **Merged, gates deferred to VEH-006** 2026-09-01 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: an unguarded invalid/sentinel reset pose; a camera range table with no `EnforceRanges` pin against its own `UPROPERTY` metadata — plus 5 MEDIUM, 5 LOW); repair cycle 1 closed both HIGH and all MEDIUM/LOW. Re-review (pass 2) opened 4 new MEDIUM against repair cycle 1's own fixes (an unenforced camera-FOV runtime ceiling; a reset-flag preservation fix that was correct for in-possession resets but wrong for unpossession; a missing findings-disposition table; stale build-evidence citations); repair cycle 2 closed all four. A third diff-only re-review (pass 3) surfaced one more MEDIUM (a second, still-unclamped FOV apply site the pass-2 fix missed) and 4 LOW (doc/citation nits); repair cycle 3 closed all five and was independently re-verified by the reviewer against actual UE 5.8 engine source, direct log/`index.json` inspection, and log diffing — final verdict **APPROVED**. `test-engineer` independently forced a from-scratch recompile of both targets (deleted the `Intermediate/` build cache first, since the ticket's own logs already post-dated every source edit) — both `Result: Succeeded`, zero warnings — and Smoke `succeeded=519, succeededWithWarnings=2 (pre-existing TRACK-001/002 tests, unrelated), failed=0, notRun=0`, with `RacingSim.Vehicle.CameraMath`/`CameraDataAsset`/`ResetMath` all `Success`; independently read all three new spec files and traced `ExecuteSafeReset` against every acceptance-criteria bullet. Deviation from bare `DONE`: this ticket's own Gate B/C manoeuvre proof needs a live actor/world that `SmokeFilter` cannot construct, so the status here reads "merged, gates deferred to VEH-006" rather than `DONE` — see the deviation record (owner, trigger, and permanence) in the VEH-005 orchestrator note. Non-blocking findings and the deferred manoeuvre test routed forward to `VEH-006` |
 | VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | OPEN |
 
 Chaos Vehicles is mandatory (hard constraint #2). No Unity-style WheelCollider
@@ -2047,9 +2047,294 @@ log paths captured this time: `RacingSimEditor` log at `%TEMP%\veh004_final_edit
 — the LOW finding on build-log retention is closed for this cycle's own evidence, not as a
 standing process change).
 
----
+### VEH-005 — acceptance criteria, opened 2026-08-28
 
-## Epic 3 — track and race
+Scope per the Epic 2 row: `Camera and safe reset`. Owner `vehicle-physics-engineer`. Gate
+B, C. Depends on `VEH-002` (**DONE**, merged) and — although the row does not name them —
+`VEH-001`/`VEH-004` (both **DONE**, merged), because this ticket is the first real consumer
+of `FVehicleInputCommand::bResetRequested` and inherits two open obligations from VEH-004.
+Unblocked.
+
+`Docs/01-Architecture.md`'s module boundary line names this ticket's split explicitly:
+*"Vehicle: vehicle pawn, input, tune data, physics, assists, **camera hooks**,
+telemetry."* The same document's C++-vs-Blueprint rule — *"Use Blueprint for vehicle
+assembly, **camera rigs**, VFX, audio routing..."* — means this ticket owns the native
+*hook* (a discoverable, tunable camera mount on the pawn), not a finished cinematic rig;
+a later content ticket may attach a Blueprint rig to it without a pawn API change. Keep
+the Phase 1 camera simple and stable, per `Docs/02-VehiclePhysics.md`'s "keep the first
+tune simple" guidance — this is not a visual-polish ticket.
+
+`Docs/02-VehiclePhysics.md` item 12 is this ticket's other half verbatim: *"Reset/recovery
+that preserves race validity rules."* Gate B restates the validity half: *"reset cannot
+award progress or create an immediate duplicate checkpoint."* Gate C restates the physics
+half: *"stable ... reset"* and *"no NaN, infinity, explosive energy, persistent
+penetration, or unbounded wheel state."*
+
+#### Findings routed forward into this ticket
+
+Four sources feed this ticket's inbox; read all four before implementing.
+
+1. `### VEH-005 — findings inherited from RACE-002` (above, `M1`/`M3`/`L1`).
+2. `### VEH-005 — findings inherited from TRACK-001` (below, `L5`).
+3. RACE-001's `TRACK-001 L5` sibling finding, `RACE-002`'s own `L5` row in its findings
+   table (fixed `PoseHeightOffsetCm`, no ground trace) — same defect, read once.
+4. VEH-004's two obligations, stated in its own findings section above: the
+   `NotifyTelemetryDiscontinuity()` call requirement, and the reset-accumulates-through-a-
+   stale-gap trade recorded in `VehicleInputProcessor.cpp`'s `ProcessSample` (search
+   `TRADE-OFF, named rather than hidden`).
+
+None of the four is optional. A reset shipped without the telemetry-discontinuity call
+reintroduces a VEH-004 false positive (a deliberate teleport reported as tunnelling); a
+reset shipped without the stale-gap freeze ships a reset the driver never finished
+pressing; a reset shipped without the ground trace can bury or launch the car on a
+crested or banked section; a reset that ignores RACE-002 `M3` can make an untimed section
+boundary permanently unreachable.
+
+#### Camera hooks
+
+- [x] `ARacingVehiclePawn` gains a native `USpringArmComponent` (root-attached, collision
+      test enabled) and a child `UCameraComponent`, added in the constructor beside the
+      existing chassis/wheel components — same pattern VEH-002 used for the chassis
+      `UBoxComponent`. Both are `VisibleAnywhere` so a Blueprint child can retarget or
+      extend them without a C++ change.
+- [x] Every camera tunable (arm length, socket height/offset, pitch, lag/damping, FOV)
+      lives in a validated DataAsset — `UVehicleCameraDataAsset`, reusing `CORE-003`'s
+      `RacingSim::Validation::FRacingPropertyRange` / `EnforceRanges` pattern, not a
+      magic number in `Tick` or the constructor. A null/unset `CameraAsset` is NOT
+      refused at `BeginPlay` — it logs and falls back to `FVehicleCameraSettings()`'s
+      built-in defaults (the ticket's documented alternative to a hard refusal), never
+      silently substituted with an undocumented value.
+- [x] The camera is stable at rest and during ordinary driving: `ComputeSpeedAdjusted
+      FieldOfViewDegrees` clamps a negative/non-finite speed to 0 and guards a zero/
+      non-finite `SpeedForMaxBoostCms` divisor rather than propagating NaN (verified by
+      `RacingSim.Vehicle.CameraMath`, a `SmokeFilter` test with no actor, mirroring
+      `VehicleChaosInputMapping.h`'s pure-function precedent). Lag/damping is not custom
+      math — it is `USpringArmComponent`'s own `bEnableCameraLag`/`CameraLagSpeed`, so
+      there is no additional blend curve to factor out.
+
+#### Safe reset
+
+- [x] `ARacingVehiclePawn` gains a method — `ExecuteSafeReset(const ATrackDefinitionActor*
+      Track, URaceLapTracker* LapTracker, double LastValidProgressDistanceCm)` — that a
+      race-context owner calls when it observes `Command.bResetRequested`. Follows
+      `PublishCarSpecVersionTo(URaceResultRecorder* Recorder)`'s established shape:
+      **parameter injection, not a stored reference** — no persistent pointer to a placed
+      Race actor is stored. A null `Track` is a documented no-op, not a crash.
+- [~] **Deviation, disclosed for `code-reviewer`:** the reset pose is sourced from
+      `ATrackDefinitionActor::GetResetPoseAtOrBeforeDistanceCm(DistanceCm, OutIndex,
+      OutDistanceCm)` — the actor's own single-call overload — rather than the two calls
+      this row names (`GetResetTransformAtOrBeforeDistanceCm` +
+      `GetResetSampleDistanceCm`). The actor's own header documents this overload as the
+      one every reset site should prefer; using it still closes TRACK-001 `L5`/`H2`
+      together and still re-seeds the progress hint via `OutDistanceCm`. The actor's
+      returned transform is treated as a **seed**, not a final placement: a one-shot
+      ground trace (`UWorld::LineTraceSingleByChannel` against `ECC_WorldStatic`) corrects
+      height before the teleport, falling back to the seed's fixed `PoseHeightOffsetCm`
+      lift on a miss or non-finite input — `ResolveGroundCorrectedResetZCm`, tested at
+      `SmokeFilter` (`RacingSim.Vehicle.ResetMath`).
+- [x] Reset execution: `SetActorLocationAndRotation(..., bSweep=false, nullptr,
+      ETeleportType::TeleportPhysics)`, then `ResetVehicle()` and an explicit zero of the
+      chassis root component's linear and angular physics velocity. Teleport runs before
+      `ResetVehicle()`, so Chaos does not compute a one-frame velocity spike.
+- [x] `ExecuteSafeReset` calls `NotifyTelemetryDiscontinuity()` as part of the same
+      operation — not left to the caller to remember.
+- [x] `ExecuteSafeReset` calls `LapTracker->NotifyVehicleReset(ResetWorldLocationCm,
+      ResetSampleDistanceCm)` when `LapTracker` is non-null.
+- [~] RACE-002 `M3` — resolved as **defence-in-depth, not a re-derivation from source**:
+      `IsResetDistanceAtOrBeforeQuery` (`VehicleResetMath.h/.cpp`) checks the actor's
+      returned distance against the query distance before `ExecuteSafeReset` trusts it,
+      logging (non-fatally) if a future caller's bug ever violates the invariant. Tested
+      at `SmokeFilter` (`RacingSim.Vehicle.ResetMath`), including the closed-loop
+      wrap-around case. This session did not re-read `TrackDefinitionActor.cpp` line by
+      line to re-verify the actor's own guarantee from source — it relies on that actor's
+      documented contract and its own existing test suite (`TRACK-002`). Flagged for
+      `code-reviewer` to confirm that reliance is sound rather than assumed.
+- [x] RACE-002 `L1` (`FindFirstGateCrossing` vs `EvaluateCrossings`) — **N/A, verified**:
+      this reset path reads track arc-length distance via `GetResetPoseAtOrBeforeDistanceCm`,
+      never a checkpoint gate, so `L1` does not apply here.
+- [x] The VEH-004 stale-gap trade is closed in `FVehicleInputProcessor::ProcessSample`
+      (`VehicleInputProcessor.cpp`, search `TRADE-OFF, named rather than hidden`): while
+      `EVehicleInputCorrection::StaleSample` is set, `ResetHeldSeconds` and `bResetLatched`
+      are **frozen** — neither advanced nor cleared. Verified by a new test
+      (`RacingSim.Vehicle.InputResetStaleFreeze`) and by updating the pre-existing
+      `RacingSim.Vehicle.InputStaleSample` test, whose old assertion
+      ("the still-held reset keeps accumulating... unaffected by the stale gap") asserted
+      the exact pre-VEH-005 behaviour this ticket replaces; both now pass.
+- [ ] **Deferred, not attempted this pass — tracked at `VEH-006`:** an automated Gate-C
+      manoeuvre proving a reset (at speed / mid-corner / airborne) leaves the VEH-004
+      failure detector reporting clean immediately after, AND a Gate-B assertion that
+      `ExecuteSafeReset` itself cannot award progress or create a duplicate checkpoint
+      (RACE-004 covers `URaceLapTracker` in isolation; the integration this ticket adds —
+      pose selection, ground correction, teleport ordering, `NotifyVehicleReset` handoff —
+      is uncovered). Both need a `ProductFilter`-gated functional test with a live actor
+      and world (per this ticket's own standing harness limitation, below), which is
+      exactly what `VEH-006` ("Recorded manoeuvre tests and 30-minute soak",
+      `Docs/Tickets.md` line 1090) exists to add. Per `code-reviewer`'s VEH-005 review
+      (MEDIUM-5), this ticket is NOT done against its own Gate B/C wording until `VEH-006`
+      closes this gap — do not mark VEH-005 DONE on the strength of the Camera hooks and
+      Safe reset sections alone.
+
+#### Test coverage and the standing harness limitation
+
+- [x] The ground-trace pose correction (`ResolveGroundCorrectedResetZCm`), the RACE-002
+      `M3` at-or-before invariant (`IsResetDistanceAtOrBeforeQuery`), the sentinel guard
+      (`IsResetSampleValid`, added in repair cycle 1 for `code-reviewer` HIGH-1), and the
+      `ProcessSample` stale-freeze logic are all pulled out as pure/static helpers
+      (`VehicleResetMath.h/.cpp`) and covered by `SmokeFilter` tests with no actor:
+      `RacingSim.Vehicle.CameraMath`, `RacingSim.Vehicle.ResetMath` (now also exercising
+      `IsResetSampleValid` and the `MaxBackwardGapCm < 0` branch, LOW-3),
+      `RacingSim.Vehicle.InputResetStaleFreeze`, and — new in repair cycle 1, closing
+      `code-reviewer` HIGH-2 — `RacingSim.Vehicle.CameraDataAsset`
+      (`VehicleCameraDataAssetSpec.cpp`), which pins `UVehicleCameraDataAsset`'s range
+      table against its own `UPROPERTY` metadata, its FOV-ceiling relationship check, and
+      its `GetSettings()` defaults against `FVehicleCameraSettings`' own defaults, the same
+      anti-drift pattern every sibling `UDataAsset` in this module already carries.
+      **Durable evidence, repair-cycle-1 re-run (not the pre-fix `ReportVEH005b`, which is
+      now stale — `Saved/` is gitignored per `.gitignore:18`, so that report itself did not
+      survive; citing it further would not be verifiable):**
+      `Scripts/Test/_smoke_veh005c.log` (untracked but not gitignored, unlike `Saved/`) —
+      run via `Scripts/Test/Run-Smoke.ps1`, `reportCreatedOn=2026.08.28-09.51.46`,
+      `succeeded=519 succeededWithWarnings=2 passedTotal=521 failed=0 notRun=0`,
+      `testsInReport=521`, `NON_SUCCESS_COUNT=0`. Both `RacingSim.Vehicle.CameraDataAsset`
+      and `RacingSim.Vehicle.ResetMath` listed `=> Success` in the same log's
+      `RacingSim.*` suite dump. The underlying `Saved/Automation/ReportVEH005c/index.json`
+      was also inspected directly and agrees with the log. One pre-existing test
+      (`RacingSim.Vehicle.InputStaleSample`) was updated in an earlier run this ticket to
+      match this ticket's intentionally-changed stale-gap behavior, not left asserting the
+      old one; it is still `Success` in this repair-cycle-1 run. **Arithmetic correction
+      (`code-reviewer` LOW-5): the previous line here ("515 baseline... by exactly the 3
+      new tests", "520/520") used `succeeded` alone as if it were the pass total and did
+      not account for `succeededWithWarnings`, and is now superseded by a fresh run
+      regardless — do not carry either number forward.**
+- [x] `ExecuteSafeReset` and the camera components themselves remain untestable at the
+      `SmokeFilter` level for the same reason `ApplyChassisAsset`/`ApplyTuneAsset`/
+      `ApplyInputCommand`/`CaptureAndEvaluateTelemetry` are (`FEngineLoop::PreInit` runs
+      before `RegisterEngineElements()`; a `SmokeFilter` test cannot construct a live
+      `AActor`/`UActorComponent`). Not a new gap — the same standing, explicitly-tracked
+      risk carried since VEH-002 — **acknowledged again here**, not silently
+      re-discovered or silently ignored. The functional consequence for this ticket is the
+      deferred Gate-C manoeuvre test noted above.
+- [x] Both targets rebuilt clean with `-waitmutex`, per `Docs/Environment.md`'s verified
+      command form, **after repair-cycle-3's fixes** (MEDIUM-A2, LOW-1/2/4, pass 3 — see the
+      findings table below), via `Scripts/Test/Build-Target.ps1` — durable, non-gitignored
+      logs, confirmed to be genuine fresh compiles and not a `_veh005c`-style no-op ("Target
+      is up to date"), by grepping each log for an `Invalidating makefile for <Target>
+      (VehicleInputComponent.h modified)` line, a `Building <Target>...` line, and a
+      non-trivial `Total execution time`, and confirming the touched files
+      (`RacingVehiclePawn.cpp`, `VehicleCameraMathSpec.cpp`) appear in the compile list:
+      `RacingSimEditor` — `Scripts/Test/_build_editor_veh005e.log`,
+      `Building RacingSimEditor...`, `Total execution time: 94.57 seconds`,
+      `BUILD_EXITCODE=0`, `RESULT_LINE=Result: Succeeded`, `WARNING_ERROR_MATCHES=0`.
+      `RacingSim` (Game) — `Scripts/Test/_build_game_veh005e.log`,
+      `Building RacingSim...`, `Total execution time: 96.60 seconds`,
+      `BUILD_EXITCODE=0`, `RESULT_LINE=Result: Succeeded`, `WARNING_ERROR_MATCHES=0`.
+      Superseded evidence: `_build_editor_veh005d.log`/`_build_game_veh005d.log`
+      (repair-cycle-2's own logs, cited above until this cycle) were genuine at the time
+      they were written, but re-citing them after repair-cycle-3's source edits (MEDIUM-A2,
+      LOW-1/2/4) would have been exactly the tautological no-op citation MEDIUM-D (pass 2)
+      describes — replaced here with fresh logs taken after those edits, not reworded in
+      place.
+- [x] Fresh Smoke run **after** repair-cycle-3's fixes: `Scripts/Test/_smoke_veh005e.log`,
+      run via `Scripts/Test/Run-Smoke.ps1` with an **absolute** `-ReportDir`
+      (`<worktree>\Saved\Automation\ReportVEH005e`, matching `Docs/Environment.md`'s
+      verified command form) — a first attempt with a relative `-ReportDir` silently wrote
+      the report under the engine's own `Engine\Binaries\Win64\Saved\Automation\` instead of
+      the project's, which surfaces at this script's `NO_INDEX_JSON` guard rather than as a
+      false pass; not a regression in the ticket's own code, but recorded here since it cost
+      a rerun — `reportCreatedOn=2026.09.01-09.22.41`,
+      `succeeded=519 succeededWithWarnings=2 passedTotal=521 failed=0 notRun=0`,
+      `testsInReport=521`, `NON_SUCCESS_COUNT=0`. `RacingSim.Vehicle.CameraMath` now also
+      covers the new `RacingSim::Vehicle::ClampFieldOfViewForApplyDegrees` (MEDIUM-A: in
+      range unchanged, above-170 clamped, a value well past the design ceiling (190) also
+      clamped, below-5 clamped, both inclusive endpoints (5 and 170) pass through unchanged
+      — `code-reviewer` LOW-1, repair-cycle-2/3 re-reviews — and NaN/infinite input fall back
+      to the module's 90-degree default) — `=> Success`, same
+      test count as before (`testsInReport` unchanged at 521; new `TestEqual` assertions
+      inside an existing `IMPLEMENT_SIMPLE_AUTOMATION_TEST` block do not add a named test).
+      `NotifyUnpossessed()` (MEDIUM-B) is untestable at this level for the same standing
+      reason `ExecuteSafeReset`'s wiring is (`FEngineLoop::PreInit` runs before
+      `RegisterEngineElements()`; no live `AActor`/`UActorComponent` at Smoke) — not a new
+      gap, routed to `VEH-006` alongside the rest of this ticket's untestable wiring, below.
+      Superseded evidence: `_smoke_veh005d.log` (`reportCreatedOn=2026.08.28-10.17.09`,
+      repair-cycle-2's own run) — genuine at the time, superseded by this fresh run rather
+      than re-cited after repair-cycle-3's source edits. The underlying
+      `Saved/Automation/ReportVEH005e/index.json` was also inspected directly and agrees
+      with the log, the same parity check the `_veh005c` bullet above performed against
+      `ReportVEH005c/index.json`.
+
+### VEH-005 — review findings, pass 1, 2026-08-28
+
+Verdict: **CHANGES REQUESTED** against the initial implementation — 2 HIGH blocking.
+Repair cycle 1 closed both HIGH findings and every MEDIUM/LOW below; verified by the
+fresh rebuild and Smoke run cited in the acceptance-criteria bullets above (superseded
+in turn by repair cycle 2's `_veh005d` logs once MEDIUM-A/B below also landed). Full
+original finding text lives in the review transcript; the descriptions below are this
+ticket's own paraphrase, cited against the exact fix each one produced.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| HIGH-1 | Reset pose selection could return a sentinel/invalid pose without a validity guard rejecting it | **Fixed** — `IsResetSampleValid` added (`VehicleResetMath.h/.cpp`), covered by `RacingSim.Vehicle.ResetMath` |
+| HIGH-2 | `UVehicleCameraDataAsset` had no `StaticRanges()`/`EnforceRanges` pin against its own `UPROPERTY` metadata (VEH-004's own pattern), so a packaged Shipping build (`WITH_METADATA=0`) had no enforcement path for camera fields | **Fixed** — range table added, pinned by the new `RacingSim.Vehicle.CameraDataAsset` (`VehicleCameraDataAssetSpec.cpp`) |
+| MEDIUM-1 | `NotifyVehicleReset()` force-cleared the held shift/reset flags on a reset, which drives `bShiftUpWasHeld`/`bResetLatched` false too — the next genuinely-held sample after a reset then reads as a rising edge, firing a phantom shift or re-arming a reset the driver never released, the same inverted-reasoning defect class as VEH-004's own MEDIUM-2 (line 1990 above) | **Fixed** — repair cycle 1; held flags now pass through the reset unchanged instead of being force-cleared. This is precisely the fix MEDIUM-B (pass 2, below) later had to split into a possession-aware and unpossession-aware entry point, since "a future callback will correct it" only holds while still possessed |
+| MEDIUM-2 | Ground-clearance correction and the seed pose's own up-vector lift both operate in world-Z, not along the seed pose's surface normal; on banked or steeply graded track the two diverge by roughly `cos(bank angle)` (`VehicleResetMath.h:30-36`, `ResolveGroundCorrectedResetZCm`) | **Accepted, deferred — not fixed this pass.** Documented at the point of divergence in the doc comment itself (cited above) rather than only in this table. No banked/graded section exists in the current graybox level to make this reachable today; revisit when track content adds one |
+| MEDIUM-3 | `VehicleCameraDataAsset::Validate()` had no relationship check between `BaseFieldOfViewDegrees` and `MaxFieldOfViewBoostDegrees` — a per-field `EnforceRanges` pass alone cannot catch a sum that individually-valid fields produce | **Fixed** — repair cycle 1; the `EffectiveBase + EffectiveBoost > 170.0f` relationship check added in `Validate()` (`VehicleCameraDataAsset.cpp`, later corrected again in pass 2/MEDIUM-A below once the 170 ceiling's actual engine-vs-design status was corrected) |
+| MEDIUM-4 | `UVehicleCameraDataAsset::GetSettings()` had no test pinning its field-for-field copy against `FVehicleCameraSettings`' own defaults, the same anti-drift gap HIGH-2 closed for the range table | **Fixed** — repair cycle 1; covered by the same new `RacingSim.Vehicle.CameraDataAsset` (`VehicleCameraDataAssetSpec.cpp`) that closed HIGH-2 |
+| MEDIUM-5 | This ticket's Gate B/C wording is not satisfiable by the Camera-hooks and Safe-reset sections alone — the manoeuvre-level proof needs a live actor and world, which this ticket's own `SmokeFilter` harness cannot construct | **Acknowledged, routed forward to `VEH-006`** — recorded explicitly in the acceptance-criteria checklist above ("do not mark VEH-005 DONE on the strength of the Camera hooks and Safe reset sections alone"), not left to a comment alone |
+| LOW-1 | `ComputeSpeedAdjustedFieldOfViewDegrees`'s doc comment described `ClampedSpeedCms`'s direction backwards from what the code actually does (`VehicleCameraMath.cpp:32`) | **Fixed** — doc comment corrected |
+| LOW-2 | "The per-Tick FOV update sits behind `!bChassisApplied` (`RacingVehiclePawn.cpp:851`, line number as of repair cycle 2), so a pawn whose chassis asset was refused keeps a frozen base FOV. Consistent with the rest of Tick, but the camera hook is nominally chassis-independent." | **Accepted, no code change** — the freeze is a direct, intended consequence of the existing `!bChassisApplied` gate around the whole Tick block (a pawn with a refused chassis has no valid vehicle state to drive a speed-adjusted FOV from in the first place), not a new or camera-specific defect. Recorded here because it was previously undisposed anywhere in this doc |
+| LOW-3 | `IsResetSampleValid`'s `MaxBackwardGapCm < 0` branch had no test | **Fixed** — repair cycle 1; `RacingSim.Vehicle.ResetMath` extended to cover it |
+| LOW-4 | The `NotifyTelemetryDiscontinuity()` obligation this ticket inherits from `VEH-004`'s own LOW-4 (routed forward at line 1997 above) needed an explicit call site, not just a comment | **Fixed** — wired in `ApplyInputCommand`/`ExecuteSafeReset`; see the VEH-004 routing note above |
+| LOW-5 | The build/Smoke evidence line originally cited `succeeded` alone as if it were the full pass total, uncorrected for `succeededWithWarnings` | **Fixed** — corrected in the evidence bullets above, both in the repair-cycle-1 citation and again here in repair cycle 2's |
+
+### VEH-005 — review findings, pass 2 (re-review of repair cycle 1), 2026-08-28
+
+Verdict: **CHANGES REQUESTED** — repair cycle 1 closed pass 1 in full, but pass 2 opened
+4 new MEDIUM findings against repair cycle 1's own fixes and the ticket's documentation,
+all marked must-close-before-merge. Repair cycle 2 (this cycle) closes all four; the
+reviewer stated it will re-review only this diff, not run a full new pass.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM-A | `UCameraComponent::FieldOfView`'s own metadata (`Camera/CameraComponent.h`) is `ClampMin=0.001`/`ClampMax=360.0` (enforcing) — the `[5, 170]` this project authors against is `UIMin`/`UIMax`, an editor slider hint with no runtime effect. `VehicleCameraDataAsset.h`/`.cpp`'s comments claimed the engine enforced `[5, 170]`; nothing upstream of `ARacingVehiclePawn::Tick`'s assignment actually clamped it | **Fixed** (as of repair cycle 2; see pass 3 below) — new `RacingSim::Vehicle::ClampFieldOfViewForApplyDegrees` (`VehicleCameraMath.h/.cpp`) clamps to `[5, 170]` (NaN/infinite falls back to the module's 90-degree default) at the `Tick` apply site; all three misleading comments corrected (`VehicleCameraDataAsset.h`'s `BaseFieldOfViewDegrees` doc comment, `VehicleCameraDataAsset.cpp`'s relationship-check comment, and its validation-failure message string). 6 new `TestEqual` assertions in `RacingSim.Vehicle.CameraMath` cover both boundaries and both non-finite inputs. Repair cycle 2 only clamped the `Tick` apply site; the second, `BeginPlay`-only apply site was still unclamped, closed separately as MEDIUM-A2 in pass 3 below |
+| MEDIUM-B | Repair cycle 1's `NotifyVehicleReset()` fix (preserving `bShiftUpHeld`/`bShiftDownHeld`/`bResetHeld` across the call, relying on a future Enhanced Input `Completed` event to correct a stale value) is correct for `ExecuteSafeReset`'s call site but wrong for `UnPossessed()`'s — unpossession unbinds the input actions, so no future callback will ever arrive to clear a stale preserved flag | **Fixed** — split into two entry points: `NotifyVehicleReset()` unchanged (still preserves the held flags, since a future callback genuinely will arrive there), and new `NotifyUnpossessed()` (full `PendingSample` reset, flags included). `ARacingVehiclePawn::UnPossessed()` now calls `NotifyUnpossessed()` instead. Untestable at Smoke (see the acceptance-criteria evidence bullet above); routed to `VEH-006` alongside the rest of this ticket's live-actor gap |
+| MEDIUM-C | No review-findings disposition table existed for VEH-005, unlike every prior Vehicle ticket — `MEDIUM-2` (banked-track world-Z divergence) lived only in a header doc comment and `LOW-2` (chassis-gate FOV freeze) was entirely undisposed anywhere in this doc | **Fixed** — this table (both passes) added |
+| MEDIUM-D | The build-evidence citation in this ticket's acceptance criteria (`_build_editor/game_veh005c.log`) was a tautological "Target is up to date" no-op re-citation after repair-cycle-2's own source edits (MEDIUM-A/B), not proof those edits actually compiled | **Fixed** — fresh `_veh005d` logs captured after MEDIUM-A/B landed, confirmed genuine (non-trivial `Building <Target>...`/`Total execution time` lines, not just `WARNING_ERROR_MATCHES=0` alone); see the acceptance-criteria evidence bullets above |
+
+### VEH-005 — review findings, pass 3 (diff-only re-review of repair cycle 2), 2026-09-01
+
+Verdict: **APPROVED WITH FOLLOW-UPS**. The reviewer independently re-verified MEDIUM-A
+against actual UE 5.8 engine source (`Camera/CameraComponent.h:43`,
+`ClampMin=0.001`/`ClampMax=360.0`), re-read the `_veh005d` build/smoke logs directly rather
+than trusting the citations, diffed them against `_veh005c`'s, and parsed `index.json`
+directly — confirming MEDIUM-A/B/C/D substantively closed. It also surfaced one new
+MEDIUM (a second, unclamped FOV apply site the pass-2 fix missed) and four LOW findings,
+none blocking merge but all required closed before the diff is sent back for final
+sign-off. This repair cycle (the third against this ticket) closes all five.
+
+| ID | Finding | Disposition |
+| --- | --- | --- |
+| MEDIUM-A2 | `ARacingVehiclePawn::ApplyCameraSettings()` (called once from `BeginPlay`) is a second `FollowCamera->FieldOfView` apply site besides `Tick`'s, and it was left unclamped by the MEDIUM-A fix — reachable whenever `Tick`'s own clamped assignment never runs (its `!bChassisApplied` early return, LOW-2's accepted freeze), which leaves the raw, editor-only-bounded `BaseFieldOfViewDegrees` on the camera permanently rather than for one frame, defeating MEDIUM-A's runtime safety net for exactly the pawn state that most needs it | **Fixed** — `ApplyCameraSettings()` now also calls `RacingSim::Vehicle::ClampFieldOfViewForApplyDegrees` (`RacingVehiclePawn.cpp`) |
+| LOW-1 | `VehicleCameraMathSpec.cpp`'s MEDIUM-A test comment mislabeled 190 degrees as "the exact degenerate boundary" — the actual tangent-undefined boundary is 180, not 190; 190 is simply a value past the `[5, 170]` design ceiling, same as the existing 250 case. The suite also only proved clamping from outside `[5, 170]`, not that the inclusive endpoints themselves pass through unchanged | **Fixed** — comment corrected; two new `TestEqual` assertions pin `5.0f`/`170.0f` passing through unchanged. Matching wording in the `_veh005d` smoke evidence bullet (`Docs/Tickets.md`) also corrected |
+| LOW-2 | The pass-1 disposition table (above) left the MEDIUM-1/MEDIUM-3/MEDIUM-4 finding descriptions blank, and its LOW-2 row cited a stale line number (`RacingVehiclePawn.cpp:820-823`) that had already drifted before this cycle's own edits | **Fixed** — MEDIUM-1/3/4 descriptions filled in above; the citation corrected to `:851` (current as of this cycle's own `ApplyCameraSettings()` edit; `VehicleResetMath.h:29-36`'s citation was also off by one and corrected to `:30-36`) |
+| LOW-3 | The orchestrator note below proposed "merged, gates deferred to VEH-006" without saying who applies that status transition, what evidence triggers it, or what happens if `VEH-006` slips or is reprioritized before closing the gap | **Fixed** — see the expanded note below |
+| LOW-4 | `NotifyUnpossessed()`'s doc comment said the held flags are "cleared too, not preserved" without disclosing it also zeroes `PendingSample.SpeedCms` via a full `FVehicleInputRawSample()` reset, unlike `NotifyVehicleReset()`'s field-by-field preservation | **Fixed** — doc comment corrected (`VehicleInputComponent.h`) |
+
+**Orchestrator note on the VEH-005/VEH-006 circular ticket-ledger dependency** (raised by
+the reviewer alongside pass 2, not itself a numbered finding; expanded in pass 3/LOW-3 to
+name a trigger and an owner): this ticket's own MEDIUM-5 disposition above says VEH-005 is
+not DONE against its Gate B/C wording until `VEH-006` closes the live-actor manoeuvre-test
+gap, while `VEH-006`'s own ticket entry (line 1090) lists `VEH-005` as a dependency — each
+waits on the other for a bare `DONE`. Resolved by not using bare `DONE`: this ticket merges
+to `main` once both gates below pass, carrying the status **"merged, gates deferred to
+VEH-006"** in the Epic 1 table rather than `DONE`, matching the wording already used in the
+acceptance-criteria checklist above. Deviation record: the orchestrator (this session) owns
+flipping that status to plain `DONE`, and does so only when `VEH-006`'s own `code-reviewer`
+and `test-engineer` gates both pass with the live-actor manoeuvre test (Gate C) included in
+their scope, citing `VEH-006`'s own evidence bullets by log/report path the same way every
+other ticket row in this table does. If `VEH-006` slips, is reprioritized, or is descoped
+before closing that gap, VEH-005 stays at "merged, gates deferred to VEH-006" indefinitely
+rather than silently reading as `DONE` — the deferred wording is a permanent status, not a
+placeholder that expires or auto-promotes.
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|

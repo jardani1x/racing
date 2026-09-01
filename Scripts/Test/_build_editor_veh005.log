@@ -1,0 +1,68 @@
+﻿Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" RacingSimEditor Win64 Development "-project=C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" -waitmutex -NoUBA
+Log file: C:\Users\jun yi\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (14 physical cores, 18 logical cores)
+  Executing up to 14 processes, one per physical core
+  Requested 1.5 GB memory per action, 803.83 MB available: limiting max parallel actions to 1
+Using 'git status' to determine working set for adaptive non-unity build (C:\Users\jun yi\Documents\central-command\racing).
+UbaSessionServer - Disable remote execution (remote sessions will finish current processes)
+Invalidating makefile for RacingSimEditor (source file added)
+UHT compiled-in object format Default
+UHT processed RacingSimEditor in 15.4426927 seconds (44 generated files written)
+Building RacingSimEditor...
+===== Toolchain Information =====
+Using ISPC compiler (C:\Program Files\Epic Games\UE_5.8\Engine\Source\ThirdParty\Intel\ISPC\bin\Windows\ispc.exe)
+  Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build commit  @ 20250404, LLVM 18.1.2) 
+Using Visual Studio 14.44.35222 toolchain (C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207) and Windows 10.0.26100.0 SDK (C:\Program Files (x86)\Windows Kits\10).
+[Adaptive Build] Excluded from RacingSim unity file: RacingVehiclePawn.cpp, VehicleCameraDataAsset.cpp, VehicleCameraMath.cpp, VehicleInputProcessor.cpp, VehicleResetMath.cpp
+=================================
+Using Unreal Build Accelerator local executor to run 39 action(s)
+  CPU 14 physical cores, 18 logical cores
+  Memory 15.7 GB physical, 38.83 GB/62.54 GB committed
+  UBA Storage capacity 40 GB
+[1/39] Compile [x64] Module.RacingSim.cpp [NoUba]
+[2/39] Compile [x64] RacingVehiclePawn.cpp [NoUba]
+[3/39] Compile [x64] VehicleCameraDataAsset.cpp [NoUba]
+[4/39] Compile [x64] VehicleCameraMath.cpp [NoUba]
+[5/39] Compile [x64] VehicleInputProcessor.cpp [NoUba]
+[6/39] Compile [x64] VehicleResetMath.cpp [NoUba]
+[7/39] Link [x64] UnrealEditor-RacingSim.lib [NoUba]
+[8/39] Link [x64] UnrealEditor-RacingSim.dll [NoUba]
+[9/39] Compile [x64] AutomationTestPlacementSpec.cpp [NoUba]
+[10/39] Compile [x64] NonShippingArtifactSpec.cpp [NoUba]
+[11/39] Compile [x64] PerModuleInline.gen.cpp [NoUba]
+[12/39] Compile [x64] RaceClockSpec.cpp [NoUba]
+[13/39] Compile [x64] RaceFaultMatrixSpec.cpp [NoUba]
+[14/39] Compile [x64] RaceLapTrackerSpec.cpp [NoUba]
+[15/39] Compile [x64] RaceResultSpec.cpp [NoUba]
+[16/39] Compile [x64] RaceStateMachineSpec.cpp [NoUba]
+[17/39] Compile [x64] RacingSimLogSpec.cpp [NoUba]
+[18/39] Compile [x64] RacingSimLogSuppressionSpec.cpp [NoUba]
+[19/39] Compile [x64] RacingSimSettingsSpec.cpp [NoUba]
+[20/39] Compile [x64] RacingSimTests.cpp [NoUba]
+[21/39] Compile [x64] RacingSimUnitsSpec.cpp [NoUba]
+[22/39] Compile [x64] RacingSimUrlSpec.cpp [NoUba]
+[23/39] Compile [x64] RacingSimValidationSpec.cpp [NoUba]
+[24/39] Compile [x64] RacingSimVersionSpec.cpp [NoUba]
+[25/39] Compile [x64] RacingTelemetrySpec.cpp [NoUba]
+[26/39] Compile [x64] TrackCenterlineSpec.cpp [NoUba]
+[27/39] Compile [x64] TrackCheckpointGateSpec.cpp [NoUba]
+[28/39] Compile [x64] TrackDefinitionActorSpec.cpp [NoUba]
+[29/39] Compile [x64] TrackPrototypeLevelSpec.cpp [NoUba]
+[30/39] Compile [x64] VehicleChaosInputMappingSpec.cpp [NoUba]
+[31/39] Compile [x64] VehicleChassisSpec.cpp [NoUba]
+[32/39] Compile [x64] VehicleFailureDetectionSpec.cpp [NoUba]
+[33/39] Compile [x64] VehicleInputConfigSpec.cpp [NoUba]
+[34/39] Compile [x64] VehicleInputProcessorSpec.cpp [NoUba]
+[35/39] Compile [x64] VehicleTelemetrySpec.cpp [NoUba]
+[36/39] Compile [x64] VehicleTuneSpec.cpp [NoUba]
+[37/39] Link [x64] UnrealEditor-RacingSimTests.dll [NoUba]
+[38/39] Link [x64] UnrealEditor-RacingSimTests.lib [NoUba]
+[39/39] WriteMetadata RacingSimEditor.target [NoUba]
+
+Total time in Unreal Build Accelerator local executor: 383.10 seconds
+Output binary: C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe
+
+Result: Succeeded
+Total execution time: 409.14 seconds
+Trace written to file C:\Users\jun yi\AppData\Local\UnrealBuildTool\Trace.uba with size 40.0kb
