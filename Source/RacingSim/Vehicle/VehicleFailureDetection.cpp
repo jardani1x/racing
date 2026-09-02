@@ -117,19 +117,28 @@ namespace RacingSim::Vehicle
 		// The clock is judged before anything that divides by it. A backwards or
 		// non-finite step makes every rate below meaningless, so it is reported and the
 		// rate-based checks are skipped rather than run on garbage.
+		//
+		// SIMULATED time, not wall-clock time. Every quantity below -- position,
+		// velocity, wheel angular velocity -- was produced by stepping the solver with
+		// DeltaSeconds, so the only honest denominator is the sum of those deltas.
+		// VEH-004 shipped this line reading TimestampSeconds, which is wall-clock: under
+		// a fixed-step test loop, a hitch, a breakpoint or any time dilation the two
+		// clocks diverge and the detector divides real motion by an unrelated step,
+		// manufacturing impossible accelerations for a car behaving perfectly. See
+		// FVehicleTelemetrySnapshot::SimulationTimeSeconds.
 		bool bHasUsableStep = false;
 		float StepSeconds = 0.0f;
 
 		if (Previous.bIsValid)
 		{
-			const double RawStep = Current.TimestampSeconds - Previous.TimestampSeconds;
+			const double RawStep = Current.SimulationTimeSeconds - Previous.SimulationTimeSeconds;
 
 			if (!FMath::IsFinite(RawStep) || RawStep < 0.0)
 			{
 				RaiseVehicleFailure(Report, EVehicleFailureFlag::TimeAnomaly,
 					FString::Printf(
-						TEXT("non-monotonic or non-finite timestamp: previous %f, current %f"),
-						Previous.TimestampSeconds, Current.TimestampSeconds));
+						TEXT("non-monotonic or non-finite simulation time: previous %f, current %f"),
+						Previous.SimulationTimeSeconds, Current.SimulationTimeSeconds));
 			}
 			else if (RawStep > 0.0)
 			{

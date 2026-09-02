@@ -568,22 +568,34 @@ private:
 		//   inside `if (bProcessLocally)`. bRequiresControllerForInputs defaults to true
 		//   (:625), so a pawn with no controller silently drops every input.
 		//
-		// GATE 2 -- the vehicle falls asleep and cannot wake itself.
-		//   The settle phase holds zero input, so ProcessSleeping counts the car down to
-		//   sleeping. Its wake test reads the RAW control inputs only when the vehicle is
-		//   locally controlled, and otherwise reads ReplicatedState, which is written only
-		//   by the server RPC ServerUpdateState (:1438) -- a call that never happens with
-		//   no controller and no net role. A sleeping unpossessed vehicle therefore stays
-		//   asleep forever, and even a perfectly delivered throttle moves nothing. This is
-		//   what produced the last stationary-car run: target gear 1 (the game thread
-		//   requested first) with current gear 0 and the engine pinned at idle.
-		//   Report: Saved/Automation/ReportVEH006Man6/index.json.
+		// Possession is the fix for GATE 1 only, and it answers it the way shipping code
+		// does. The earlier fix poked SetRequiresControllerForInputs(false) instead; that
+		// silenced the symptom while leaving the fixture testing a code path no real car
+		// ever takes, which is worse than the machinery it avoided.
 		//
-		// Both gates ask the same question -- "is this vehicle locally controlled?" -- so
-		// possession answers both, and it answers them the way shipping code does. The
-		// earlier fix poked SetRequiresControllerForInputs(false) and SleepThreshold = 0
-		// instead; that silenced the symptom while leaving the fixture testing a code path
-		// no real car ever takes, which is worse than the machinery it avoided.
+		// GATE 2 -- the vehicle falls asleep and cannot wake itself -- is a SEPARATE
+		// defect with a separate fix, and possession does NOT address it. An earlier
+		// version of this comment claimed it did; that claim was wrong.
+		//   The settle phase holds zero input, so the Chaos solver sleeps the chassis
+		//   island. UChaosVehicleMovementComponent::ProcessSleeping would wake it via
+		//   SetSleeping(false), but SetSleeping delegates to WakeAllEnabledRigidBodies /
+		//   PutAllEnabledRigidBodiesToSleep (ChaosVehicleMovementComponent.cpp:2058-2090)
+		//   and BOTH open with `if (USkeletalMeshComponent* Mesh = GetSkeletalMesh())`.
+		//   ARacingVehiclePawn's UpdatedComponent is a UBoxComponent, so both are complete
+		//   no-ops with or without a controller. A slept chassis is fatal because
+		//   FChaosVehicleManagerAsyncCallback::OnPreSimulate_Internal
+		//   (ChaosVehicleManagerAsyncCallback.cpp:126-129) returns before
+		//   FChaosVehicleAsyncInput::Simulate unless the handle's ObjectState is Dynamic:
+		//   the whole vehicle sim stops and the last async output stays latched, so
+		//   telemetry keeps reporting plausible frozen numbers. This is what produced the
+		//   stationary-car run: target gear 1 (the game thread requested first) with
+		//   current gear 0 and the engine pinned at idle.
+		//   Report: Saved/Automation/ReportVEH006Man6/index.json.
+		//   THE FIX lives in ARacingVehiclePawn::BeginPlay, not here: it pins the chassis
+		//   particle to Chaos::ESleepType::NeverSleep through
+		//   FSingleParticlePhysicsProxy::GetGameThreadAPI().SetSleepType, which
+		//   ParticleHandle.h:3777-3781 documents as also waking an already-sleeping
+		//   particle. Shipping cars get the same treatment, so the fixture is not special.
 		//
 		// AAIController, NOT APlayerController. AController::IsLocalController() returns
 		// true immediately for NM_Standalone, but APlayerController overrides it and

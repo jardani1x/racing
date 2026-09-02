@@ -406,7 +406,15 @@ private:
 	/** 1-based; see FVehicleTelemetrySnapshot::CaptureIndex. */
 	int64 CaptureIndex = 0;
 
-	/** Monotonic SECONDS at which the next capture is due. 0 means "capture on the next Tick". */
+	/**
+	 * Monotonic SIMULATED SECONDS: the running sum of every Tick's DeltaSeconds since
+	 * this pawn began playing. Stamped into each snapshot and the only clock the failure
+	 * detector divides by. See FVehicleTelemetrySnapshot::SimulationTimeSeconds for why
+	 * the wall clock cannot do this job. Survives a reset; see NotifyTelemetryDiscontinuity.
+	 */
+	double SimulationTimeSeconds = 0.0;
+
+	/** SIMULATED SECONDS at which the next capture is due. 0 means "capture on the next Tick". */
 	double NextCaptureTimeSeconds = 0.0;
 
 	/**

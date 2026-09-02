@@ -685,6 +685,12 @@ void ARacingVehiclePawn::NotifyTelemetryDiscontinuity()
 	// record of what happened, and a consumer inspecting why a car was reset must still
 	// be able to read the sample that preceded it. What is cleared is the COMPARISON
 	// BASIS and the accumulators, which is what would otherwise manufacture a fault.
+	//
+	// SimulationTimeSeconds is likewise NOT cleared: a reset does not un-happen the time
+	// that preceded it, and a clock that jumps backwards is precisely the TimeAnomaly the
+	// detector would then raise on the first sample after the reset. Zeroing
+	// NextCaptureTimeSeconds is enough to make the next Tick capture, because the
+	// simulation clock only ever counts up from zero.
 	PreviousSnapshot = FVehicleTelemetrySnapshot();
 	FailureState.Reset();
 	LoggedFailureFlags = 0;
@@ -984,13 +990,29 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 		return;
 	}
 
-	// FPlatformTime::Seconds() -- the same monotonic source RACE-001 uses for lap
-	// timing and VEH-001's component passes to the processor. Deliberately NOT world
-	// time, which a pause or a time dilation moves, and deliberately not accumulated
-	// from DeltaSeconds, which drifts.
+	// TWO CLOCKS, deliberately, because they answer two different questions.
+	//
+	// FPlatformTime::Seconds() -- the same monotonic source RACE-001 uses for lap timing
+	// and VEH-001's component passes to the processor -- records WHEN IN REAL TIME the
+	// sample was taken, which is what a staleness check needs. Deliberately not world
+	// time, which a pause or a time dilation moves.
+	//
+	// SimulationTimeSeconds accumulates the DeltaSeconds that actually produced the
+	// motion, and is the clock every RATE is derived from. Only this one can be divided
+	// by: the solver advanced by these deltas and by nothing else. VEH-004 had a single
+	// wall clock doing both jobs, which is invisible in a real-time session and wrong
+	// everywhere else -- see FVehicleTelemetrySnapshot::SimulationTimeSeconds.
+	//
+	// Accumulated BEFORE the rate gate below, so decimating capture never loses time:
+	// the clock counts every frame, capture reads it every Nth.
 	const double NowSeconds = FPlatformTime::Seconds();
+	SimulationTimeSeconds += static_cast<double>(DeltaSeconds);
 
-	if (NowSeconds < NextCaptureTimeSeconds)
+	// Paced on SIMULATED time, so the sample rate means the same thing in a fixed-step
+	// test as it does at runtime -- a 60 Hz rate is one sample per simulated 1/60 s
+	// either way. Pacing on the wall clock instead would let a fast test loop take one
+	// sample per Tick regardless of the configured rate.
+	if (SimulationTimeSeconds < NextCaptureTimeSeconds)
 	{
 		return;
 	}
@@ -1001,7 +1023,7 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	// alternative accumulates a backlog after a hitch and then fires every frame to
 	// "catch up", which is a burst of capture cost at precisely the moment the frame is
 	// already late. Telemetry must never be the reason a hitch gets worse.
-	NextCaptureTimeSeconds = NowSeconds + IntervalSeconds;
+	NextCaptureTimeSeconds = SimulationTimeSeconds + IntervalSeconds;
 
 	++CaptureIndex;
 
@@ -1014,6 +1036,7 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	CaptureInput.InputDeviceType = Command.DeviceType;
 	CaptureInput.CarSpecVersion = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneEngineApplied);
 	CaptureInput.TimestampSeconds = NowSeconds;
+	CaptureInput.SimulationTimeSeconds = SimulationTimeSeconds;
 	CaptureInput.FrameDeltaSeconds = DeltaSeconds;
 	CaptureInput.CaptureIndex = CaptureIndex;
 

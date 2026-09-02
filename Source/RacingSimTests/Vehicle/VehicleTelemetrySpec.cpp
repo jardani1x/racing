@@ -74,6 +74,18 @@ bool FRacingSimVehicleTelemetryContractTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("A default snapshot reports no wheels"), Default.NumWheels, 0);
 	TestTrue(TEXT("A default snapshot is finite"), Default.IsFinite());
 
+	// -- TWO CLOCKS, and they are separate fields on purpose (schema 2).
+	//
+	// TimestampSeconds records real time and is what a staleness check reads.
+	// SimulationTimeSeconds accumulates the DeltaSeconds that produced the motion and is
+	// the only field a rate may be divided by. VEH-004 had one field doing both jobs; the
+	// behavioural half of this contract is in
+	// RacingSim.Vehicle.FailureDetectionRunawayAndTunnelling, which drives the two
+	// clocks apart and checks the detector follows the simulated one.
+	TestEqual(TEXT("A default snapshot's wall clock starts at zero"), Default.TimestampSeconds, 0.0);
+	TestEqual(TEXT("A default snapshot's simulation clock starts at zero"),
+		Default.SimulationTimeSeconds, 0.0);
+
 	// -- Bounds checking, which must never assert.
 	//
 	// Chaos' own GetWheelState(int) indexes its array with NO bounds check

@@ -57,18 +57,25 @@ namespace
 	 * include HasIssueFor, HasTuneIssueFor, SetCurveKeys, MakeCircle, BuildCircle and
 	 * StateName; none of the four below collides.
 	 */
-	FVehicleTelemetrySnapshot MakeHealthyFailureSnapshot(const double TimestampSeconds, const int64 CaptureIndex)
+	FVehicleTelemetrySnapshot MakeHealthyFailureSnapshot(const double TimeSeconds, const int64 CaptureIndex)
 	{
 		FVehicleTelemetrySnapshot Snapshot;
 		Snapshot.bIsValid = true;
-		Snapshot.TimestampSeconds = TimestampSeconds;
+
+		// BOTH clocks, set to the same value. The detector derives its step from
+		// SimulationTimeSeconds and nothing else; TimestampSeconds is carried so these
+		// fixtures still look like something a real capture produced, and because a real
+		// capture's two clocks do coincide when the game runs in real time. A test that
+		// needs the two to diverge sets them apart explicitly.
+		Snapshot.TimestampSeconds = TimeSeconds;
+		Snapshot.SimulationTimeSeconds = TimeSeconds;
 		Snapshot.CaptureIndex = CaptureIndex;
 		Snapshot.FrameDeltaSeconds = 1.0f / 60.0f;
 
 		// 100 km/h == 2777.78 cm/s. Travelling along +X, which is forward in Unreal.
 		Snapshot.VelocityCms = FVector(2777.78, 0.0, 0.0);
 		Snapshot.ForwardSpeedCms = 2777.78f;
-		Snapshot.LocationCm = FVector(TimestampSeconds * 2777.78, 0.0, 0.0);
+		Snapshot.LocationCm = FVector(TimeSeconds * 2777.78, 0.0, 0.0);
 		Snapshot.AngularVelocityDegreesPerSecond = FVector(0.0, 0.0, 5.0);
 		Snapshot.EngineRpm = 4200.0f;
 		Snapshot.GearIndex = 3;
@@ -101,6 +108,7 @@ namespace
 	{
 		FVehicleTelemetrySnapshot Next = Previous;
 		Next.TimestampSeconds = Previous.TimestampSeconds + StepSeconds;
+		Next.SimulationTimeSeconds = Previous.SimulationTimeSeconds + StepSeconds;
 		Next.CaptureIndex = Previous.CaptureIndex + 1;
 		Next.FrameDeltaSeconds = static_cast<float>(StepSeconds);
 		Next.LocationCm = Previous.LocationCm + Previous.VelocityCms * StepSeconds;
@@ -375,11 +383,39 @@ bool FRacingSimVehicleFailureEnergyTest::RunTest(const FString& Parameters)
 	}
 
 	{
-		// A BACKWARDS clock is. Every rate below it would be negative or garbage.
-		FVehicleTelemetrySnapshot Rewound = AdvanceHealthyFailureSnapshot(Base, Step);
-		Rewound.TimestampSeconds = Base.TimestampSeconds - 1.0;
+		// THE VEH-004 REGRESSION. Wall-clock time and simulated time disagree, and the
+		// detector must follow the simulated one.
+		//
+		// The car does exactly what its own velocity says over a real 1/60 s step, so it
+		// is healthy. The wall clock advances by a microsecond instead -- which is what a
+		// fixed-step test loop, a paused editor, a breakpoint or a dilated time source
+		// all look like. VEH-004 divided the honest motion by that microsecond and
+		// reported a car accelerating at roughly 17,000 g.
+		FVehicleTelemetrySnapshot FastWallClock = AdvanceHealthyFailureSnapshot(Base, Step);
+		FastWallClock.TimestampSeconds = Base.TimestampSeconds + 0.000001;
 
-		TestTrue(TEXT("A backwards timestamp raises TimeAnomaly"),
+		TestFalse(TEXT("A healthy step is still healthy when the WALL clock ran faster than the simulation"),
+			EvaluateFailurePair(Base, FastWallClock).HasAnyFailure());
+
+		// And the converse: a genuine teleport is still caught when the wall clock is the
+		// thing that looks normal. Catching it here is what proves the wall clock is not
+		// merely ignored on the easy side of the test.
+		FVehicleTelemetrySnapshot SlowWallClockTeleport = AdvanceHealthyFailureSnapshot(Base, Step);
+		SlowWallClockTeleport.TimestampSeconds = Base.TimestampSeconds + 1.0;
+		SlowWallClockTeleport.LocationCm = Base.LocationCm + FVector(100000.0, 0.0, 0.0);
+
+		TestTrue(TEXT("A 1 km jump in one SIMULATED step still raises Tunnelling when the wall clock lagged"),
+			EvaluateFailurePair(Base, SlowWallClockTeleport).Has(EVehicleFailureFlag::Tunnelling));
+	}
+
+	{
+		// A BACKWARDS clock is. Every rate below it would be negative or garbage.
+		// Rewinding the SIMULATION clock specifically: that is the one the detector
+		// divides by, so it is the one whose monotonicity has to be defended.
+		FVehicleTelemetrySnapshot Rewound = AdvanceHealthyFailureSnapshot(Base, Step);
+		Rewound.SimulationTimeSeconds = Base.SimulationTimeSeconds - 1.0;
+
+		TestTrue(TEXT("A backwards simulation clock raises TimeAnomaly"),
 			EvaluateFailurePair(Base, Rewound).Has(EVehicleFailureFlag::TimeAnomaly));
 	}
 
