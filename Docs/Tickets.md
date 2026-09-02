@@ -2336,6 +2336,129 @@ before closing that gap, VEH-005 stays at "merged, gates deferred to VEH-006" in
 rather than silently reading as `DONE` — the deferred wording is a permanent status, not a
 placeholder that expires or auto-promotes.
 
+### VEH-006 — acceptance criteria, opened 2026-09-02
+
+Scope per the Epic 2 row (line 1090): `Recorded manoeuvre tests and 30-minute soak`.
+Owner `test-engineer + implementer`, depends on `VEH-003`..`VEH-005`, Gate C.
+
+This is the ticket every earlier vehicle ticket deferred its live-actor proof into. VEH-002
+built the pawn, VEH-003 the tune, VEH-004 the telemetry and failure detector, VEH-005 the
+camera and safe reset — and **not one of them has ever driven the car**, because every
+vehicle suite in this repository is a `SmokeFilter` test over pure functions, and
+`FEngineLoop::PreInit` runs `SmokeFilter` tests before `RegisterEngineElements()`, in a
+window where constructing a non-template `UActorComponent` is a hard crash of the whole
+run. VEH-006 owns the first automated drive.
+
+#### Harness phase, decided before implementation, not discovered during it
+
+`TRACK-002` already paid for this answer and it is not re-litigated here: an
+actor-touching test **must** be `ProductFilter`, because `ProductFilter` tests run from
+the deferred `Automation RunFilter <name>` console command after `UEngine::Init` has
+registered the typed-element types. `Docs/Environment.md` and
+`Scripts/Test/Run-AutomationFilter.ps1` record both halves. That script's own header also
+records that `RunFilter Product` **cannot complete on this machine** — it dies in
+`System.Plugins.PixelStreaming2.FPS2DataChannelEchoTest` under `-nullrhi` and produces no
+`index.json` — so this ticket's repeatable gate names its tests with `-TestNames`, exactly
+as TRACK-002's does, and discoverability is proven separately.
+
+#### The one genuinely unknown thing, and why it is criterion 0
+
+Nothing in this repository has ever obtained a **physics-stepping** world.
+`TrackPrototypeLevelSpec.cpp` gets a world by `LoadPackage` + `FindWorldInPackage`, and it
+is emphatic that the world it gets never begins play — that is the point of that test. So
+the world-construction path for a driving test is unestablished, and TRACK-001's recorded
+`UWorld::CreateWorld` access violation is **not** evidence it cannot work: that crash was
+observed during the `SmokeFilter` phase, and TRACK-002 proved the "actors are impossible
+here" conclusion drawn from that phase was wrong. It may work at `ProductFilter` phase; it
+may not. Either way the answer is recorded with log evidence rather than assumed, and a
+path that fails is written down as a failed path, not quietly replaced.
+
+#### Design
+
+- **No new content.** `ARacingVehiclePawn`'s chassis collision is a `UBoxComponent` sized
+  from the DataAsset (VEH-002 chose a primitive precisely so no mesh, no physics asset and
+  no licence-ledger entry would be needed), so a driveable car is reachable from C++ alone.
+  The ground is a code-built collision box, not `L_Meridian_Graybox` — the graybox level
+  has no drivable surface (TRACK-002's own recorded open risk), and a manoeuvre test whose
+  numbers depend on authored terrain is a test that changes meaning when the terrain does.
+  Driving the real circuit is a later ticket's problem, and is named as excluded here.
+- **Fixtures** are transient `UVehicleChassisDataAsset`/`UVehicleTuneDataAsset` built with
+  `NewObject(GetTransientPackage())`, matching `VehicleChassisSpec.cpp:48` and
+  `VehicleTuneSpec.cpp:46`.
+- **Input injection** needs a seam: every `UVehicleInputComponent` handler is private and
+  driven by Enhanced Input, and a recorded manoeuvre has no controller. The seam is
+  `#if WITH_AUTOMATION_TESTS`-guarded, so it does not exist in a Shipping compile, and
+  `RacingSimTests` is already proven absent from the Game link
+  (`Scripts/Test/Check-NonShippingArtifacts.ps1`, `RacingSim.Tests.NonShippingArtifacts`).
+  Driving the movement component directly instead was rejected: it would skip the
+  input->physics path, which is most of what this ticket is for.
+- **A manoeuvre is data**, not code: a list of time-stamped raw samples replayed at a fixed
+  `DeltaSeconds`, so the same manoeuvre can be replayed at two step sizes and compared.
+- **Units**: speeds are centimetres per second throughout (`Core/RacingSimUnits.h`);
+  every assertion that states a km/h or metre figure converts explicitly.
+- **The soak does not run on the normal gate.** A 30-minute soak on the per-ticket gate
+  makes the gate unusable. It gets its own script and its own report directory, and its
+  wall-clock cost is measured and written down rather than guessed.
+
+#### Acceptance criteria
+
+- [ ] **Criterion 0 — the world path is established by running, not by reasoning.** The
+      chosen construction path is recorded in the verification-evidence section together
+      with every path that was tried and failed, each with the log line that shows the
+      failure. A path that crashes the run produces no `index.json`; that outcome is
+      reported as a harness failure, never as a pass.
+- [ ] A spawned `ARacingVehiclePawn` reports `IsChassisApplied() == true` and a
+      four-entry `WheelSetups`, in a world that has begun play.
+- [ ] **Straight line**: from rest, full throttle for a recorded interval produces a
+      strictly increasing forward speed over the first second and a final forward speed
+      above a stated threshold. Every telemetry sample is finite.
+- [ ] **Braking**: from a steady cruise, full brake brings forward speed to within a
+      stated epsilon of zero, monotonically, inside a stated distance.
+- [ ] **Steering**: a sustained non-zero steer produces a yaw rate whose sign matches the
+      steer's, and zero steer over the same interval produces a yaw rate within a stated
+      epsilon of zero.
+- [ ] **Frame-rate independence** (CLAUDE.md: "Keep gameplay independent from frame
+      rate"): the same recorded manoeuvre replayed at `1/60` and at `1/120` ends within a
+      stated tolerance on final speed and final position. The tolerance is stated as a
+      number in the test, with the reason for its size.
+- [ ] **Safe reset under load** (this is VEH-005's deferred Gate B/C proof): a reset issued
+      mid-manoeuvre leaves the pawn at a finite, upright pose with forward speed within an
+      epsilon of zero, reports no failure, and clears the held input flags —
+      `ExecuteSafeReset`'s live wiring, which no `SmokeFilter` test can reach, executes here
+      for the first time.
+- [ ] **Failure detector, both controls** (VEH-004's deferred driving test): no failure is
+      reported across any clean manoeuvre (negative control), and the detector still fires
+      on a forced corrupt state in the same live pawn (positive control). A detector that
+      never fires and a detector that always fires both pass a one-sided test.
+- [ ] **Soak**: at least 30 minutes of simulated time at a fixed step with no non-finite
+      telemetry sample, no failure report, bounded position, and a stated memory delta
+      under a stated ceiling. Simulated duration, wall-clock duration and step count are
+      all reported.
+- [ ] Both targets build clean with zero warning/error matches, from a recompile proven
+      genuine (`Invalidating makefile` plus the touched files in the action list).
+- [ ] The existing Smoke gate stays green with no regression in counts, and the named
+      `ProductFilter` gate reports `failed=0, notRun=0` from its own `index.json`.
+- [ ] Discoverability of the new `ProductFilter` tests is proven by a real filter-collection
+      run, not by `-TestNames` alone (`Docs/Environment.md`: "a test the documented gate
+      cannot see is not coverage").
+
+#### Scope boundary
+
+Excluded, and named so they are not silently absorbed: driving the authored circuit
+(needs a drivable surface, TRACK-002's open risk); lap/sector validation through a driven
+car (`RACE-002` owns lap truth, and its 100-lap matrix is `RACE-004`'s, already DONE);
+tune quality judgements — this ticket proves the car behaves *consistently*, not that it
+behaves *well*; packaged-build and Gauntlet soak, which belong with the hardening epic;
+any visual or screenshot assertion, which needs an RHI this gate does not have.
+
+#### On VEH-005's deferred status
+
+VEH-005 sits at "merged, gates deferred to VEH-006" (see its orchestrator note). Per that
+note's own trigger condition, VEH-005 flips to `DONE` only when this ticket's
+`code-reviewer` and `test-engineer` gates both pass **with the reset criterion above in
+scope**, cited by log/report path. If this ticket is descoped or slips, VEH-005 stays where
+it is.
+
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | TRACK-001 | Original circuit graybox and spline centerline | race-systems-engineer | CORE-001 | B | **DONE** 2026-08-18 — `code-reviewer` approved across two passes (1 repair cycle, plus two disputed findings independently verified against actual UE 5.8 engine source and upheld); `test-engineer` independently confirmed both targets build clean from forced real recompilation and 452/452 automation Smoke tests pass (run twice, no flakiness). Merged to `main` at `5d44744`. Graybox test level deferred into `TRACK-002`'s scope by director ruling. Findings tracked forward into `TRACK-002`, `RACE-003`, `VEH-005`, `UI-001`, `TEST-001` |

@@ -1,0 +1,9 @@
+﻿TESTNAMES=RacingSim.Vehicle.ManoeuvreWorldProbe
+PROCESS_EXITCODE=0
+reportCreatedOn=2026.09.02-03.23.34
+succeeded=1 succeededWithWarnings=0 passedTotal=1 failed=0 notRun=0
+testsInReport=1
+totalDuration=0.17830610275268555
+NON_SUCCESS_COUNT=0
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.ManoeuvreWorldProbe => Success

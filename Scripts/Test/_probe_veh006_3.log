@@ -1,0 +1,13 @@
+﻿TESTNAMES=RacingSim.Vehicle.ManoeuvreWorldProbe
+PROCESS_EXITCODE=255
+reportCreatedOn=2026.09.02-03.10.15
+succeeded=0 succeededWithWarnings=0 passedTotal=0 failed=1 notRun=0
+testsInReport=1
+totalDuration=0.32877659797668457
+NON_SUCCESS_COUNT=1
+  FAIL: RacingSim.Vehicle.ManoeuvreWorldProbe => Fail
+     Error: Expected 'A plain simulating box fell under gravity' to be true.
+     Error: Expected 'The pawn fell under gravity, so the world is simulating physics' to be true.
+     Warning: LogWorld: UWorld::CleanupWorld called on a world that has begun play, missing call to EndPlay (Untitled)
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.ManoeuvreWorldProbe => Fail

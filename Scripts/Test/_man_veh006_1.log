@@ -1,0 +1,22 @@
+﻿TESTNAMES=RacingSim.Vehicle.Manoeuvre.Acceleration+RacingSim.Vehicle.Manoeuvre.Braking+RacingSim.Vehicle.Manoeuvre.Steering+RacingSim.Vehicle.Manoeuvre.FrameRateIndependence
+PROCESS_EXITCODE=255
+reportCreatedOn=2026.09.02-03.39.01
+succeeded=0 succeededWithWarnings=0 passedTotal=0 failed=4 notRun=0
+testsInReport=4
+totalDuration=1.6885149478912354
+NON_SUCCESS_COUNT=4
+  FAIL: RacingSim.Vehicle.Manoeuvre.Acceleration => Fail
+     Error: Expected 'Full throttle reached at least 100 cm/s (measured 0.00 cm/s)' to be true.
+     Error: Expected 'Full throttle moved the car at least 100 cm forward (measured 0.00 cm)' to be true.
+  FAIL: RacingSim.Vehicle.Manoeuvre.Braking => Fail
+     Error: Expected 'The car was moving before the brake was applied (0.00 cm/s)' to be true.
+  FAIL: RacingSim.Vehicle.Manoeuvre.FrameRateIndependence => Fail
+     Error: Expected 'The 1/60 s reference run moved the car (0.00 cm)' to be true.
+  FAIL: RacingSim.Vehicle.Manoeuvre.Steering => Fail
+     Error: Expected 'Full right lock produced at least 1.0 deg/s of yaw (measured 0.000 deg/s)' to be true.
+     Error: Expected 'Full right lock moved the car to the right (+Y), measured 0.00 cm' to be true.
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.Manoeuvre.Acceleration => Fail
+  RacingSim.Vehicle.Manoeuvre.Braking => Fail
+  RacingSim.Vehicle.Manoeuvre.FrameRateIndependence => Fail
+  RacingSim.Vehicle.Manoeuvre.Steering => Fail

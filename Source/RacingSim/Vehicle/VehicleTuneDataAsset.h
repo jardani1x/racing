@@ -108,10 +108,40 @@ namespace RacingSim::Vehicle::PrototypeTuneDefaults
 	// These REPLACE -- not extend -- the VEH-002 placeholders, as that file demanded.
 	// -----------------------------------------------------------------------
 
+	// -----------------------------------------------------------------------
+	// SPRING RATES. VEH-006 raised these from 62/70 to 250/282, keeping the ratio.
+	//
+	// The VEH-003 values were picked for a plausible-looking front/rear balance and were
+	// never checked against the weight they have to hold up. They could not hold it up:
+	//
+	//   Chaos stores the rate in per-CENTIMETRE units -- UChaosVehicleWheel applies
+	//   Chaos::MToCm(SpringRate), i.e. UI x 100 (ChaosVehicleWheel.h:387-390).
+	//   FSimpleSuspensionSim::Simulate then computes
+	//       StiffnessForce = SpringDisplacement * Setup().SpringRate
+	//   and SpringDisplacement saturates at
+	//       MaxLength = |SuspensionMaxRaise| + |SuspensionMaxDrop| = 12 + 12 = 24 cm.
+	//
+	//   So the MOST force a corner could ever make was 24 * (62 * 100) = 148,800.
+	//   A 1250 kg car under Unreal's -980 cm/s^2 gravity weighs 1250 * 980 = 1,225,000
+	//   in those same units, which is 306,250 per corner. The springs were roughly half
+	//   as stiff as needed even fully compressed, so the car could only ever bottom out.
+	//
+	// The new values put the static ride height near the middle of the travel, which is
+	// where a suspension is supposed to sit: 306,250 / 12 cm = 25,520 per cm, i.e. about
+	// 255 N/m in these UI units. Front 250 and rear 282 straddle that while preserving
+	// the original 70/62 = 1.129 rear/front stiffness ratio, so the handling intent
+	// below survives the correction. Chaos' own UChaosVehicleWheel default is 250.0f
+	// (ChaosVehicleWheel.cpp:42-48), which is the same order of magnitude -- the old
+	// numbers were the outlier, not these.
+	//
+	// If ChassisMassKg, SuspensionMaxRaiseCm or SuspensionMaxDropCm change, redo this
+	// arithmetic. It is not a free parameter.
+	// -----------------------------------------------------------------------
+
 	/** Front spring rate, N/m. Softer than the rear so the platform pushes rather than snaps into oversteer. */
-	inline constexpr float FrontSpringRateNPerM = 62.0f;
+	inline constexpr float FrontSpringRateNPerM = 250.0f;
 	/** Rear spring rate, N/m. */
-	inline constexpr float RearSpringRateNPerM = 70.0f;
+	inline constexpr float RearSpringRateNPerM = 282.0f;
 
 	/** Spring preload, NEWTONS. Non-zero so the car sits on its springs rather than on its bump stops at rest. */
 	inline constexpr float FrontSpringPreloadN = 55.0f;

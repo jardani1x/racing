@@ -3,6 +3,7 @@
 #include "Vehicle/RacingVehiclePawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "Chaos/ParticleHandle.h"
 #include "CollisionQueryParams.h"
 #include "Components/BoxComponent.h"
 #include "Core/RacingSimLog.h"
@@ -11,6 +12,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 // VEH-004/VEH-005: the project's Vehicle/ -> Race/ dependencies, confined to this .cpp.
 // The direction is justified in ARacingVehiclePawn::PublishCarSpecVersionTo's header
 // comment -- only the pawn knows whether a tune was APPLIED as opposed to referenced,
@@ -88,6 +90,47 @@ void ARacingVehiclePawn::BeginPlay()
 	Super::BeginPlay();
 
 	ApplyChassisAsset();
+
+	// VEH-006: keep the chassis rigid body out of Chaos' sleep state.
+	//
+	// UChaosVehicleMovementComponent::SetSleeping delegates to WakeAllEnabledRigidBodies and
+	// PutAllEnabledRigidBodiesToSleep, and BOTH open with
+	// `if (USkeletalMeshComponent* Mesh = GetSkeletalMesh())`
+	// (ChaosVehicleMovementComponent.cpp:2058-2090). This pawn is a blockout whose updated
+	// component is a UBoxComponent, so GetSkeletalMesh() returns null and neither call does
+	// anything at all. The vehicle literally cannot wake its own chassis.
+	//
+	// Chaos still sleeps the body on its own once it comes to rest, and for a vehicle a sleeping
+	// body is fatal rather than merely idle:
+	// FChaosVehicleManagerAsyncCallback::OnPreSimulate_Internal returns before
+	// FChaosVehicleAsyncInput::Simulate unless Handle->ObjectState() is Dynamic
+	// (ChaosVehicleManagerAsyncCallback.cpp:126-129). The entire vehicle simulation -- engine,
+	// transmission, suspension, tyres -- stops, the last FChaosVehicleAsyncOutput stays latched
+	// so telemetry keeps reporting plausible frozen numbers, and throttle does nothing. It is a
+	// one-way door: the car cannot produce the motion that would wake it.
+	//
+	// That is what the VEH-006 manoeuvre suite was actually measuring. The decisive evidence was
+	// per-wheel physics output identical to one decimal place before and after full throttle,
+	// with game-thread interpolated throttle 1.000 and the body reporting not awake
+	// (Saved/Automation/ReportVEH006Probe6).
+	//
+	// ESleepType::NeverSleep states the requirement directly, and FRigidBodyHandle_External::
+	// SetSleepType wakes an already-sleeping particle when handed it (ParticleHandle.h:3777-3781),
+	// so this is safe to call at any point after physics state creation. BeginPlay is after it.
+	//
+	// REMOVE THIS when the prototype gains a real skeletal mesh with a physics asset, together
+	// with p.Vehicle.DisableConstraintSuspension in Config/DefaultEngine.ini: both are the same
+	// missing-skeletal-mesh gap in Chaos Vehicles, seen from different sides.
+	if (ChassisCollision != nullptr)
+	{
+		if (const FBodyInstance* ChassisBody = ChassisCollision->GetBodyInstance())
+		{
+			if (FPhysicsActorHandle ChassisActor = ChassisBody->GetPhysicsActor())
+			{
+				ChassisActor->GetGameThreadAPI().SetSleepType(Chaos::ESleepType::NeverSleep);
+			}
+		}
+	}
 
 	// VEH-004: report the thresholds in force once, at start, rather than leaving a
 	// reader to guess which numbers a failure report was judged against. A null asset
@@ -331,6 +374,36 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 		Engine.EngineBrakeEffect = TuneAsset->EngineBrakeEffect;
 		Engine.EngineRevUpMOI = TuneAsset->EngineRevUpMoi;
 		Engine.EngineRevDownRate = TuneAsset->EngineRevDownRate;
+
+		// VEH-006: re-arm mechanical simulation. This is NOT belt-and-braces; without it
+		// this pawn has no engine, no transmission and no differential for its whole life.
+		//
+		// UChaosWheeledVehicleMovementComponent::bMechanicalSimEnabled is set true in
+		// exactly one place -- the component constructor
+		// (ChaosWheeledVehicleMovementComponent.cpp:1135). SetupVehicle sets it FALSE
+		// when EngineSetup.TorqueCurve is empty (:1539-1549) and there is no path that
+		// ever sets it back. The physics state is created once at component REGISTRATION,
+		// which happens during spawn, before BeginPlay -- and at that moment
+		// EngineSetup.TorqueCurve is still the empty default, because the tune above has
+		// not been written yet. So the flag latches off, and the RecreatePhysicsState()
+		// that ApplyChassisAsset() performs immediately after this function returns
+		// rebuilds the vehicle with a perfectly good curve into a component that has
+		// already decided mechanical simulation is off. The `if (bMechanicalSimEnabled)`
+		// guard at :1551 then skips FSimpleEngineSim, FSimpleTransmissionSim and
+		// FSimpleDifferentialSim entirely.
+		//
+		// Symptom this produced, and what it cost to find: full throttle, a correctly
+		// shaped input command of 1.000 reaching the movement component, wheels created,
+		// rigid body settling correctly onto the ground -- and the car sitting still at
+		// gear 0 and 0.0 engine rpm, not even the 950 rpm idle. Three build-and-run
+		// cycles. Evidence: Saved/Automation/ReportVEH006Man1..3/index.json and the
+		// single LogVehicle line in Saved/Logs/RacingSim.log.
+		//
+		// EnableMechanicalSim is the supported public setter
+		// (ChaosWheeledVehicleMovementComponent.h:768-771). It is called only inside this
+		// branch: a tune whose curve was refused above must stay disabled, which is the
+		// engine's own correct behaviour for an unusable curve.
+		VehicleMovementComponent->EnableMechanicalSim(true);
 
 		// The car-spec-version gate (VEH-004 HIGH-2, see the header comment on
 		// ApplyTuneAsset()): only set once the engine has genuinely been written, so a
