@@ -114,15 +114,28 @@ bool FVehicleManoeuvreWorldProbeTest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	// A car dropped from 200 cm with no ground under it IS a runaway: VEH-004's failure
-	// detector logs an Error the moment free-fall speed leaves its acceleration envelope,
-	// and an unhandled Error fails the test. That log line is a correct detection, not a
-	// defect, and it is also the first end-to-end evidence that the VEH-004 detector fires
-	// against real physics rather than against a hand-fed telemetry array. Occurrences 0
-	// means "any number of times", since how many frames of free fall trip it is a
-	// property of the envelope, not something this probe should pin down.
-	AddExpectedErrorPlain(TEXT("VEH-004 failure detected"),
-		EAutomationExpectedErrorFlags::Contains, /*Occurrences*/ 0);
+	// There is deliberately NO AddExpectedError for "VEH-004 failure detected" here, and the
+	// reason is a defect this probe used to depend on.
+	//
+	// This probe drops a car from 200 cm with no ground under it, and it originally declared
+	// that free fall as an expected RunawayEnergy detection. That expectation was only ever
+	// satisfied because VEH-004 divided measured MOVEMENT by measured WALL-CLOCK time: a
+	// fixed-step loop that ran faster than real time produced enormous apparent
+	// accelerations for perfectly ordinary motion. Commit 62134d0 fixed that by judging
+	// simulated motion against FVehicleTelemetrySnapshot::SimulationTimeSeconds, and free
+	// fall is 980 cm/s^2 -- far inside MaxAccelerationCmsPerSecondSquared, which is 8000.
+	// A falling car is correctly not a runaway, so the detection stopped happening.
+	//
+	// The stale expectation then failed this test, because Occurrences 0 does not mean "zero
+	// or more"; it means "one or more, count unchecked", so an expectation nothing matches is
+	// reported as
+	//
+	//   Expected suppressed ('Warning') level log message or higher matching
+	//   'VEH-004 failure detected' did not occur.
+	//
+	// Leaving it in place would re-arm a silent dependency on the very arithmetic bug
+	// 62134d0 removed. If a genuine Error ever appears during this probe, it should fail the
+	// test, which is exactly what happens now.
 
 	if (const UPhysicsSettings* PhysicsSettings = UPhysicsSettings::Get())
 	{

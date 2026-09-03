@@ -1,0 +1,135 @@
+# VEH-006 automation discoverability evidence -- TRIMMED.
+#
+# Produced by:
+#   UnrealEditor-Cmd.exe RacingSim.uproject -ExecCmds="Automation List; Quit"
+#                        -unattended -nopause -nosplash -nullrhi -stdout -utf8output
+#
+# The raw editor stdout for this run is 1.4 MB, roughly 300x the size of every other
+# build log tracked under Scripts/Test (1-5 KB each), and almost all of it is engine
+# startup chatter plus the automation names of ~2,900 engine tests that have nothing to
+# do with this ticket. Committing it verbatim would put a megabyte of unrelated noise
+# into the repository to preserve about a hundred useful lines, so it is trimmed here to
+# exactly three things and nothing is otherwise edited: the command line that produced
+# it, every enumerated test whose name begins with RacingSim., and the exit code.
+#
+# What this file is evidence FOR: the VEH-006 manoeuvre, failure-detection and soak
+# suites are all registered and discoverable by the automation framework. It is the
+# substitute for the Product-filter gate, which cannot be run on this machine -- the
+# PixelStreaming2 mock-player suite stalls its EpicRtc sessions under -nullrhi and takes
+# the editor down before any report is written (PROCESS_EXITCODE=3, NO_INDEX_JSON).
+#
+# Note what is NOT in the list below: RacingSim.Vehicle.Soak.ThirtyMinuteDrive. That is
+# not a missing test, it is the StressFilter behaviour recorded in Run-Soak.ps1 -- the
+# automation controller default RequestedTestFlags omits StressFilter, so a Stress test
+# is never enumerated until Automation SetFilter Stress widens it first.
+
+LogCsvProfiler: Display: Metadata set : commandline="" "C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" -ExecCmds="Automation List; Quit" -unattended -nopause -nosplash -nullrhi -stdout -utf8output""
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.BuildId'
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.LogCategories'
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.LogCategoryRegistration'
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.RangeEnforcement'
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.SettingsDefaults'
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.SettingsIniOverrideClamp'
+[2026.09.03-04.35.03:317][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.SettingsRangeMetadata'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.Telemetry'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.Units'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.UrlEncoding'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Core.VersionStamp'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.CenterlineAmbiguity'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.CenterlineBuild'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.CenterlineDistanceDomain'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.CenterlineLateralAxis'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.CenterlinePolylineBias'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.CenterlineQueries'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ClockMonotonic'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ClockUnderStates'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.Countdown'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.FaultMatrixDoubleTrigger'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.FaultMatrixNegativeControl'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.FaultMatrixOrderedPairs'
+[2026.09.03-04.35.03:318][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.FaultMatrixRestart'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.FaultMatrixSelfPairs'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.FaultMatrixSingles'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.GateCrossingDirection'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.GateCurvedTrack'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.GateSetBuild'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.Idempotency'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapCleanLap'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapClockFault'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapInheritedFixes'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapLineSpin'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapNoGateProgress'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapOrdering'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapResetAndRestart'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapSectorSplitShape'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.LapTrackerConfiguration'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.PlatformTimeSource'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.Reentrancy'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.RestartAwardsNoProgress'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ResultClockFault'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ResultFreeze'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ResultRestartCycle'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ResultSubmission'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.ResultTrackGate'
+[2026.09.03-04.35.03:319][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.Ruleset'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.StateMachineSemantics'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackBake'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackCheckpointGateOrderFloor'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackFailedBakeIsNotRetried'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackFixtureRestore'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackHintReseed'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackPoses'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackPrototypeLevelGates'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackPrototypeLevelIdentity'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackPrototypeLevelPostLoad'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackSectors'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackValidation'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackValidationCache'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TrackVersion'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Race.TransitionGraph'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Tests.AutomationTestPlacement'
+[2026.09.03-04.35.03:320][292]LogAutomationCommandLine: Display: 	'RacingSim.Tests.NonShippingArtifacts'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.Acceleration'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.Braking'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.FailureDetectorSilentOnHealthyDriving'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.FrameRateIndependence'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.SafeResetUnderLoad'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.SafeResetWithoutTrackIsANoOp'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.Manoeuvre.Steering'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.CameraDataAsset'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.CameraMath'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.ChaosInputMapping'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.ChassisGeometry'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.ChassisRelationships'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.ChassisWheelMatch'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureDetectionCleanState'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureDetectionDiscontinuity'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureDetectionNonFinite'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureDetectionRunawayAndTunnelling'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureDetectionWheelState'
+[2026.09.03-04.35.03:321][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureThresholdDefaultsMatchAsset'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.FailureThresholdsValidation'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputConfigBindings'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputConfigRanges'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputConfigureFromAsset'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputControls'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputFrameRateIndependence'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputHostileValues'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputNoHardcodedKeys'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputResetHold'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputResetStaleFreeze'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputShaping'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputStaleSample'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.InputUnits'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.ManoeuvreWorldProbe'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.ResetMath'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TelemetryCarSpecVersion'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TelemetrySnapshotContract'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TuneDefaults'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TunePeakTorqueIndependentOfCurvePeak'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TuneRanges'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TuneRelationships'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.TuneWheelClassMatch'
+[2026.09.03-04.35.03:324][292]LogAutomationCommandLine: Display: 	'RacingSim.Vehicle.WheelClasses'
+[2026.09.03-04.35.03:445][292]LogAutomationCommandLine: Display: **** TEST COMPLETE. EXIT CODE: 0 ****

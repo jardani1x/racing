@@ -701,9 +701,57 @@ void ARacingVehiclePawn::NotifyTelemetryDiscontinuity()
 	// a post-teleport pose against pre-teleport wheel data. VEH-005's ExecuteSafeReset
 	// calls this precisely so neither happens. Both were caught by
 	// RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport.
-	FailureState.NotifyDiscontinuity();
+	// The LOCATION overload, and LastSnapshot rather than GetActorLocation(): the
+	// detector needs the pose the physics thread has already seen, which is the last one
+	// captured, not the one this actor was just teleported to. See
+	// FVehicleFailureDetectorState::PreDiscontinuityLocationCm for the measurement that
+	// made this necessary -- the wheel half of the telemetry keeps arriving from before
+	// the teleport for a capture longer than the pose half does.
+	if (LastSnapshot.bIsValid)
+	{
+		FailureState.NotifyDiscontinuity(LastSnapshot.LocationCm);
+	}
+	else
+	{
+		FailureState.NotifyDiscontinuity();
+	}
+
 	LoggedFailureFlags = 0;
 	NextCaptureTimeSeconds = 0.0;
+}
+
+double ARacingVehiclePawn::GetMinimumResetClearanceCm() const
+{
+	// No asset means no geometry to reason from, and 0 is the honest answer: it leaves
+	// FMath::Max in ExecuteSafeReset with the track's own lift, which is exactly the
+	// behaviour this pawn had before the chassis was consulted at all.
+	if (ChassisAsset == nullptr)
+	{
+		return 0.0;
+	}
+
+	// The deepest corner, not the average and not the front axle: the car must clear the
+	// road at EVERY wheel, and the prototype's front and rear radii differ (34 vs 35 cm).
+	double DeepestContactPatchBelowOriginCm = 0.0;
+
+	for (int32 CornerIndex = 0; CornerIndex < NumPrototypeVehicleWheels; ++CornerIndex)
+	{
+		const EVehicleWheelIndex WheelIndex = static_cast<EVehicleWheelIndex>(CornerIndex);
+
+		// WheelCentreHeightCm is negative (the hubs sit below the actor origin), so
+		// negating it gives a depth, and the tyre reaches one radius further down.
+		const double ContactPatchBelowOriginCm =
+			-static_cast<double>(ChassisAsset->GetWheelOffsetCm(WheelIndex).Z)
+			+ static_cast<double>(ChassisAsset->GetWheelRadiusCm(WheelIndex));
+
+		DeepestContactPatchBelowOriginCm =
+			FMath::Max(DeepestContactPatchBelowOriginCm, ContactPatchBelowOriginCm);
+	}
+
+	// No extra margin. This is the height at which the tyres just touch, which is where a
+	// suspension wants to start: lifting further makes the reset a small drop, and a drop
+	// is the other way to produce the acceleration spike this number exists to prevent.
+	return DeepestContactPatchBelowOriginCm;
 }
 
 FVehicleFailureThresholds ARacingVehiclePawn::ResolveFailureThresholds() const
@@ -864,7 +912,25 @@ void ARacingVehiclePawn::ExecuteSafeReset(
 	// One-shot ground trace, not per-Tick: corrects height for a crested or banked reset
 	// point rather than blindly trusting the seed's fixed PoseHeightOffsetCm lift.
 	const FVector SeedLocation = ResetSeedTransform.GetLocation();
-	const double GroundClearanceCm = Track->PoseHeightOffsetCm;
+
+	// THE MAXIMUM OF TWO NUMBERS THAT ANSWER TWO DIFFERENT QUESTIONS.
+	//
+	// ATrackDefinitionActor::PoseHeightOffsetCm is a TRACK property -- "how far above the
+	// road surface to place a car origin" -- authored once for a circuit, with no
+	// knowledge of which car will use it. Its 50 cm default is fine for a car whose
+	// origin sits near its axle plane and wrong for one whose wheels hang lower. The
+	// prototype chassis is the second kind: WheelCentreHeightCm = -35 with a 35 cm rear
+	// radius puts the tyre contact patch 70 cm BELOW the origin, so a 50 cm lift plants
+	// the car 20 cm inside the slab. The suspension then throws it out, and the detector
+	// is right to call that RunawayEnergy:
+	//
+	//   speed changed by 272.351990 cm/s over 0.016667 s (16341.118533 cm/s^2)
+	//
+	// -- 16.7 g, on a car that was supposed to have been placed gently. Taking the larger
+	// of the two never lowers a car the track wanted higher, and never plants a car whose
+	// own geometry needs more room than the track author assumed.
+	const double GroundClearanceCm = FMath::Max(
+		Track->PoseHeightOffsetCm, GetMinimumResetClearanceCm());
 
 	FHitResult Hit;
 	bool bTraceHit = false;

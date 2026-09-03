@@ -1,0 +1,32 @@
+﻿Using bundled DotNet SDK version: 10.0 win-x64
+Running UnrealBuildTool: dotnet "..\..\Engine\Binaries\DotNET\UnrealBuildTool\UnrealBuildTool.dll" RacingSimEditor Win64 Development "-project=C:\Users\jun yi\Documents\central-command\racing\RacingSim.uproject" -waitmutex
+Log file: C:\Users\jun yi\AppData\Local\UnrealBuildTool\Log.txt
+Determining max actions to execute in parallel (14 physical cores, 18 logical cores)
+  Executing up to 14 processes, one per physical core
+  Requested 1.5 GB memory per action, 643.06 MB available: limiting max parallel actions to 1
+Using 'git status' to determine working set for adaptive non-unity build (C:\Users\jun yi\Documents\central-command\racing).
+UbaServer - Listening on 0.0.0.0:1345
+Invalidating makefile for RacingSimEditor (RacingVehiclePawn.cpp modified)
+Building RacingSimEditor...
+===== Toolchain Information =====
+Using ISPC compiler (C:\Program Files\Epic Games\UE_5.8\Engine\Source\ThirdParty\Intel\ISPC\bin\Windows\ispc.exe)
+  Intel(r) Implicit SPMD Program Compiler (Intel(r) ISPC), 1.24.0 (build commit  @ 20250404, LLVM 18.1.2) 
+Using Visual Studio 14.44.35222 toolchain (C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\14.44.35207) and Windows 10.0.26100.0 SDK (C:\Program Files (x86)\Windows Kits\10).
+[Adaptive Build] Excluded from RacingSim unity file: RacingVehiclePawn.cpp, VehicleFailureDetection.cpp
+[Adaptive Build] Excluded from RacingSimTests unity file: VehicleFailureDetectionSpec.cpp, VehicleResetUnderLoadSpec.cpp
+=================================
+Using Unreal Build Accelerator local executor to run 4 action(s)
+  CPU 14 physical cores, 18 logical cores
+  Memory 15.7 GB physical, 36.69 GB/63.7 GB committed
+  UBA Storage capacity 40 GB
+[1/4] Compile [x64] RacingVehiclePawn.cpp
+[2/4] Link [x64] UnrealEditor-RacingSim.dll
+[3/4] Link [x64] UnrealEditor-RacingSim.lib
+[4/4] WriteMetadata RacingSimEditor.target [NoUba]
+
+Total time in Unreal Build Accelerator local executor: 36.14 seconds
+Output binary: C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe
+
+Result: Succeeded
+Total execution time: 41.32 seconds
+Trace written to file C:\Users\jun yi\AppData\Local\UnrealBuildTool\Trace.uba with size 8.5kb

@@ -1087,7 +1087,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-003 | Engine/transmission/diff/brakes/steering/suspension tune data | vehicle-physics-engineer | VEH-002, CORE-003 | C | **DONE** 2026-08-26 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: torque-curve peak formula wrong given Chaos's internal re-normalisation; an unvalidated/unusable torque curve reaching the physics solver — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and all MEDIUM, but re-review found HIGH-1's fix still order-dependent (`FMath::Max(finite, NaN)` returns the finite operand) and one MEDIUM fix targeted the wrong Chaos field (`bUseAutoReverse` vs. the actually-read `bReverseAsBrake`); repair cycle 2 closed both for real, independently re-verified against engine source (`ChaosWheeledVehicleMovementComponent.h`/`.cpp`, `ChaosVehicleMovementComponent.cpp`). Final re-review: APPROVED WITH FOLLOW-UPS — both build logs inspected directly (`Result: Succeeded`, 0 real warnings, both targets). `test-engineer` gate folded into the orchestrating session's own build/Smoke verification at each cycle: Smoke `succeeded=505, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all five new `RacingSim.Vehicle.Tune*` tests `Success`. Merged to `main`. Two items (an identical divide-by-peak hazard on the steering curve, `bUseAutoReverse` ownership) routed forward to `VEH-004`, the first ticket to author a tune content asset |
 | VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002, VEH-003 | C | **DONE** 2026-08-27 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: a stale-input detector that cried wolf on ordinary idle coasting; a refused tune write that could still stamp a race result with a car-spec version — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and 3 MEDIUM; re-review returned APPROVED WITH FOLLOW-UPS with 5 doc/comment corrections applied in a follow-up pass (no logic change) rather than a second repair cycle. Both targets build clean (0 warnings, `-NoUBA`) and Smoke `succeeded=515, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, 10 new `RacingSim.Vehicle.*` tests `Success`. Merged to `main`. Two items routed forward to `VEH-005` (a `NotifyTelemetryDiscontinuity()` call obligation, and a reset-accumulation-during-stale-gap trade to resolve); the standing pawn-adapter test-coverage gap (shared with VEH-002/VEH-003) is acknowledged, not solved |
 | VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | **Merged, gates deferred to VEH-006** 2026-09-01 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: an unguarded invalid/sentinel reset pose; a camera range table with no `EnforceRanges` pin against its own `UPROPERTY` metadata — plus 5 MEDIUM, 5 LOW); repair cycle 1 closed both HIGH and all MEDIUM/LOW. Re-review (pass 2) opened 4 new MEDIUM against repair cycle 1's own fixes (an unenforced camera-FOV runtime ceiling; a reset-flag preservation fix that was correct for in-possession resets but wrong for unpossession; a missing findings-disposition table; stale build-evidence citations); repair cycle 2 closed all four. A third diff-only re-review (pass 3) surfaced one more MEDIUM (a second, still-unclamped FOV apply site the pass-2 fix missed) and 4 LOW (doc/citation nits); repair cycle 3 closed all five and was independently re-verified by the reviewer against actual UE 5.8 engine source, direct log/`index.json` inspection, and log diffing — final verdict **APPROVED**. `test-engineer` independently forced a from-scratch recompile of both targets (deleted the `Intermediate/` build cache first, since the ticket's own logs already post-dated every source edit) — both `Result: Succeeded`, zero warnings — and Smoke `succeeded=519, succeededWithWarnings=2 (pre-existing TRACK-001/002 tests, unrelated), failed=0, notRun=0`, with `RacingSim.Vehicle.CameraMath`/`CameraDataAsset`/`ResetMath` all `Success`; independently read all three new spec files and traced `ExecuteSafeReset` against every acceptance-criteria bullet. Deviation from bare `DONE`: this ticket's own Gate B/C manoeuvre proof needs a live actor/world that `SmokeFilter` cannot construct, so the status here reads "merged, gates deferred to VEH-006" rather than `DONE` — see the deviation record (owner, trigger, and permanence) in the VEH-005 orchestrator note. Non-blocking findings and the deferred manoeuvre test routed forward to `VEH-006` |
-| VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | OPEN |
+| VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | **IN REVIEW** 2026-09-03 - implementation complete. Editor build clean (`_build_editor_veh006_gate2.log`, WARNING_ERROR_MATCHES=0); 14/14 manoeuvre and failure-detection suites green (`ReportVEH006Gate2`); Smoke unchanged at 520+2/0/0 across 522 (`ReportVEH006Smoke4`); soak 108,000 steps = 1800.0 s simulated in 36.2 s wall clock, 180 inspections, max distance 919.7 cm of 8000.0 cm, resident delta +18.9 MiB against a 64.0 MiB ceiling (`ReportVEH006Soak4`). The Product filter cannot run on this machine and is reported as a harness failure, not a pass; discoverability proved by `Automation List` instead. Fixed along the way: VEH-005 `NotifyTelemetryDiscontinuity` no-op, track spawn ordering, reset clearance derived from the chassis rather than the track, wheel-telemetry latency suppression, and a stale `AddExpectedError` in `ManoeuvreWorldProbe` that depended on the VEH-004 wall-clock bug. Awaiting `code-reviewer` and `test-engineer` gates. |
 
 Chaos Vehicles is mandatory (hard constraint #2). No Unity-style WheelCollider
 architecture. Tunables live in typed DataAssets, never as magic numbers in `Tick`.
@@ -2458,6 +2458,267 @@ note's own trigger condition, VEH-005 flips to `DONE` only when this ticket's
 `code-reviewer` and `test-engineer` gates both pass **with the reset criterion above in
 scope**, cited by log/report path. If this ticket is descoped or slips, VEH-005 stays where
 it is.
+
+#### VEH-006 implementation findings, recorded 2026-09-03
+
+Everything below was found by running, not by reading, and each entry names the evidence
+that established it. The order is the order they were hit.
+
+**Criterion 0 -- the world path.** `FTestWorldWrapper` (`Tests/AutomationCommon.h`) is the
+path that works: `CreateTestWorld(EWorldType::Game)`, then `BeginPlayInTestWorld()`, then
+spawn, then `TickTestWorld(StepSeconds)` per step. Three paths were tried and rejected
+first, and all three produce a car that never moves with no error of any kind -- they are
+recorded in `Source/RacingSimTests/Vehicle/VehicleManoeuvreWorldProbeSpec.cpp`'s file
+comment. The decisive one: a hand-rolled `UWorld::CreateWorld` + `BeginPlay` +
+`World->Tick` loop advances world time and leaves the Chaos solver frozen after exactly
+one integration step, because a hand-rolled tick is not a frame --
+`FTestWorldWrapper::TickTestWorld` increments `GFrameCounter` after each tick and Chaos
+marshals game-thread state per frame.
+
+**Two engine gates keep an unpossessed Chaos vehicle completely inert, and they are
+separate defects with separate fixes.** The first manoeuvre run reported `0.00 cm` of
+travel, `0.00 cm/s` and `0.00 deg/s` on every test, with a healthy four-wheel car sitting
+correctly on the ground (`Saved/Automation/ReportVEH006Man1/index.json`).
+
+- *Gate 1 -- input is discarded without a LOCAL controller.*
+  `ChaosVehicleMovementComponent.cpp:1281` computes
+  `bProcessLocally = bRequiresControllerForInputs ? (Controller && Controller->IsLocalController()) : true;`
+  and every consumer of throttle, brake, steering and gear selection sits inside
+  `if (bProcessLocally)`. `bRequiresControllerForInputs` defaults to true (`:625`).
+  **Fix: possess the pawn** -- and with an `AAIController`, *not* an `APlayerController`.
+  `AController::IsLocalController()` returns true immediately for `NM_Standalone`, but
+  `APlayerController` overrides it and returns **false** when there is no `NetDriver` and
+  no `ULocalPlayer`, and a bare test world has neither. An earlier fix poked
+  `SetRequiresControllerForInputs(false)` instead; that silenced the symptom while leaving
+  the fixture exercising a path no shipping car takes, and was reverted.
+- *Gate 2 -- the vehicle sleeps and cannot wake itself.* Possession does **not** fix this.
+  The settle phase holds zero input, so the solver sleeps the chassis island.
+  `UChaosVehicleMovementComponent::ProcessSleeping` would wake it via `SetSleeping(false)`,
+  but `SetSleeping` delegates to `WakeAllEnabledRigidBodies` /
+  `PutAllEnabledRigidBodiesToSleep` (`ChaosVehicleMovementComponent.cpp:2058-2090`) and
+  **both open with `if (USkeletalMeshComponent* Mesh = GetSkeletalMesh())`**.
+  `ARacingVehiclePawn`'s `UpdatedComponent` is a `UBoxComponent`, so both are complete
+  no-ops. A slept chassis is fatal because
+  `FChaosVehicleManagerAsyncCallback::OnPreSimulate_Internal`
+  (`ChaosVehicleManagerAsyncCallback.cpp:126-129`) returns before
+  `FChaosVehicleAsyncInput::Simulate` unless the handle's `ObjectState` is `Dynamic`: the
+  whole vehicle sim stops and the last async output stays latched, so telemetry keeps
+  reporting plausible frozen numbers. Signature in the log: target gear 1 with current
+  gear 0 and the engine pinned at idle (`Saved/Automation/ReportVEH006Man6/index.json`).
+  **Fix: `ARacingVehiclePawn::BeginPlay` pins the chassis particle to
+  `Chaos::ESleepType::NeverSleep`** through
+  `FSingleParticlePhysicsProxy::GetGameThreadAPI().SetSleepType`, which
+  `ParticleHandle.h:3777-3781` documents as also waking an already-sleeping particle.
+  Shipping cars get the same treatment; the fixture is not special.
+
+**Disproven hypotheses, recorded so they are not re-explored.** Each cost a
+build-and-run cycle and each is wrong:
+
+- *A `ProcessSleeping` cvar would fix Gate 2.* No -- the no-op is in the skeletal-mesh
+  guard, not in a cvar-gated branch.
+- *An auto-brake path was holding the car.* No -- `Probe6` read `DriveTorque`,
+  `BrakeTorque`, `AngularVelocity` and `SpringForce` straight off
+  `PhysicsVehicleOutput()` and showed the whole async output frozen, not braked.
+- *Network prediction was overwriting the input from `ReplicatedState`.* No -- the
+  `ThrottleOverride` discriminator showed raw and interpolated throttle agreeing, which
+  localises the fault downstream of `UpdateState`.
+- *An airborne wheel retains a stale `ContactPoint`, so any airborne car far from the
+  origin raises `InvalidContact`.* No -- `PerformSuspensionTraces` does
+  `HitResult = FHitResult();` every physics tick, so a non-hit yields
+  `ImpactPoint = ZeroVector`, and the detector's contact check is already inside
+  `if (Wheel.bInContact)`.
+
+**A `bMechanicalSimEnabled` latch bug** was found and fixed in the same pass; see the
+pawn's own comment at the fix site.
+
+**The suspension constraint is missing under `-nullrhi`,** mitigated with
+`p.Vehicle.DisableConstraintSuspension=1`. Proof that the setting is actually in force
+rather than merely written down: the cvar reports `LastSetBy: SystemSettingsIni`.
+
+**A spring-rate defect.** The authored front/rear spring rates (62 / 70 N/m) cannot carry
+the car: peak per-corner force is `24 cm x (62 x 100) = 148,800` against a corner weight of
+`1250 x 980 / 4 = 306,250`. Corrected to 250 / 282 N/m.
+
+**VEH-004 defect: the detector divided measured MOVEMENT by measured WALL-CLOCK time.**
+A fixed-step test loop therefore produced impossible accelerations for a perfectly healthy
+car. Fixed at `62134d0` by adding `FVehicleTelemetrySnapshot::SimulationTimeSeconds` and
+judging simulated motion against the simulated clock.
+
+**VEH-005 defect: `NotifyTelemetryDiscontinuity` was a no-op in the only respect that
+mattered.** It cleared `PreviousSnapshot`, but `CaptureAndEvaluateTelemetry` opens its next
+capture with `PreviousSnapshot = LastSnapshot`, restoring the basis one line later -- so
+every safe reset raised Error-severity `Tunnelling` and then `InvalidContact`. Fixed
+detector-side with `FVehicleFailureDetectorState::bDiscontinuityPending`, which the next
+evaluation consumes.
+
+**Track spawn ordering.** `ATrackDefinitionActor::BeginPlay` rebuilds *and validates*, and
+`SpawnActor` dispatches `BeginPlay` before it returns in a world that has already begun
+play. A non-deferred spawn therefore bakes the default two-point spline with `TrackId`
+still `None` and logs, at Error severity,
+`Track 'None' failed validation at BeginPlay: TrackId is None.`, preceded by a gate-clamp
+warning about a 200 cm lap -- both of which the automation framework turns into a test
+failure. **Fix: `SpawnActorDeferred`, author `TrackId` and spline, then
+`UGameplayStatics::FinishSpawningActor`.**
+
+**Reset clearance must come from the CAR, not the TRACK.**
+`ATrackDefinitionActor::PoseHeightOffsetCm = 50.0` is a per-circuit authored lift. The
+prototype chassis has `WheelCentreHeightCm = -35.0` with a 35 cm rear wheel radius, so its
+contact patch is 70 cm below the actor origin: a 50 cm lift plants the car 20 cm inside the
+slab and the suspension ejects it, producing
+`speed changed by 272.351990 cm/s over 0.016667 s (16341.118533 cm/s^2)`, about 16.7 g,
+correctly flagged `RunawayEnergy`. **Fix: `ExecuteSafeReset` uses
+`FMath::Max(Track->PoseHeightOffsetCm, GetMinimumResetClearanceCm())`**, the latter derived
+per corner from the chassis asset's own wheel offsets and radii.
+
+**Chaos marshals wheel telemetry back to the game thread later than the chassis pose, and
+the suppression must survive that.** `FillWheelOutputState` copies
+`State.ContactPoint = PWheel.ImpactPoint` from the async output, and
+`UChaosVehicleMovementComponent` *interpolates* it
+(`ImpactPoint = FMath::Lerp(Current.ImpactPoint, Next.ImpactPoint, OutputInterpAlpha)`),
+while the chassis pose is set synchronously by `SetActorLocationAndRotation`. So after a
+teleport the two halves of one snapshot disagree for more than one capture, and a
+suppression lasting exactly one evaluation lets `InvalidContact` through on a stationary
+car. **Fix: `FVehicleFailureDetectorState::PreDiscontinuityLocationCm`**, a self-terminating
+basis -- a contact within `MaxContactDistanceCm` of the pose the car *left* is skipped.
+
+Deciding when that basis expires took one further correction, and the first rule was
+wrong. Expiring it "the first evaluation in which nothing matches" throws it away on the
+capture immediately after the teleport, which carries **no contact evidence at all**.
+Measured, with the basis at `(-147.8,1032.3,69.6)` and `dPre` the distance from it
+(`Saved/Automation/ReportVEH006Reset5/index-with-probes.json`):
+
+```
+cap=240 hasPre=0 loc=(-148,1032,70)  [w0 c=1 pt=(-271,1093,0)]                 pre-reset
+reset  valid=1 loc=(-147.8,1032.3,69.6)
+cap=241 hasPre=1 loc=(-2500,4330,70) [w0 c=0 pt=(0,0,0)]                       no evidence
+cap=242 hasPre=1 loc=(-2500,4330,72) [w0 c=1 pt=(-297,1083,0)  dPre=172.1]     stale
+cap=243 hasPre=0 loc=(-2500,4330,74) [w0 c=1 pt=(-2661,4329,0) dPre=5081.2]    fresh
+```
+
+The rule is therefore phrased around **fresh** contact, not around the absence of matching
+contact: the basis expires the first time a wheel *in contact* reports a point somewhere
+else. Absence of contact is not evidence of catching up. Pinned by a dedicated step in
+`RacingSim.Vehicle.FailureDetectionDiscontinuity`, so the wrong rule cannot come back.
+
+**Harness traps.**
+
+- A test that spawns actors must be `ProductFilter`, never `SmokeFilter`:
+  `FEngineLoop::PreInit` runs `SmokeFilter` tests before `RegisterEngineElements()`, and
+  constructing a non-template `UActorComponent` in that window is a hard crash of the run.
+- `EditorContext` must be kept on every suite or the editor harness will not see it.
+- `Run-AutomationFilter.ps1` needs an **absolute** `-ReportDir`: `UnrealEditor-Cmd`
+  resolves `-ReportExportPath` against the *engine* directory, so a relative path writes
+  the report where nobody looks and the script then reports `NO_INDEX_JSON`.
+- `index.json` is written with a UTF-8 BOM; read it as `utf-8-sig`.
+- Any `UE_LOG(..., Error, ...)` during a test is a test failure unless declared with
+  `AddExpectedError(Pattern, EAutomationExpectedErrorFlags::Contains, Occurrences)`.
+- **A `StressFilter` test cannot be found by name until the filter is widened.** The
+  automation controller's default is
+  `RequestedTestFlags = SmokeFilter | EngineFilter | ProductFilter | PerfFilter;`
+  (`AutomationControllerManager.cpp:498`, repeated at `:1009`), and the controller asks the
+  worker for tests matching those flags, so a Stress test is never enumerated at all. The
+  first soak run therefore died as
+  `LogAutomationCommandLine: Error: No automation tests matched 'RacingSim.Vehicle.Soak.ThirtyMinuteDrive'`
+  with `PROCESS_EXITCODE=255`, `HARNESS_WALLCLOCK_SECONDS=42.2` and no report -- which
+  looks exactly like a crash and is not one. **Fix: `Run-Soak.ps1` issues
+  `-ExecCmds="Automation SetFilter Stress; RunTests <name>; Quit"`.** `Automation` takes a
+  semicolon-separated sub-command list processed in order, so `SetFilter` lands before
+  `RunTests` requests the list.
+
+**The `Product` filter gate cannot be run on this machine, and that is a pre-existing
+engine-plugin limitation, not a VEH-006 regression.** `Automation RunFilter Product` loads
+the PixelStreaming2 mock-player suite, which under `-nullrhi` stalls its EpicRtc sessions
+and takes the editor down before any report is written. Reproduced again for this ticket:
+
+```
+[Error] [EpicRtc] SessionInternal::Disconnect. Session asked to disconnect in a
+        wrong state. sessionId=[MockPlayer3] state=[Pending]
+[Warning] [EpicRtc] Conference::PopMixedFrame: Ticking audio too late. lateMillis=[11017ms]
+PROCESS_EXITCODE=3
+NO_INDEX_JSON -- the run produced no report; treat as a harness failure, not a pass.
+```
+
+Reported as a harness failure, never as a pass, exactly as Criterion 0 requires.
+**Discoverability is therefore proved directly instead**, with `Automation List`
+(`Scripts/Test/_list_veh006_soak.log`, exit 0), which enumerates every manoeuvre suite the
+ticket adds. That log is committed TRIMMED, and its own header says so: the raw editor
+stdout is 1.4 MB against 1-5 KB for every other build log tracked under `Scripts/Test`, and
+the excess is engine startup chatter plus the names of roughly 2,900 engine tests unrelated
+to this ticket. It keeps the command line that produced it, all 108 enumerated
+`RacingSim.` tests, and the exit code; nothing else is edited.
+
+```
+'RacingSim.Vehicle.Manoeuvre.Acceleration'
+'RacingSim.Vehicle.Manoeuvre.Braking'
+'RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport'
+'RacingSim.Vehicle.Manoeuvre.FailureDetectorSilentOnHealthyDriving'
+'RacingSim.Vehicle.Manoeuvre.FrameRateIndependence'
+'RacingSim.Vehicle.Manoeuvre.SafeResetUnderLoad'
+'RacingSim.Vehicle.Manoeuvre.SafeResetWithoutTrackIsANoOp'
+'RacingSim.Vehicle.Manoeuvre.Steering'
+'RacingSim.Vehicle.ManoeuvreWorldProbe'
+```
+
+That same listing is the evidence for the Stress finding above: the soak suite is absent
+from it, because `Automation List` honours the same default filter.
+
+**A stale `AddExpectedError` in `ManoeuvreWorldProbe` was silently depending on the VEH-004
+arithmetic bug.** The probe drops a car from 200 cm with no ground under it and declared
+that free fall as an expected `RunawayEnergy` detection. That expectation was only ever
+satisfied because VEH-004 divided movement by wall-clock time; once `62134d0` judged
+simulated motion against the simulated clock, free fall is 980 cm/s^2 -- far inside
+`MaxAccelerationCmsPerSecondSquared`, which is 8000 -- so the detection correctly stopped
+happening and the unmatched expectation failed the test:
+
+```
+Error: Expected suppressed ('Warning') level log message or higher matching
+'VEH-004 failure detected' did not occur.
+```
+
+`Occurrences 0` does **not** mean "zero or more". It means "one or more, count unchecked",
+so an expectation nothing matches is a failure, not a no-op. The expectation is removed and
+the reasoning left in its place, because reinstating it would re-arm a silent dependency on
+the very bug `62134d0` deleted. This is also why the probe went unnoticed for a commit: it
+is `ProductFilter`, and the Product gate cannot run on this machine (above).
+
+#### VEH-006 verification evidence
+
+All figures below were produced by runs that completed and whose reports were inspected.
+
+| Gate | Command | Report | Result |
+|---|---|---|---|
+| Editor build | `Build-Target.ps1 -Target RacingSimEditor` | `Scripts/Test/_build_editor_veh006_gate2.log` | `Result: Succeeded`, `WARNING_ERROR_MATCHES=0` |
+| Manoeuvre + detector | `Run-AutomationFilter.ps1 -TestNames "RacingSim.Vehicle.Manoeuvre+RacingSim.Vehicle.FailureDetection"` | `Saved/Automation/ReportVEH006Gate2` | `succeeded=14 withWarnings=0 failed=0 notRun=0`, 14 in report |
+| Smoke | `Run-Smoke.ps1` | `Saved/Automation/ReportVEH006Smoke4` | `succeeded=520 withWarnings=2 failed=0 notRun=0`, 522 in report -- identical to the recorded baseline |
+| Soak | `Run-Soak.ps1` | `Saved/Automation/ReportVEH006Soak4` | `succeeded=1 failed=0 notRun=0`, `PROCESS_EXITCODE=0` |
+| Product filter | `Run-AutomationFilter.ps1 -Filter Product` | none written | **harness failure**: `PROCESS_EXITCODE=3`, `NO_INDEX_JSON`; pre-existing PixelStreaming2 limitation, above |
+
+The soak's own reported figures, which the ticket requires stated rather than asserted:
+
+```
+VEH-006 soak: 108000 steps at 0.016667 s = 1800.0 s simulated (30.0 min) in 36.2 s wall
+clock (2984 steps/s, 49.7x real time); 180 inspections; max distance 919.7 cm of 8000.0 cm
+bound; resident memory 1355.5 -> 1374.4 MiB, delta +18.9 MiB against a 64.0 MiB ceiling.
+```
+
+No non-finite telemetry sample, no failure report, and position bounded well inside the
+20 m slab, across all 180 inspections.
+
+Two defects in the soak harness itself were found by running it and are fixed:
+
+- **An off-by-one in the step count.** `SoakStepSeconds` is a `float`, and `1.0f/60.0f` is
+  fractionally *above* the exact 1/60, so `1800.0 / SoakStepSeconds` is 107999.99 and
+  truncation gave 107,999 steps covering 1799.98 s -- short of the requirement. The run
+  failed as `Expected 'The soak covered at least 1800.0 s of simulated time, got 1800.0 s'`,
+  with both sides printing identically because the message rounded to one decimal and the
+  comparison did not. The step count now rounds up and the assertion prints four decimals.
+- **The summary never reached the report on a passing run.** A `UE_LOG(Display)` issued
+  inside a test enters `index.json` only when the framework dumps its captured log for a
+  *failing* test, so the first successful soak passed with `NON_SUCCESS_COUNT=0` while the
+  script reported no summary -- the one artefact the ticket asks for was missing from
+  precisely the run worth keeping. The summary now also goes through `AddInfo`, which is
+  serialised either way.
+
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|

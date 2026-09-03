@@ -247,6 +247,56 @@ struct FVehicleFailureDetectorState
 	 */
 	bool bDiscontinuityPending = false;
 
+	/**
+	 * Where the body was JUST BEFORE the last announced discontinuity, centimetres.
+	 * Only meaningful while bHasPreDiscontinuityLocation is set.
+	 *
+	 * ONE EVALUATION IS NOT ENOUGH FOR THE CONTACT CHECK, and measurement is the reason.
+	 * The two halves of a snapshot catch up to a teleport at different speeds: the
+	 * chassis pose is read from the game thread and is correct the instant
+	 * SetActorLocationAndRotation returns, while the wheel state is marshalled back from
+	 * the physics thread a frame later (UChaosWheeledVehicleMovementComponent::
+	 * FillWheelOutputState copies the async output, which the game thread also
+	 * INTERPOLATES between two physics results). Probed on the real pipeline, driving one
+	 * step at a time after an announced reset:
+	 *
+	 *   step=0 loc=(-2500,4330,55) [w0 contact=1 dist=3924.2 pt=(-297,1083,0)] ...
+	 *   step=1 loc=(-2500,4330,60) [w0 contact=1 dist=171.5 pt=(-2661,4329,0)] ...
+	 *
+	 * The pose moved at step 0; the wheels did not move until step 1. So the FIRST
+	 * post-reset evaluation and the one after it both read pre-teleport contact points,
+	 * and a suppression that lasted exactly one evaluation let the second one through as
+	 * Error-severity InvalidContact on a car sitting still.
+	 *
+	 * A fixed count of two would be wrong for a different reason: capture is paced on
+	 * TelemetrySampleRateHz, so at a rate below the tick rate two captures span many
+	 * ticks and the suppression would outlive the staleness it was aimed at. This is
+	 * SELF-TERMINATING instead. A wheel whose contact point is within
+	 * MaxContactDistanceCm of the PRE-discontinuity body pose is reporting a contact that
+	 * was true for where the car used to be, and is skipped; the basis is dropped the
+	 * first time a wheel in contact reports a point somewhere ELSE, which is the frame
+	 * the physics output caught up. Nothing here depends on the capture rate, the tick
+	 * rate, or whether Chaos is running its async path.
+	 *
+	 * Expiring on FRESH contact rather than on the absence of matching contact is load
+	 * bearing. The capture immediately after a teleport reports every wheel out of
+	 * contact with a zeroed contact point, and only the capture after THAT carries the
+	 * stale points. Measured on the real pipeline, with the basis at (-147.8,1032.3,69.6)
+	 * and dPre the distance from it:
+	 *
+	 *   cap=241 hasPre=1 loc=(-2500,4330,70) [w0 c=0 pt=(0,0,0)]      ... no evidence
+	 *   cap=242 hasPre=1 loc=(-2500,4330,72) [w0 c=1 pt=(-297,1083,0) dPre=172.1]  stale
+	 *   cap=243 hasPre=0 loc=(-2500,4330,74) [w0 c=1 pt=(-2661,4329,0) dPre=5081.2] fresh
+	 *
+	 * An earlier rule that expired the basis whenever nothing matched threw it away at
+	 * 241 -- on a snapshot with no contact evidence at all -- and then had nothing left
+	 * to suppress 242, which raised Error-severity InvalidContact on a stationary car.
+	 */
+	FVector PreDiscontinuityLocationCm = FVector::ZeroVector;
+
+	/** Whether PreDiscontinuityLocationCm holds a usable pose. See it for why. */
+	bool bHasPreDiscontinuityLocation = false;
+
 	/** Drop all accumulated history. Call on teleport, respawn or session restart. */
 	void Reset()
 	{
@@ -255,6 +305,9 @@ struct FVehicleFailureDetectorState
 		{
 			Seconds = 0.0f;
 		}
+
+		PreDiscontinuityLocationCm = FVector::ZeroVector;
+		bHasPreDiscontinuityLocation = false;
 	}
 
 	/**
@@ -269,6 +322,32 @@ struct FVehicleFailureDetectorState
 	{
 		Reset();
 		bDiscontinuityPending = true;
+	}
+
+	/**
+	 * NotifyDiscontinuity, plus the pose the car is leaving behind.
+	 *
+	 * @param PreviousLocationCm where the body was before the teleport -- in practice the
+	 *        last captured snapshot's LocationCm, which is the only pose the detector can
+	 *        be sure the physics thread has already seen. Pass the no-argument overload
+	 *        when there is no such snapshot; the contact check then falls back to the
+	 *        single-evaluation suppression, which is strictly weaker but never wrong in
+	 *        the raising direction.
+	 */
+	void NotifyDiscontinuity(const FVector& PreviousLocationCm)
+	{
+		NotifyDiscontinuity();
+
+		if (PreviousLocationCm.ContainsNaN())
+		{
+			// A non-finite basis would make every distance comparison below false, which
+			// silently degrades to the no-argument behaviour. Refusing it explicitly says
+			// so rather than leaving it to floating-point luck.
+			return;
+		}
+
+		PreDiscontinuityLocationCm = PreviousLocationCm;
+		bHasPreDiscontinuityLocation = true;
 	}
 };
 

@@ -128,6 +128,18 @@ struct FVehicleManoeuvreFixture
 	}
 
 	/**
+	 * The transient chassis asset this fixture authored onto the pawn. Null before Setup.
+	 *
+	 * Exposed so a spec can derive an EXPECTED geometry from the same source the pawn
+	 * reads, rather than restating a number the asset owns -- a duplicated 70 cm here
+	 * would pass forever after the asset changed underneath it.
+	 */
+	UVehicleChassisDataAsset* GetChassisAsset() const
+	{
+		return Chassis.Get();
+	}
+
+	/**
 	 * Build the world, the ground and the car, then settle the suspension.
 	 *
 	 * @param Test              the calling test; every failure is reported into it.

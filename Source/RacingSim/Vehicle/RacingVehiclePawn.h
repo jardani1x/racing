@@ -379,6 +379,15 @@ private:
 	/** Thresholds from FailureThresholdsAsset, or FVehicleFailureThresholds' defaults when it is null. */
 	FVehicleFailureThresholds ResolveFailureThresholds() const;
 
+	/**
+	 * How far above a road surface this car's ORIGIN must sit for its tyres to just
+	 * touch, centimetres. Zero when no chassis asset is set.
+	 *
+	 * A track's PoseHeightOffsetCm cannot answer this: it is authored per circuit, with
+	 * no knowledge of the car. See ExecuteSafeReset, which takes the larger of the two.
+	 */
+	double GetMinimumResetClearanceCm() const;
+
 	bool bChassisApplied = false;
 	bool bTuneApplied = false;
 	bool bTuneEngineApplied = false;

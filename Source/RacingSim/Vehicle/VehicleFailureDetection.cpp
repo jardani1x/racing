@@ -246,6 +246,24 @@ namespace RacingSim::Vehicle
 		// returning nonsense, and they have different causes.
 		int32 WheelsInContact = 0;
 
+		// Whether any wheel in contact is reporting a point that does NOT belong to the
+		// pose the car left at the last announced discontinuity -- that is, proof the
+		// physics output has caught up. See
+		// FVehicleFailureDetectorState::PreDiscontinuityLocationCm.
+		//
+		// Phrased around FRESH contact, not around stale contact, and the difference is
+		// the whole bug this replaced. The evaluation immediately after a teleport
+		// reports every wheel OUT of contact with a zeroed contact point:
+		//
+		//     cap=241 loc=(-2500,4330,70) [w0 c=0 pt=(0,0,0)] ... [w3 c=0 pt=(0,0,0)]
+		//     cap=242 loc=(-2500,4330,72) [w0 c=1 pt=(-297,1083,0)] ... stale, pre-teleport
+		//
+		// so a rule that expired the basis whenever nothing MATCHED it threw the basis
+		// away at capture 241 -- on a snapshot carrying no contact evidence at all -- and
+		// then had nothing left to suppress the genuinely stale capture 242 with. Absence
+		// of contact is not evidence of catching up. Only a contact somewhere else is.
+		bool bAnyWheelReportsFreshContact = false;
+
 		for (int32 WheelIndex = 0; WheelIndex < Current.NumWheels && WheelIndex < MaxVehicleTelemetryWheels; ++WheelIndex)
 		{
 			const FVehicleWheelTelemetry& Wheel = Current.Wheels[WheelIndex];
@@ -287,8 +305,24 @@ namespace RacingSim::Vehicle
 				// bDiscontinuityPending. The pose is post-teleport and the contact point is
 				// pre-teleport, so the distance between them measures the teleport, not a
 				// bad collision query.
+				// Second, wider suppression, and it is not redundant with the first.
+				// bStraddlesDiscontinuity covers exactly the evaluation that spans the
+				// teleport; this covers the TAIL, because the wheel half of the snapshot
+				// keeps arriving from before the teleport for at least one more capture
+				// after that. A wheel whose contact point is still within the bound of
+				// the pose the car LEFT is describing the old world correctly, not
+				// describing the new one wrongly.
+				const bool bContactPredatesDiscontinuity =
+					State.bHasPreDiscontinuityLocation
+					&& FVector::Dist(State.PreDiscontinuityLocationCm, Wheel.ContactPointCm)
+						<= Thresholds.MaxContactDistanceCm;
+
+				bAnyWheelReportsFreshContact |= !bContactPredatesDiscontinuity;
+
 				const double ContactDistanceCm = FVector::Dist(Current.LocationCm, Wheel.ContactPointCm);
-				if (!bStraddlesDiscontinuity && ContactDistanceCm > Thresholds.MaxContactDistanceCm)
+				if (!bStraddlesDiscontinuity
+					&& !bContactPredatesDiscontinuity
+					&& ContactDistanceCm > Thresholds.MaxContactDistanceCm)
 				{
 					RaiseVehicleFailure(Report, EVehicleFailureFlag::InvalidContact,
 						FString::Printf(
@@ -327,6 +361,17 @@ namespace RacingSim::Vehicle
 				// its way into a fault one strike at a time.
 				State.PenetrationSeconds[WheelIndex] = 0.0f;
 			}
+		}
+
+		// The basis expires the first evaluation that produces contact evidence from
+		// somewhere other than the pose the car left -- the frame the physics output
+		// caught up with the teleport. Holding it any longer would eventually suppress a
+		// GENUINE bad contact that happened to land near a pose the car was reset from,
+		// which is a real reading this detector must still raise.
+		if (bAnyWheelReportsFreshContact)
+		{
+			State.bHasPreDiscontinuityLocation = false;
+			State.PreDiscontinuityLocationCm = FVector::ZeroVector;
 		}
 
 		// Wheels beyond NumWheels never accumulate, but a vehicle that loses wheels

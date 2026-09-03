@@ -877,6 +877,105 @@ bool FRacingSimVehicleFailureDiscontinuityTest::RunTest(const FString& Parameter
 	}
 
 	{
+		// -- THE TAIL: the contact geometry catches up LATER than the pose. --
+		//
+		// Measured on the real pipeline, not assumed. Driving one step at a time after an
+		// announced reset, the chassis pose moves at step 0 and the wheel contacts do not
+		// move until step 1, because the game thread sets the transform synchronously
+		// while Chaos marshals wheel output back a frame later. So the evaluation AFTER
+		// the straddling one still carries pre-teleport contacts, and a suppression that
+		// ended after one evaluation reported Error-severity InvalidContact on a car
+		// sitting still at its reset pose.
+		//
+		// The location overload exists for that tail, and it is self-terminating rather
+		// than counted: see FVehicleFailureDetectorState::PreDiscontinuityLocationCm.
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		const FVehicleFailureReport Straddling = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Base, Teleported, FVehicleFailureThresholds(), State);
+		TestFalse(
+			FString::Printf(TEXT("The straddling evaluation is silent, got [%s]"),
+				*RacingSim::Vehicle::DescribeVehicleFailureFlags(Straddling.Flags)),
+			Straddling.HasAnyFailure());
+
+		// The capture right after the teleport, taken from the measured pipeline, reports
+		// every wheel OUT of contact with a zeroed contact point:
+		//
+		//     cap=241 loc=(-2500,4330,70) [w0 c=0 pt=(0,0,0)] ... [w3 c=0 pt=(0,0,0)]
+		//
+		// This step exists to pin that a snapshot carrying NO contact evidence must not
+		// expire the basis. An earlier version of this rule expired it whenever nothing
+		// matched, which threw the basis away here and let the stale capture that follows
+		// through as Error-severity InvalidContact.
+		FVehicleTelemetrySnapshot NoContact = AdvanceHealthyFailureSnapshot(Teleported, Step);
+		NoContact.LocationCm = Teleported.LocationCm;
+		for (int32 WheelIndex = 0; WheelIndex < NoContact.NumWheels; ++WheelIndex)
+		{
+			NoContact.Wheels[WheelIndex].bInContact = false;
+			NoContact.Wheels[WheelIndex].ContactPointCm = FVector::ZeroVector;
+		}
+
+		const FVehicleFailureReport Untouched = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Teleported, NoContact, FVehicleFailureThresholds(), State);
+		TestFalse(
+			FString::Printf(TEXT("A capture with no contacts at all is not a fault, got [%s]"),
+				*RacingSim::Vehicle::DescribeVehicleFailureFlags(Untouched.Flags)),
+			Untouched.HasAnyFailure());
+
+		// One capture later. The car has not moved -- both snapshots are at the teleported
+		// pose, so no pair check has anything to say -- but the wheels are STILL reporting
+		// the contacts they had before the teleport.
+		FVehicleTelemetrySnapshot StillStale = AdvanceHealthyFailureSnapshot(NoContact, Step);
+		StillStale.LocationCm = Teleported.LocationCm;
+		for (int32 WheelIndex = 0; WheelIndex < StillStale.NumWheels; ++WheelIndex)
+		{
+			StillStale.Wheels[WheelIndex].bInContact = true;
+			StillStale.Wheels[WheelIndex].ContactPointCm = Base.LocationCm + FVector(0.0, 0.0, -40.0);
+		}
+
+		const FVehicleFailureReport Tail = RacingSim::Vehicle::EvaluateVehicleFailures(
+			NoContact, StillStale, FVehicleFailureThresholds(), State);
+		TestFalse(
+			FString::Printf(TEXT("Contacts still describing the pose the car LEFT are not a fault, got [%s]"),
+				*RacingSim::Vehicle::DescribeVehicleFailureFlags(Tail.Flags)),
+			Tail.HasAnyFailure());
+
+		// And the frame the physics output catches up. Nothing raised, and -- the point of
+		// this step -- the basis is dropped, because no wheel matches it any more.
+		FVehicleTelemetrySnapshot CaughtUp = AdvanceHealthyFailureSnapshot(StillStale, Step);
+		CaughtUp.LocationCm = Teleported.LocationCm;
+		for (int32 WheelIndex = 0; WheelIndex < CaughtUp.NumWheels; ++WheelIndex)
+		{
+			CaughtUp.Wheels[WheelIndex].ContactPointCm = Teleported.LocationCm + FVector(0.0, 0.0, -40.0);
+		}
+
+		const FVehicleFailureReport Fresh = RacingSim::Vehicle::EvaluateVehicleFailures(
+			StillStale, CaughtUp, FVehicleFailureThresholds(), State);
+		TestFalse(
+			FString::Printf(TEXT("A car whose wheel output caught up reports nothing, got [%s]"),
+				*RacingSim::Vehicle::DescribeVehicleFailureFlags(Fresh.Flags)),
+			Fresh.HasAnyFailure());
+
+		// -- DURATION, the half a counter cannot express. --
+		//
+		// Feed the stale contacts back in. They are now a GENUINE impossible reading --
+		// the physics output demonstrably caught up one evaluation ago -- and the detector
+		// must say so. A suppression held open for the rest of the session would not.
+		FVehicleTelemetrySnapshot StaleAgain = AdvanceHealthyFailureSnapshot(CaughtUp, Step);
+		StaleAgain.LocationCm = Teleported.LocationCm;
+		for (int32 WheelIndex = 0; WheelIndex < StaleAgain.NumWheels; ++WheelIndex)
+		{
+			StaleAgain.Wheels[WheelIndex].ContactPointCm = Base.LocationCm + FVector(0.0, 0.0, -40.0);
+		}
+
+		const FVehicleFailureReport Resumed = RacingSim::Vehicle::EvaluateVehicleFailures(
+			CaughtUp, StaleAgain, FVehicleFailureThresholds(), State);
+		TestTrue(TEXT("The contact suppression ends when the wheel output catches up"),
+			Resumed.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
 		// -- SCOPE: a NaN is still a NaN. --
 		//
 		// A reset is the likeliest moment for the solver to produce corrupt state, so the
