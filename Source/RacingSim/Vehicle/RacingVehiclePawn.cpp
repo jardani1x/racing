@@ -692,7 +692,16 @@ void ARacingVehiclePawn::NotifyTelemetryDiscontinuity()
 	// NextCaptureTimeSeconds is enough to make the next Tick capture, because the
 	// simulation clock only ever counts up from zero.
 	PreviousSnapshot = FVehicleTelemetrySnapshot();
-	FailureState.Reset();
+
+	// NotifyDiscontinuity, NOT Reset. Reset alone drops the accumulators and nothing else,
+	// and clearing PreviousSnapshot above does not survive: CaptureAndEvaluateTelemetry
+	// opens its next capture with PreviousSnapshot = LastSnapshot, restoring the basis one
+	// line before the detector reads it. So an ANNOUNCED reset still raised Tunnelling on
+	// the following capture -- and then InvalidContact, because the contact check compares
+	// a post-teleport pose against pre-teleport wheel data. VEH-005's ExecuteSafeReset
+	// calls this precisely so neither happens. Both were caught by
+	// RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport.
+	FailureState.NotifyDiscontinuity();
 	LoggedFailureFlags = 0;
 	NextCaptureTimeSeconds = 0.0;
 }
@@ -1040,6 +1049,10 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	CaptureInput.FrameDeltaSeconds = DeltaSeconds;
 	CaptureInput.CaptureIndex = CaptureIndex;
 
+	// Unconditional, including across a discontinuity: the detector, not this function,
+	// decides what a discontinuity suppresses, and it holds that latch in
+	// FVehicleFailureDetectorState. Duplicating the decision here would give one concept
+	// two owners that could disagree.
 	PreviousSnapshot = LastSnapshot;
 	LastSnapshot = RacingSim::Vehicle::CaptureVehicleTelemetry(CaptureInput);
 

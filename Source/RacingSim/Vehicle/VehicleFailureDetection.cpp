@@ -93,6 +93,13 @@ namespace RacingSim::Vehicle
 			return Report;
 		}
 
+		// CONSUMED HERE, unconditionally, so exactly ONE evaluation is suppressed however
+		// this function returns below. Read into a local first: clearing it later, or only
+		// on some paths, would leave a reset suppressing faults for as long as the car
+		// happened to stay clean, which is the opposite of what a detector is for.
+		const bool bStraddlesDiscontinuity = State.bDiscontinuityPending;
+		State.bDiscontinuityPending = false;
+
 		// -- 1. Non-finite state ------------------------------------------------
 		//
 		// Checked FIRST and used to gate everything numeric below. Once a NaN is in the
@@ -129,7 +136,7 @@ namespace RacingSim::Vehicle
 		bool bHasUsableStep = false;
 		float StepSeconds = 0.0f;
 
-		if (Previous.bIsValid)
+		if (Previous.bIsValid && !bStraddlesDiscontinuity)
 		{
 			const double RawStep = Current.SimulationTimeSeconds - Previous.SimulationTimeSeconds;
 
@@ -276,8 +283,12 @@ namespace RacingSim::Vehicle
 				// FINITE-but-impossible case: a contact point that is a real number,
 				// just an absurd one (the collision query returning nonsense), which is
 				// a different cause from the solver producing NaN.
+				// Skipped across a discontinuity: see FVehicleFailureDetectorState::
+				// bDiscontinuityPending. The pose is post-teleport and the contact point is
+				// pre-teleport, so the distance between them measures the teleport, not a
+				// bad collision query.
 				const double ContactDistanceCm = FVector::Dist(Current.LocationCm, Wheel.ContactPointCm);
-				if (ContactDistanceCm > Thresholds.MaxContactDistanceCm)
+				if (!bStraddlesDiscontinuity && ContactDistanceCm > Thresholds.MaxContactDistanceCm)
 				{
 					RaiseVehicleFailure(Report, EVehicleFailureFlag::InvalidContact,
 						FString::Printf(

@@ -792,3 +792,123 @@ bool FRacingSimVehicleFailureThresholdDefaultsTest::RunTest(const FString& Param
 
 	return true;
 }
+
+// ---------------------------------------------------------------------------
+// Discontinuity suppression: what an announced teleport must and must not silence.
+// ---------------------------------------------------------------------------
+
+/**
+ * VEH-006. FVehicleFailureDetectorState::NotifyDiscontinuity exists so a deliberate pose
+ * change -- VEH-005's safe reset, a respawn, a grid placement -- is not reported as the
+ * solver having lost the car. Its whole contract is a matter of scope and duration, and
+ * both halves are easy to get wrong in opposite directions:
+ *
+ *   TOO NARROW  and the reset it was called for still raises. That is what shipped:
+ *               Reset() dropped the accumulators and nothing else, so the next evaluation
+ *               compared straight across the teleport. Caught end-to-end by
+ *               RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport;
+ *               pinned here, where it needs no world and runs at the Smoke gate.
+ *
+ *   TOO WIDE    and a car that is genuinely broken goes unreported because somebody reset
+ *               it. A suppression that outlives one evaluation, or that swallows a NaN,
+ *               is a detector that can be silenced by the very event most likely to break
+ *               the car.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRacingSimVehicleFailureDiscontinuityTest,
+	"RacingSim.Vehicle.FailureDetectionDiscontinuity",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRacingSimVehicleFailureDiscontinuityTest::RunTest(const FString& Parameters)
+{
+	constexpr double Step = 1.0 / 60.0;
+	const FVehicleTelemetrySnapshot Base = MakeHealthyFailureSnapshot(10.0, 1);
+
+	// The fault: 1 km in one 60 Hz step, with the wheel contacts left where the car used
+	// to be. That is the exact shape a TeleportPhysics produces -- a post-teleport pose
+	// beside pre-teleport physics-thread wheel data -- and it raises BOTH a pair check
+	// (Tunnelling) and a single-snapshot geometry check (InvalidContact), which is why it
+	// is the right fixture for testing what suppression covers.
+	FVehicleTelemetrySnapshot Teleported = AdvanceHealthyFailureSnapshot(Base, Step);
+	Teleported.LocationCm = Base.LocationCm + FVector(100000.0, 0.0, 0.0);
+	for (int32 WheelIndex = 0; WheelIndex < Teleported.NumWheels; ++WheelIndex)
+	{
+		Teleported.Wheels[WheelIndex].ContactPointCm = Base.LocationCm + FVector(0.0, 0.0, -40.0);
+	}
+
+	{
+		// Unannounced. Both flags, or the test below proves nothing.
+		const FVehicleFailureReport Report = EvaluateFailurePair(Base, Teleported);
+		TestTrue(TEXT("An unannounced teleport raises Tunnelling"),
+			Report.Has(EVehicleFailureFlag::Tunnelling));
+		TestTrue(TEXT("An unannounced teleport with stale wheel contacts raises InvalidContact"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
+		// Announced. Same two snapshots, same thresholds, one call in between.
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity();
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Base, Teleported, FVehicleFailureThresholds(), State);
+
+		TestFalse(
+			FString::Printf(TEXT("An announced discontinuity raises nothing, got [%s]"),
+				*RacingSim::Vehicle::DescribeVehicleFailureFlags(Report.Flags)),
+			Report.HasAnyFailure());
+
+		// Suppressing the pair comparison must also suppress the STEP that comparison
+		// produces. A report claiming a measured step across a discontinuity would hand
+		// every downstream rate a denominator spanning a teleport.
+		TestEqual(TEXT("No step is measured across a discontinuity"), Report.MeasuredStepSeconds, 0.0f);
+
+		// -- DURATION: exactly one evaluation, not "until the car looks fine again". --
+		//
+		// Re-run the identical fault on the SAME state object. The latch was consumed
+		// above, so this must raise -- otherwise a single reset would blind the detector
+		// for the rest of the session.
+		const FVehicleFailureReport Second = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Base, Teleported, FVehicleFailureThresholds(), State);
+		TestTrue(TEXT("The suppression lasts ONE evaluation and no longer"),
+			Second.Has(EVehicleFailureFlag::Tunnelling));
+	}
+
+	{
+		// -- SCOPE: a NaN is still a NaN. --
+		//
+		// A reset is the likeliest moment for the solver to produce corrupt state, so the
+		// one class of fault that must survive suppression is the one that says the state
+		// is not a number at all. Suppressing it would hide the failure exactly when it is
+		// most diagnosable.
+		FVehicleTelemetrySnapshot Corrupt = AdvanceHealthyFailureSnapshot(Base, Step);
+		Corrupt.VelocityCms.Y = std::numeric_limits<double>::quiet_NaN();
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity();
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Base, Corrupt, FVehicleFailureThresholds(), State);
+
+		TestTrue(TEXT("A discontinuity does NOT suppress NonFiniteState"),
+			Report.Has(EVehicleFailureFlag::NonFiniteState));
+	}
+
+	{
+		// Reset() must NOT arm the suppression. The two are different requests -- "this
+		// history is meaningless" versus "the next sample is not comparable" -- and a
+		// Reset() that silently suppressed would make every accumulator clear a blind spot.
+		FVehicleFailureDetectorState State;
+		State.Reset();
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Base, Teleported, FVehicleFailureThresholds(), State);
+
+		TestTrue(TEXT("Reset() alone does not suppress anything"),
+			Report.Has(EVehicleFailureFlag::Tunnelling));
+	}
+
+	return true;
+}

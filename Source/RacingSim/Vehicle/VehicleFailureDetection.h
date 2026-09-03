@@ -226,6 +226,27 @@ struct FVehicleFailureDetectorState
 	/** Per-wheel seconds spent fully compressed under load. Index-parallel to FVehicleTelemetrySnapshot::Wheels. */
 	float PenetrationSeconds[MaxVehicleTelemetryWheels] = {};
 
+	/**
+	 * Set by NotifyDiscontinuity, consumed and cleared by the next evaluation, which then
+	 * judges NOTHING that straddles the discontinuity.
+	 *
+	 * WHAT STRADDLES IT is wider than it first looks, and getting that wrong is what this
+	 * flag exists to stop. The obvious half is every rate: a car teleported 5 m has moved
+	 * 5 m in one step, and Tunnelling is the correct verdict for motion nobody announced
+	 * and the wrong one for a reset somebody did. The non-obvious half is the CONTACT
+	 * GEOMETRY. InvalidContact compares Current.LocationCm -- a game-thread pose, read
+	 * after the teleport -- against Wheel.ContactPointCm, which the physics thread
+	 * produced before it. That is a cross-frame comparison wearing a single-snapshot
+	 * check's clothes, and it fired on exactly the reset it was meant to tolerate:
+	 * "wheel 2 reports contact 1150.085664 cm from the body, beyond the 1000.000000 cm
+	 * bound", one capture after an announced discontinuity, with the car sitting still.
+	 *
+	 * NonFiniteState, UnstableWheelState and StaleInput are deliberately NOT suppressed.
+	 * A NaN one frame after a reset is a real fault and the reset is the likeliest cause;
+	 * suppressing it would hide the failure at the moment it is most diagnosable.
+	 */
+	bool bDiscontinuityPending = false;
+
 	/** Drop all accumulated history. Call on teleport, respawn or session restart. */
 	void Reset()
 	{
@@ -234,6 +255,20 @@ struct FVehicleFailureDetectorState
 		{
 			Seconds = 0.0f;
 		}
+	}
+
+	/**
+	 * Reset, AND arm the one-evaluation suppression above.
+	 *
+	 * Separate from Reset() because the two are not the same request. Reset() means "this
+	 * history is meaningless"; NotifyDiscontinuity() means that AND "the next sample is
+	 * not comparable to the last one". A caller that teleports a car needs both, and
+	 * every caller that only has Reset() available got the second one silently wrong.
+	 */
+	void NotifyDiscontinuity()
+	{
+		Reset();
+		bDiscontinuityPending = true;
 	}
 };
 

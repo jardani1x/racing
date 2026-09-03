@@ -133,18 +133,21 @@ struct FVehicleManoeuvreFixture
 	 * @param Test              the calling test; every failure is reported into it.
 	 * @param bEnableTelemetry  false zeroes ARacingVehiclePawn::TelemetrySampleRateHz.
 	 *
-	 *   TELEMETRY IS OFF BY DEFAULT, AND THAT IS A FINDING, NOT A CONVENIENCE.
-	 *   ARacingVehiclePawn::CaptureAndEvaluateTelemetry paces and stamps every capture
-	 *   with FPlatformTime::Seconds(), and VEH-004's detector divides measured MOVEMENT
-	 *   by that measured WALL-CLOCK interval. In a fixed-step test loop the two clocks
-	 *   are unrelated: a step that simulates 1/60 s may take 1/200 s or 1/20 s of wall
-	 *   time, so the detector computes impossible accelerations for a car that is
-	 *   behaving perfectly and logs Error-severity failures that fail the test.
+	 *   TELEMETRY IS OFF BY DEFAULT so that a manoeuvre spec measuring motion is not
+	 *   also, silently, a test of the failure detector: a detector change would then
+	 *   break specs that never meant to assert anything about it. A spec that does want
+	 *   the detector opts in here, and if it injects a fault it must also register the
+	 *   expected errors with AddExpectedError, because the automation framework turns
+	 *   any Error-severity log into a test failure. VehicleFailureDetectorDrivingSpec
+	 *   is the worked example of both halves.
 	 *
-	 *   That is a real defect in VEH-004 -- simulated behaviour judged against a
-	 *   wall clock -- recorded as a VEH-006 finding rather than silently worked around.
-	 *   Until it is fixed, a spec that wants the detector must opt in here AND register
-	 *   the expected errors, which is exactly what the detector's own control spec does.
+	 *   HISTORY: this parameter defaulted to false originally because of a real VEH-004
+	 *   defect -- the detector divided measured MOVEMENT by a measured WALL-CLOCK
+	 *   interval, so a fixed-step loop produced impossible accelerations for a perfectly
+	 *   healthy car. Fixed in commit 62134d0 by adding
+	 *   FVehicleTelemetrySnapshot::SimulationTimeSeconds and judging simulated motion
+	 *   against the simulated clock. Opting in is safe now; the default stands for the
+	 *   coupling reason above.
 	 *
 	 * @return false on any failure, having already reported it. Callers MUST stop on false;
 	 *         continuing would dereference a null pawn.
