@@ -203,6 +203,27 @@ struct FVehicleFailureThresholds
 
 	/** A contact point further than this from the body origin is not a real contact, CENTIMETRES. Well outside any prototype chassis plus suspension travel. */
 	float MaxContactDistanceCm = 1000.0f;
+
+	/**
+	 * Hard upper bound on the post-discontinuity contact suppression, SIMULATED SECONDS.
+	 *
+	 * The suppression described by FVehicleFailureDetectorState::PreDiscontinuityLocationCm
+	 * normally ends by itself, the moment a wheel reports contact from somewhere other
+	 * than the pose the car left. That rule is right when contact comes back, and it has
+	 * no answer at all when contact does not: a reset that leaves the car airborne,
+	 * inverted, wedged or below the world produces no contact evidence ever again, and a
+	 * reset that moved the car less than MaxContactDistanceCm produces only contacts that
+	 * still match the stale basis. In both cases the basis stayed armed for the rest of
+	 * the session and swallowed every genuine InvalidContact near that one pose -- and
+	 * those are exactly the situations the reset path exists to recover from, so the
+	 * detector went deaf in the case it most needed to speak.
+	 *
+	 * Half a second is roughly thirty captures at the default rate against a measured tail
+	 * of two, so it cannot cut a legitimate suppression short. Expressed in SIMULATED time
+	 * for the same reason the rest of the detector is: a fixed capture count would mean
+	 * different things at different sample rates.
+	 */
+	float MaxContactSuppressionSeconds = 0.5f;
 };
 
 /**
@@ -297,6 +318,20 @@ struct FVehicleFailureDetectorState
 	/** Whether PreDiscontinuityLocationCm holds a usable pose. See it for why. */
 	bool bHasPreDiscontinuityLocation = false;
 
+	/**
+	 * Simulated time at the first evaluation that saw the current basis, SECONDS.
+	 * Only meaningful while bHasPreDiscontinuityArmTime is set.
+	 *
+	 * Stamped at the first EVALUATION rather than at NotifyDiscontinuity, because the
+	 * caller announcing a teleport does not necessarily have a simulated clock to hand,
+	 * and the budget being bounded is the one measured in evaluated samples anyway.
+	 * See FVehicleFailureThresholds::MaxContactSuppressionSeconds for what it bounds.
+	 */
+	double PreDiscontinuityArmSimSeconds = 0.0;
+
+	/** Whether PreDiscontinuityArmSimSeconds holds a stamped time. */
+	bool bHasPreDiscontinuityArmTime = false;
+
 	/** Drop all accumulated history. Call on teleport, respawn or session restart. */
 	void Reset()
 	{
@@ -306,8 +341,17 @@ struct FVehicleFailureDetectorState
 			Seconds = 0.0f;
 		}
 
+		// bDiscontinuityPending included deliberately. Reset() is documented as dropping
+		// ALL accumulated history, and an armed one-evaluation suppression is history: a
+		// caller using Reset() for a session restart was otherwise carrying a suppression
+		// across it. NotifyDiscontinuity() calls Reset() FIRST and re-arms afterwards, so
+		// clearing it here cannot disarm the announcement that follows.
+		bDiscontinuityPending = false;
+
 		PreDiscontinuityLocationCm = FVector::ZeroVector;
 		bHasPreDiscontinuityLocation = false;
+		PreDiscontinuityArmSimSeconds = 0.0;
+		bHasPreDiscontinuityArmTime = false;
 	}
 
 	/**

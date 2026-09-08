@@ -74,7 +74,35 @@ if (-not [System.IO.Path]::IsPathRooted($ReportDir)) {
 
 $Cmd = 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
 
-if (Test-Path $ReportDir) { Remove-Item -Recurse -Force $ReportDir }
+# REFUSE rather than delete anything that is not obviously a previous report of ours.
+# The only validation this had was IsPathRooted, so a mistyped -ReportDir naming a real
+# directory was recursively force-deleted without a word. A stale report has to go,
+# because index.json from a previous run would otherwise be read as this run's result,
+# so the rule is narrow: empty, or already looking like an automation report.
+if (Test-Path -LiteralPath $ReportDir) {
+    if (-not (Test-Path -LiteralPath $ReportDir -PathType Container)) {
+        Write-Output "ReportDir exists and is not a directory: $ReportDir"
+        exit 1
+    }
+
+    $Existing = @(Get-ChildItem -LiteralPath $ReportDir -Force)
+    $LooksLikeReport = Test-Path -LiteralPath (Join-Path $ReportDir 'index.json')
+
+    if ($Existing.Count -gt 0 -and -not $LooksLikeReport) {
+        Write-Output "REFUSING to delete $ReportDir : it is not empty and holds no index.json, so it is not a previous automation report. Point -ReportDir at a new or previously used report directory."
+        exit 1
+    }
+
+    Remove-Item -Recurse -Force -LiteralPath $ReportDir
+}
+
+New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
+
+# Editor stdout goes to a FILE, not to Out-Null. When the NO_INDEX_JSON branch below
+# fires it means the editor produced no report at all, which is exactly the case where
+# the reason is only in the editor output -- and that output was being discarded, so
+# the harness reported a failure with no evidence attached to it.
+$EditorLog = Join-Path $ReportDir 'soak-editor-stdout.log'
 
 Write-Output "TESTNAME=$TestName"
 
@@ -84,7 +112,8 @@ Write-Output "SOAK_STARTED=$($StartedAt.ToString('s'))"
 & $Cmd $ProjectPath `
     -ExecCmds="Automation SetFilter Stress; RunTests $TestName; Quit" `
     -ReportExportPath="$ReportDir" `
-    -unattended -nopause -nosplash -nullrhi -stdout -utf8output | Out-Null
+    -unattended -nopause -nosplash -nullrhi -stdout -utf8output |
+    Tee-Object -FilePath $EditorLog | Out-Null
 
 $ExitCode = $LASTEXITCODE
 $Elapsed = (Get-Date) - $StartedAt
@@ -95,9 +124,22 @@ $Elapsed = (Get-Date) - $StartedAt
 Write-Output "PROCESS_EXITCODE=$ExitCode"
 Write-Output "HARNESS_WALLCLOCK_SECONDS=$([math]::Round($Elapsed.TotalSeconds, 1))"
 
+Write-Output "EDITOR_STDOUT_LOG=$EditorLog"
+
 $IndexPath = Join-Path $ReportDir 'index.json'
-if (-not (Test-Path $IndexPath)) {
+if (-not (Test-Path -LiteralPath $IndexPath)) {
     Write-Output 'NO_INDEX_JSON -- the run produced no report; treat as a harness failure, not a pass.'
+
+    # The tail is the evidence. Without it this branch says only that something went
+    # wrong, which is the least useful thing a harness failure can say.
+    if (Test-Path -LiteralPath $EditorLog) {
+        Write-Output '--- last 40 lines of editor stdout ---'
+        Get-Content -LiteralPath $EditorLog -Tail 40 | ForEach-Object { Write-Output "  $_" }
+    }
+    else {
+        Write-Output 'No editor stdout was captured either; the process may not have started.'
+    }
+
     exit 1
 }
 
@@ -145,6 +187,15 @@ foreach ($T in $Failed) {
 Write-Output '--- RacingSim.* suites ---'
 foreach ($T in @($Report.tests | Where-Object { $_.fullTestPath -like 'RacingSim.*' } | Sort-Object fullTestPath)) {
     Write-Output "  $($T.fullTestPath) => $($T.state)"
+}
+
+# PROCESS_EXITCODE is part of the decision, not just printed. A non-zero editor exit
+# with a clean-looking report means the editor died after writing it -- an assertion, a
+# crash on shutdown, an ensure -- and reporting that as a passing thirty-minute soak is
+# precisely the kind of false green this gate exists to prevent.
+if ($ExitCode -ne 0) {
+    Write-Output "EDITOR_EXITED_NONZERO=$ExitCode -- the report was written but the editor did not exit cleanly; treat as a failure."
+    exit 1
 }
 
 if ($Report.failed -gt 0 -or $Report.notRun -gt 0) { exit 1 }

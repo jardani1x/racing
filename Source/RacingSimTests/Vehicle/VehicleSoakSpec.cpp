@@ -148,6 +148,44 @@ namespace
 	constexpr double SoakSteer = 1.0;
 
 	/**
+	 * LIVENESS FLOOR, centimetres per second. Not a performance bound.
+	 *
+	 * A Chaos chassis that goes to sleep stops its whole async simulate and LATCHES its
+	 * last output, so telemetry keeps reporting plausible, finite, failure-free numbers
+	 * for a car that is no longer moving. Every other assertion in this test is
+	 * satisfied by that frozen car: bIsValid latches true and is never cleared,
+	 * IsFinite passes on a constant, the failure detector raises nothing for a body at
+	 * rest, and the position bound only fires on being too FAR from the origin.
+	 *
+	 * So the one claim this test exists to make -- the car drove for thirty minutes --
+	 * had nothing behind it. This floor, together with the capture-advance check below,
+	 * is what turns the duration into evidence. 50 cm/s is deliberately far below any
+	 * speed the soak manoeuvre actually holds: it separates DRIVING from STOPPED, and
+	 * says nothing about how fast the car ought to be going, so a tune change cannot
+	 * fail it.
+	 */
+	constexpr double SoakMinimumCruiseSpeedCms = 50.0;
+
+	/**
+	 * The run must put the car at least this far from where it started, once.
+	 *
+	 * The speed floor above proves the car was moving at each inspection; this proves
+	 * the movement went somewhere. A car vibrating in place would satisfy the former.
+	 */
+	constexpr double SoakMinimumTravelCm = 200.0;
+
+	/**
+	 * Slack on the per-window capture count, in captures.
+	 *
+	 * The capture clock is re-based on the current simulation time rather than advanced
+	 * by a fixed interval (see ARacingVehiclePawn), so window boundaries can land
+	 * either side of a due time and the count per window drifts by one. Two captures of
+	 * slack absorbs that. It does NOT absorb a stalled capture loop, which is the fault
+	 * being checked: that loses 600 captures per window, not two.
+	 */
+	constexpr int64 SoakCaptureAdvanceToleranceCaptures = 2;
+
+	/**
 	 * Memory-growth ceiling, bytes. 64 MiB across 108,000 steps.
 	 *
 	 * MEASURED AS PROCESS-RESIDENT MEMORY (FPlatformMemory::GetStats().UsedPhysical),
@@ -220,6 +258,8 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 		FVehicleManoeuvreFixture::ThrottleSample(SoakThrottle, SoakSteer);
 
 	double MaxDistanceCm = 0.0;
+	double MinObservedSpeedCms = TNumericLimits<double>::Max();
+	int64 PreviousCaptureIndex = 0;
 	int32 InspectionCount = 0;
 	int32 StepsCompleted = 0;
 
@@ -229,8 +269,17 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	for (int32 BlockStart = 0; BlockStart < SoakSteps; BlockStart += SoakInspectionIntervalSteps)
 	{
 		const int32 BlockSteps = FMath::Min(SoakInspectionIntervalSteps, SoakSteps - BlockStart);
-		Fixture.Drive(Sample, BlockSteps, SoakStepSeconds);
-		StepsCompleted += BlockSteps;
+
+		// StepsCompleted counts steps the WORLD actually ticked, not loop iterations. A
+		// world that stops ticking mid-soak must not be able to report thirty minutes.
+		const bool bBlockDriven = Fixture.Drive(Sample, BlockSteps, SoakStepSeconds);
+		StepsCompleted += Fixture.GetLastDriveStepsCompleted();
+
+		if (!bBlockDriven)
+		{
+			Fixture.ReportTickFailure(*this);
+			return false;
+		}
 
 		const double SimulatedSecondsSoFar = static_cast<double>(StepsCompleted) * SoakStepSeconds;
 
@@ -254,6 +303,38 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 				Snapshot.ForwardSpeedCms));
 			return false;
 		}
+		// LIVENESS. Everything above this point passes on a frozen car with latched
+		// telemetry; these two checks are the ones that do not.
+		const int64 ExpectedCaptures = static_cast<int64>(
+			static_cast<double>(BlockSteps) * static_cast<double>(SoakStepSeconds)
+				* static_cast<double>(Pawn->TelemetrySampleRateHz));
+		const int64 ActualCaptures = Snapshot.CaptureIndex - PreviousCaptureIndex;
+
+		if (ActualCaptures < ExpectedCaptures - SoakCaptureAdvanceToleranceCaptures)
+		{
+			AddError(FString::Printf(
+				TEXT("Telemetry captured %lld times over the window ending at step %d ")
+				TEXT("(t=%.2f s simulated), against %lld expected at %.1f Hz; the pawn stopped ")
+				TEXT("capturing. bIsValid does not catch this: it latches true and is never cleared."),
+				ActualCaptures, StepsCompleted, SimulatedSecondsSoFar, ExpectedCaptures,
+				Pawn->TelemetrySampleRateHz));
+			return false;
+		}
+
+		PreviousCaptureIndex = Snapshot.CaptureIndex;
+
+		const double SpeedCms = FMath::Abs(static_cast<double>(Snapshot.ForwardSpeedCms));
+		if (SpeedCms < SoakMinimumCruiseSpeedCms)
+		{
+			AddError(FString::Printf(
+				TEXT("The car was doing %.1f cm/s at step %d (t=%.2f s simulated), below the ")
+				TEXT("%.1f cm/s liveness floor, while full-throttle input was still being held; ")
+				TEXT("the chassis has most likely gone to sleep and latched its last output."),
+				SpeedCms, StepsCompleted, SimulatedSecondsSoFar, SoakMinimumCruiseSpeedCms));
+			return false;
+		}
+
+		MinObservedSpeedCms = FMath::Min(MinObservedSpeedCms, SpeedCms);
 
 		const FVehicleFailureReport& Report = Pawn->GetLastFailureReport();
 		if (Report.HasAnyFailure())
@@ -297,11 +378,14 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	const FString Summary = FString::Printf(
 		TEXT("VEH-006 soak: %d steps at %f s = %.1f s simulated (%.1f min) in %.1f s wall clock ")
 		TEXT("(%.0f steps/s, %.1fx real time); %d inspections; max distance %.1f cm of %.1f cm bound; ")
+		TEXT("slowest inspected speed %.1f cm/s against a %.1f cm/s liveness floor; ")
 		TEXT("resident memory %.1f -> %.1f MiB, delta %+.1f MiB against a %.1f MiB ceiling."),
 		StepsCompleted, SoakStepSeconds, SimulatedSeconds, SimulatedSeconds / 60.0, WallClockSeconds,
 		WallClockSeconds > 0.0 ? static_cast<double>(StepsCompleted) / WallClockSeconds : 0.0,
 		WallClockSeconds > 0.0 ? SimulatedSeconds / WallClockSeconds : 0.0,
 		InspectionCount, MaxDistanceCm, SoakPositionBoundCm,
+		MinObservedSpeedCms == TNumericLimits<double>::Max() ? 0.0 : MinObservedSpeedCms,
+		SoakMinimumCruiseSpeedCms,
 		ToMebibytes(ResidentBeforeBytes), ToMebibytes(ResidentAfterBytes),
 		SignedToMebibytes(ResidentDeltaBytes),
 		ToMebibytes(SoakMemoryCeilingBytes));
@@ -319,6 +403,17 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	TestEqual(
 		TEXT("The soak ran every step it was asked to"),
 		StepsCompleted, SoakSteps);
+
+	// The car must have gone SOMEWHERE. The per-window speed floor proves it was moving
+	// at each inspection; this proves the motion was travel rather than a car shaking in
+	// place, and it is the assertion that fails if the ground, the input path or the
+	// drivetrain quietly stops delivering while the body keeps twitching.
+	TestTrue(
+		FString::Printf(
+			TEXT("The car never got further than %.1f cm from its start across the whole soak, ")
+			TEXT("below the %.1f cm minimum; it was held at full throttle for thirty minutes"),
+			MaxDistanceCm, SoakMinimumTravelCm),
+		MaxDistanceCm >= SoakMinimumTravelCm);
 
 	TestTrue(
 		FString::Printf(

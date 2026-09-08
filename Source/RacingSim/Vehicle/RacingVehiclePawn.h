@@ -431,4 +431,13 @@ private:
 	 * raised flag logs again. Edge-triggered logging, not level-triggered.
 	 */
 	uint8 LoggedFailureFlags = 0;
+
+	/**
+	 * Whether the missing-ChassisAsset reset-clearance warning has been emitted.
+	 *
+	 * mutable because GetMinimumResetClearanceCm() is const and stays const: it is a
+	 * query, and the flag records that the warning was said, not anything about the car.
+	 * Once per pawn rather than once per reset, so a soak cannot fill the log with it.
+	 */
+	mutable bool bWarnedMissingChassisForClearance = false;
 };

@@ -136,6 +136,30 @@ namespace RacingSim::Vehicle::PrototypeTuneDefaults
 	//
 	// If ChassisMassKg, SuspensionMaxRaiseCm or SuspensionMaxDropCm change, redo this
 	// arithmetic. It is not a free parameter.
+	//
+	// THE SAME RATES IN SI, because everything above is in Unreal's centimetre force
+	// units and those are not newtons per metre however the field is labelled:
+	//
+	//   Chaos stores UI x 100, and force = displacement_cm * stored. One Unreal force
+	//   unit is 1 kg*cm/s^2 = 0.01 N, so a corner pushed d metres makes
+	//       (d * 100) * (UI * 100) * 0.01  =  d * (UI * 100) newtons,
+	//   i.e. the TRUE SI stiffness is UI x 100 N/m. Front 250 is 25.0 kN/m per corner
+	//   and rear 282 is 28.2 kN/m per corner. The field's "N/m" label is out by a
+	//   factor of 100; the value is really newtons per CENTIMETRE.
+	//
+	//   Cross-check in SI, independent of the cm arithmetic above: a corner carries
+	//   1250 / 4 * 9.81 = 3065 N, and 3065 / 25000 = 0.123 m = 12.3 cm of static
+	//   compression against 12 cm of available droop. Same answer, so the correction is
+	//   right in both unit systems rather than right in one and lucky in the other.
+	//
+	// SPRING PRELOAD IS INERT TODAY, and is kept only so the authored intent survives:
+	// FSimpleSuspensionSim::Simulate computes StiffnessForce from SpringRate alone and
+	// never reads SpringPreload (SuspensionSystem.cpp:48-50). The value reaches Chaos
+	// only through the CONSTRAINT suspension path
+	// (ChaosWheeledVehicleMovementComponent.cpp:1268, 2816), and there the preload term
+	// is commented out of the solver (PBDSuspensionConstraints.cpp:572) -- on top of
+	// which this project runs with p.Vehicle.DisableConstraintSuspension. So the numbers
+	// below change nothing at present. Do NOT tune ride height with them.
 	// -----------------------------------------------------------------------
 
 	/** Front spring rate, N/m. Softer than the rear so the platform pushes rather than snaps into oversteer. */
@@ -143,7 +167,11 @@ namespace RacingSim::Vehicle::PrototypeTuneDefaults
 	/** Rear spring rate, N/m. */
 	inline constexpr float RearSpringRateNPerM = 282.0f;
 
-	/** Spring preload, NEWTONS. Non-zero so the car sits on its springs rather than on its bump stops at rest. */
+	/**
+	 * Spring preload, NEWTONS. Authored intent: the car sits on its springs rather than
+	 * on its bump stops at rest. INERT in the current configuration -- see the block
+	 * above for why, and do not use it to move the ride height.
+	 */
 	inline constexpr float FrontSpringPreloadN = 55.0f;
 	/** Rear spring preload, NEWTONS. */
 	inline constexpr float RearSpringPreloadN = 62.0f;

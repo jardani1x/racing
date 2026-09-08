@@ -321,6 +321,58 @@ bool FRacingSimVehicleFailureEnergyTest::RunTest(const FString& Parameters)
 	}
 
 	{
+		// The ACCELERATION branch of the runaway envelope, asserted POSITIVELY.
+		//
+		// This is the branch commit 62134d0 rewrote to divide by SimulationTimeSeconds
+		// instead of by measured wall-clock time, and it is the one RunawayEnergy
+		// comparison that no other case in this test reaches: delete the comparison
+		// entirely and the speed, angular-speed and engine-rpm cases above all stay
+		// green, as does the half-a-g negative below. It is asserted separately, and the
+		// lurch is deliberately kept inside every OTHER envelope, so that acceleration is
+		// the only comparison that can raise the flag.
+		FVehicleTelemetrySnapshot Lurching = AdvanceHealthyFailureSnapshot(Base, Step);
+		const double LurchAddedCms = 200.0; // 200 cm/s across 1/60 s == 12,000 cm/s^2.
+		Lurching.VelocityCms = Base.VelocityCms + FVector(LurchAddedCms, 0.0, 0.0);
+		Lurching.ForwardSpeedCms = static_cast<float>(Lurching.VelocityCms.X);
+		Lurching.LocationCm = Base.LocationCm + Lurching.VelocityCms * Step;
+
+		// 2777.78 + 200 == 2977.78 cm/s against a 15,000 cm/s envelope, the angular speed
+		// and engine rpm are untouched, and the position agrees with the new velocity so
+		// Tunnelling cannot fire either. Asserted rather than asserted-by-comment: if a
+		// future threshold change makes the lurch trip the speed envelope instead, this
+		// line goes red and says so, rather than letting the acceleration case pass for
+		// the wrong reason.
+		TestTrue(TEXT("The lurch stays inside the SPEED envelope, so only acceleration can fire"),
+			Lurching.GetSpeedMagnitudeCms() < Thresholds.MaxSpeedCms);
+
+		const FVehicleFailureReport LurchReport = EvaluateFailurePair(Base, Lurching);
+		TestTrue(TEXT("12,000 cm/s^2 past an 8,000 cm/s^2 envelope raises RunawayEnergy"),
+			LurchReport.Has(EVehicleFailureFlag::RunawayEnergy));
+		TestTrue(TEXT("...and the reason names the acceleration envelope, not another one"),
+			LurchReport.Reason.Contains(TEXT("cm/s^2")));
+	}
+
+	{
+		// The same lurch, with the WALL clock stretched so that wall-clock arithmetic
+		// would MISS it. The VEH-004 regression below has one sign; this is the other.
+		//
+		// Dividing an honest 200 cm/s by a two-second wall-clock step yields 100 cm/s^2,
+		// comfortably inside the envelope, so a detector still reading TimestampSeconds
+		// would stay silent on a genuine runaway. Simulated time still says 1/60 s, and
+		// the flag must still be raised. Together with the negative case below, this pins
+		// the clock choice from both directions: the wall clock must not manufacture a
+		// fault, and it must not conceal one.
+		FVehicleTelemetrySnapshot SlowWallClockLurch = AdvanceHealthyFailureSnapshot(Base, Step);
+		SlowWallClockLurch.TimestampSeconds = Base.TimestampSeconds + 2.0;
+		SlowWallClockLurch.VelocityCms = Base.VelocityCms + FVector(200.0, 0.0, 0.0);
+		SlowWallClockLurch.ForwardSpeedCms = static_cast<float>(SlowWallClockLurch.VelocityCms.X);
+		SlowWallClockLurch.LocationCm = Base.LocationCm + SlowWallClockLurch.VelocityCms * Step;
+
+		TestTrue(TEXT("A runaway acceleration is still caught when the WALL clock ran SLOWER than the simulation"),
+			EvaluateFailurePair(Base, SlowWallClockLurch).Has(EVehicleFailureFlag::RunawayEnergy));
+	}
+
+	{
 		// A hard but LEGITIMATE acceleration must stay silent. 0 -> 100 km/h in a
 		// sixtieth of a second is not legitimate; 5 m/s^2 over one step is.
 		FVehicleTelemetrySnapshot Accelerating = AdvanceHealthyFailureSnapshot(Base, Step);
@@ -777,6 +829,8 @@ bool FRacingSimVehicleFailureThresholdDefaultsTest::RunTest(const FString& Param
 		FromAsset.SuspensionLengthTolerance, FromPod.SuspensionLengthTolerance);
 	TestEqual(TEXT("MaxAirborneSeconds"), FromAsset.MaxAirborneSeconds, FromPod.MaxAirborneSeconds);
 	TestEqual(TEXT("MaxContactDistanceCm"), FromAsset.MaxContactDistanceCm, FromPod.MaxContactDistanceCm);
+	TestEqual(TEXT("MaxContactSuppressionSeconds"),
+		FromAsset.MaxContactSuppressionSeconds, FromPod.MaxContactSuppressionSeconds);
 	TestEqual(TEXT("PenetrationSuspensionLengthFraction"),
 		FromAsset.PenetrationSuspensionLengthFraction, FromPod.PenetrationSuspensionLengthFraction);
 	TestEqual(TEXT("PenetrationSpringForceN"), FromAsset.PenetrationSpringForceN, FromPod.PenetrationSpringForceN);
@@ -787,8 +841,8 @@ bool FRacingSimVehicleFailureThresholdDefaultsTest::RunTest(const FString& Param
 	// side of this list; sizeof can notice one that was added to the POD and never
 	// compared. If this fails, add the new field to the comparisons above and update
 	// the expected size -- do not simply widen the number.
-	TestEqual(TEXT("FVehicleFailureThresholds still has exactly 13 float fields; add new ones to the comparison above"),
-		static_cast<int32>(sizeof(FVehicleFailureThresholds) / sizeof(float)), 13);
+	TestEqual(TEXT("FVehicleFailureThresholds still has exactly 14 float fields; add new ones to the comparison above"),
+		static_cast<int32>(sizeof(FVehicleFailureThresholds) / sizeof(float)), 14);
 
 	return true;
 }
@@ -1006,6 +1060,163 @@ bool FRacingSimVehicleFailureDiscontinuityTest::RunTest(const FString& Parameter
 			Base, Teleported, FVehicleFailureThresholds(), State);
 
 		TestTrue(TEXT("Reset() alone does not suppress anything"),
+			Report.Has(EVehicleFailureFlag::Tunnelling));
+	}
+
+	return true;
+}
+
+/**
+ * VEH-006 repair cycle 1. The contact-suppression basis must TERMINATE, including in the
+ * two cases where the rule that normally ends it can never fire.
+ *
+ * FVehicleFailureDetectorState::PreDiscontinuityLocationCm is dropped by the first
+ * evaluation that sees contact from somewhere other than the pose the car left. That is
+ * the right rule whenever contact comes back, and it has no answer at all when it does
+ * not:
+ *
+ *   NO CONTACT EVER   a reset that leaves the car airborne, inverted, wedged, or below
+ *                     the world produces no fresh contact evidence for the rest of the
+ *                     session.
+ *
+ *   A SHORT RESET     a reset that moved the car less than MaxContactDistanceCm produces
+ *                     only contacts that still match the stale basis, so none of them
+ *                     ever counts as fresh.
+ *
+ * In both, the pre-repair detector kept the basis armed indefinitely and went on
+ * swallowing genuine InvalidContact near that one pose -- and those are exactly the
+ * situations the reset path exists to recover from, so it went deaf where it mattered
+ * most. FVehicleFailureThresholds::MaxContactSuppressionSeconds is the backstop, and
+ * these are the two cases that prove it fires.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRacingSimVehicleFailureSuppressionBoundTest,
+	"RacingSim.Vehicle.FailureDetectionSuppressionBound",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::SmokeFilter)
+
+bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parameters)
+{
+	constexpr double Step = 1.0 / 60.0;
+	const FVehicleFailureThresholds Thresholds;
+	const FVehicleTelemetrySnapshot Base = MakeHealthyFailureSnapshot(10.0, 1);
+
+	// Comfortably past the 0.5 s budget without being so long that the test would still
+	// pass against a budget an order of magnitude too generous.
+	const int32 StepsPastBudget = FMath::CeilToInt32(
+		static_cast<double>(Thresholds.MaxContactSuppressionSeconds) / Step) + 2;
+
+	{
+		// -- CASE 1: contact never returns. --
+		//
+		// The car is reset and then stays off the ground: every wheel out of contact, for
+		// good. bAnyWheelReportsFreshContact is false on every one of these evaluations, so
+		// the fresh-contact rule cannot end anything, and only the time budget can.
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		FVehicleTelemetrySnapshot Previous = Base;
+		for (int32 StepIndex = 0; StepIndex < StepsPastBudget; ++StepIndex)
+		{
+			FVehicleTelemetrySnapshot Airborne = AdvanceHealthyFailureSnapshot(Previous, Step);
+			for (int32 WheelIndex = 0; WheelIndex < Airborne.NumWheels; ++WheelIndex)
+			{
+				Airborne.Wheels[WheelIndex].bInContact = false;
+				Airborne.Wheels[WheelIndex].ContactPointCm = FVector::ZeroVector;
+			}
+
+			RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Airborne, Thresholds, State);
+			Previous = Airborne;
+		}
+
+		TestFalse(TEXT("The basis does not survive its budget when contact never returns"),
+			State.bHasPreDiscontinuityLocation);
+
+		// The behaviour the flag stands for, asserted separately: a genuinely impossible
+		// contact NEAR THE OLD POSE -- the one the stale basis would have swallowed -- is
+		// raised again. Placed at the old pose deliberately; anywhere else would pass even
+		// with the basis still armed and would prove nothing.
+		FVehicleTelemetrySnapshot BadContact = AdvanceHealthyFailureSnapshot(Previous, Step);
+		for (int32 WheelIndex = 0; WheelIndex < BadContact.NumWheels; ++WheelIndex)
+		{
+			BadContact.Wheels[WheelIndex].bInContact = true;
+			BadContact.Wheels[WheelIndex].ContactPointCm = Base.LocationCm + FVector(0.0, 0.0, -40.0);
+		}
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, BadContact, Thresholds, State);
+		TestTrue(TEXT("An impossible contact at the pre-reset pose is raised once the budget expires"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
+		// -- CASE 2: the reset moved the car LESS than MaxContactDistanceCm. --
+		//
+		// A nudge off a wall, not a teleport across the map. Every contact the car produces
+		// afterwards is within MaxContactDistanceCm of the pose it left, so
+		// bContactPredatesDiscontinuity is true for all of them for ever and no contact is
+		// ever fresh. This is the case that hid best: nothing looks wrong, the car is
+		// driving normally, and the detector has quietly stopped checking contacts.
+		const double ShortResetCm = static_cast<double>(Thresholds.MaxContactDistanceCm) * 0.25;
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		FVehicleTelemetrySnapshot Nudged = AdvanceHealthyFailureSnapshot(Base, Step);
+		Nudged.VelocityCms = FVector::ZeroVector;
+		Nudged.ForwardSpeedCms = 0.0f;
+		Nudged.LocationCm = Base.LocationCm + FVector(0.0, ShortResetCm, 0.0);
+		for (int32 WheelIndex = 0; WheelIndex < Nudged.NumWheels; ++WheelIndex)
+		{
+			Nudged.Wheels[WheelIndex].bInContact = true;
+			Nudged.Wheels[WheelIndex].ContactPointCm = Nudged.LocationCm + FVector(0.0, 0.0, -40.0);
+		}
+
+		// Pinned, not assumed. If MaxContactDistanceCm ever shrinks below the nudge, these
+		// contacts start counting as fresh, the fresh-contact rule ends the basis on its
+		// own, and this case would go green while testing something else entirely.
+		TestTrue(TEXT("The nudged contacts still match the pre-reset basis, so only the budget can end it"),
+			FVector::Dist(Base.LocationCm, Nudged.Wheels[0].ContactPointCm)
+				<= static_cast<double>(Thresholds.MaxContactDistanceCm));
+
+		FVehicleTelemetrySnapshot Previous = Base;
+		FVehicleTelemetrySnapshot Current = Nudged;
+		for (int32 StepIndex = 0; StepIndex < StepsPastBudget; ++StepIndex)
+		{
+			RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Current, Thresholds, State);
+			Previous = Current;
+
+			Current = AdvanceHealthyFailureSnapshot(Previous, Step);
+			for (int32 WheelIndex = 0; WheelIndex < Current.NumWheels; ++WheelIndex)
+			{
+				Current.Wheels[WheelIndex].bInContact = true;
+				Current.Wheels[WheelIndex].ContactPointCm = Current.LocationCm + FVector(0.0, 0.0, -40.0);
+			}
+		}
+
+		TestFalse(TEXT("A reset shorter than MaxContactDistanceCm does not arm the basis for ever"),
+			State.bHasPreDiscontinuityLocation);
+	}
+
+	{
+		// -- Reset() clears an armed announcement. --
+		//
+		// Reset() is documented as dropping ALL accumulated history, and an armed
+		// one-evaluation suppression is history: without this, a caller using Reset() for a
+		// session restart carried a suppression across it and lost its first evaluation.
+		// NotifyDiscontinuity() calls Reset() FIRST and re-arms afterwards, which the two
+		// cases above already rely on, so clearing here cannot disarm an announcement.
+		FVehicleTelemetrySnapshot Teleported = AdvanceHealthyFailureSnapshot(Base, Step);
+		Teleported.LocationCm = Base.LocationCm + FVector(100000.0, 0.0, 0.0);
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity();
+		State.Reset();
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Base, Teleported, Thresholds, State);
+		TestTrue(TEXT("Reset() after NotifyDiscontinuity() clears the pending suppression"),
 			Report.Has(EVehicleFailureFlag::Tunnelling));
 	}
 

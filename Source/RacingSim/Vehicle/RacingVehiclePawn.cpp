@@ -121,6 +121,14 @@ void ARacingVehiclePawn::BeginPlay()
 	// REMOVE THIS when the prototype gains a real skeletal mesh with a physics asset, together
 	// with p.Vehicle.DisableConstraintSuspension in Config/DefaultEngine.ini: both are the same
 	// missing-skeletal-mesh gap in Chaos Vehicles, seen from different sides.
+	//
+	// Every path that fails to reach SetSleepType is REPORTED, not skipped quietly. The
+	// failure this pin prevents is silent by construction: a slept chassis latches its
+	// last physics output, so the telemetry keeps reporting the speed the car had when it
+	// went to sleep and nothing in FVehicleFailureThresholds can raise a flag for it. If
+	// the pin does not get applied, the log line below is the only warning anyone gets.
+	bool bSleepPinApplied = false;
+
 	if (ChassisCollision != nullptr)
 	{
 		if (const FBodyInstance* ChassisBody = ChassisCollision->GetBodyInstance())
@@ -128,9 +136,32 @@ void ARacingVehiclePawn::BeginPlay()
 			if (FPhysicsActorHandle ChassisActor = ChassisBody->GetPhysicsActor())
 			{
 				ChassisActor->GetGameThreadAPI().SetSleepType(Chaos::ESleepType::NeverSleep);
+				bSleepPinApplied = true;
+			}
+			else
+			{
+				UE_LOG(LogRacingVehicle, Warning,
+					TEXT("ARacingVehiclePawn '%s' has a chassis body instance with no physics actor at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+					*GetNameSafe(this));
 			}
 		}
+		else
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s' has a chassis collision component with no body instance at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+				*GetNameSafe(this));
+		}
 	}
+	else
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s' has no ChassisCollision at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+			*GetNameSafe(this));
+	}
+
+	UE_LOG(LogRacingVehicle, Verbose,
+		TEXT("ARacingVehiclePawn '%s' NeverSleep pin applied: %s."),
+		*GetNameSafe(this), bSleepPinApplied ? TEXT("yes") : TEXT("NO"));
 
 	// VEH-004: report the thresholds in force once, at start, rather than leaving a
 	// reader to guess which numbers a failure report was judged against. A null asset
@@ -318,12 +349,16 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 
 	if (TuneAsset == nullptr)
 	{
-		// Reported, never substituted. A silent fallback to Chaos' own engine/transmission
-		// defaults would give a car that drives -- badly, and unlike the authored tune --
-		// with nothing in the session saying which numbers were used. Same policy as the
-		// null-chassis path above.
+		// Reported, never substituted. The consequence is stated exactly, because it is
+		// worse than it reads: returning here skips the mechanical-simulation re-arm
+		// below, and bMechanicalSimEnabled has ALREADY latched false during component
+		// registration (see the long note at the re-arm). So a tuneless pawn does not fall
+		// back to Chaos' engine and transmission defaults -- it has no engine, no
+		// transmission and no differential at all, sits at gear 0 and 0.0 rpm, and does not
+		// respond to throttle. Anyone reading this line needs to know that, because a car
+		// that drives badly and a car that does not drive are different bug reports.
 		UE_LOG(LogRacingVehicle, Error,
-			TEXT("ARacingVehiclePawn '%s' has no TuneAsset; Chaos' built-in engine, transmission and steering defaults remain in place and no authored tune is applied."),
+			TEXT("ARacingVehiclePawn '%s' has no TuneAsset; no authored tune is applied AND mechanical simulation stays latched off, so this pawn has no engine, transmission or differential and will not respond to throttle."),
 			*GetNameSafe(this));
 		return;
 	}
@@ -725,10 +760,35 @@ double ARacingVehiclePawn::GetMinimumResetClearanceCm() const
 	// No asset means no geometry to reason from, and 0 is the honest answer: it leaves
 	// FMath::Max in ExecuteSafeReset with the track's own lift, which is exactly the
 	// behaviour this pawn had before the chassis was consulted at all.
+	//
+	// Warned rather than checked. A tuneless-but-driveable pawn is a legitimate editor
+	// state and a fatal check here would take the whole session down for it; but the
+	// degraded path is invisible from the outside -- a reset that lands the car partly
+	// through the road looks like a track-lift problem, not a missing asset -- so it has
+	// to say so once. Once, not per reset: a reset can be spammed, and a repeating log
+	// line during a soak is its own defect.
 	if (ChassisAsset == nullptr)
 	{
+		if (!bWarnedMissingChassisForClearance)
+		{
+			bWarnedMissingChassisForClearance = true;
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s' has no ChassisAsset, so the reset clearance falls back to 0 cm and the reset relies entirely on the track's own lift; a reset may leave the tyres intersecting the road."),
+				*GetNameSafe(this));
+		}
+
 		return 0.0;
 	}
+
+	// DEPENDENCY, stated because it is not visible from this function: the number below
+	// is a STATIC geometric height -- hub offset plus tyre radius, the pose the car has
+	// with its suspension neither compressed nor extended. It is correct as a starting
+	// height only while the tune's spring equilibrium puts the body near that pose. A
+	// tune whose springs settle the body significantly lower (SuspensionMaxDropCm, or a
+	// spring rate far softer than the sprung mass it carries) makes this an over-lift and
+	// turns the reset into a drop; one that settles it higher makes it an under-lift. The
+	// chassis asset alone cannot see that, because the springs live in the tune asset.
+	// If reset behaviour ever changes after a suspension retune, this is why.
 
 	// The deepest corner, not the average and not the front axle: the car must clear the
 	// road at EVERY wheel, and the prototype's front and rear radii differ (34 vs 35 cm).

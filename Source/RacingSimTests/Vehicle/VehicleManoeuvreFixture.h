@@ -338,9 +338,12 @@ struct FVehicleManoeuvreFixture
 			Wheels = TEXT("(no physics vehicle output)");
 		}
 
-		const AController* Controller = Movement->GetOwner() != nullptr
-			? Cast<APawn>(Movement->GetOwner())->GetController()
-			: nullptr;
+		// Cast result checked, not assumed. The owner is an APawn in every fixture this
+		// file builds, but this is DIAGNOSTIC code: it runs on the path where something has
+		// already gone wrong, and a null-dereference here would replace the failure report
+		// with a crash -- destroying exactly the evidence it exists to print.
+		const APawn* OwningPawn = Cast<APawn>(Movement->GetOwner());
+		const AController* Controller = OwningPawn != nullptr ? OwningPawn->GetController() : nullptr;
 
 		// Whether the chassis rigid body is awake, which gates the ENTIRE physics-thread
 		// vehicle tick: FChaosVehicleManagerAsyncCallback::OnPreSimulate_Internal returns
@@ -398,6 +401,10 @@ struct FVehicleManoeuvreFixture
 	/** Tear down. Idempotent, and safe after a failed or never-called Setup. */
 	void Teardown()
 	{
+		bTickFailed = false;
+		TickFailureReason.Reset();
+		LastDriveStepsCompleted = 0;
+
 		Pawn = nullptr;
 		Movement = nullptr;
 		Input = nullptr;
@@ -422,9 +429,21 @@ struct FVehicleManoeuvreFixture
 	 * rate limiter is meant to see a control being HELD. Injecting once would be
 	 * indistinguishable from a driver who let go after a single frame, and would
 	 * silently test the rate limiter's release ramp instead of its apply ramp.
+	 *
+	 * The return value is NOT optional decoration. FTestWorldWrapper::TickTestWorld
+	 * returns false when the world stops ticking, and an earlier version of this
+	 * fixture discarded it. That made every step count in every spec bookkeeping
+	 * rather than evidence: a world that stopped ticking at step 40,000 still let the
+	 * soak report 108,000 steps and 1800 s of simulated time, because the loop counter
+	 * had no idea the world underneath it had stopped. The failure is now sticky, so a
+	 * spec that drives in several blocks can check once at the end.
+	 *
+	 * @return true when every requested step ticked.
 	 */
-	void Drive(const FVehicleInputRawSample& Sample, const int32 Steps, const float StepSeconds = DefaultStepSeconds)
+	bool Drive(const FVehicleInputRawSample& Sample, const int32 Steps, const float StepSeconds = DefaultStepSeconds)
 	{
+		LastDriveStepsCompleted = 0;
+
 		for (int32 Step = 0; Step < Steps; ++Step)
 		{
 			if (Input != nullptr)
@@ -432,9 +451,64 @@ struct FVehicleManoeuvreFixture
 				Input->InjectRawSampleForTesting(Sample);
 			}
 
-			WorldWrapper.TickTestWorld(StepSeconds);
+			if (!WorldWrapper.TickTestWorld(StepSeconds))
+			{
+				if (!bTickFailed)
+				{
+					bTickFailed = true;
+					TickFailureReason = FString::Printf(
+						TEXT("TickTestWorld failed at step %d of %d (step size %f s); ")
+						TEXT("the world stopped ticking, so every measurement after this point is meaningless."),
+						Step, Steps, StepSeconds);
+				}
+
+				return false;
+			}
+
+			++LastDriveStepsCompleted;
 		}
+
+		return true;
 	}
+
+	/** True once any Drive call has failed to tick. Sticky until Teardown. */
+	bool HasTickFailure() const
+	{
+		return bTickFailed;
+	}
+
+	/** Why the first failed tick failed. Empty while HasTickFailure is false. */
+	const FString& GetTickFailureReason() const
+	{
+		return TickFailureReason;
+	}
+
+	/** Steps the most recent Drive call actually ticked. */
+	int32 GetLastDriveStepsCompleted() const
+	{
+		return LastDriveStepsCompleted;
+	}
+
+	/**
+	 * Report a sticky tick failure to the test, and say so.
+	 *
+	 * Forwards the world wrapper own error messages first, since those carry the engine
+	 * side reason and this fixture only knows that a step returned false.
+	 *
+	 * @return true when a failure was reported, so a caller can bail on the same line.
+	 */
+	bool ReportTickFailure(FAutomationTestBase& Test)
+	{
+		if (!bTickFailed)
+		{
+			return false;
+		}
+
+		WorldWrapper.ForwardErrorMessages(&Test);
+		Test.AddError(TickFailureReason);
+		return true;
+	}
+
 
 	/** Forward speed, CENTIMETRES PER SECOND, signed. Zero when the fixture failed to build. */
 	double GetForwardSpeedCms() const
@@ -661,4 +735,9 @@ private:
 	AActor* Ground = nullptr;
 	TStrongObjectPtr<UVehicleChassisDataAsset> Chassis;
 	TStrongObjectPtr<UVehicleTuneDataAsset> Tune;
+
+	/** Sticky across Drive calls, cleared by Teardown. See Drive. */
+	bool bTickFailed = false;
+	FString TickFailureReason;
+	int32 LastDriveStepsCompleted = 0;
 };

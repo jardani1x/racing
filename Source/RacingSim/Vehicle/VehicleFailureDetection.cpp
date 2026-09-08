@@ -100,6 +100,55 @@ namespace RacingSim::Vehicle
 		const bool bStraddlesDiscontinuity = State.bDiscontinuityPending;
 		State.bDiscontinuityPending = false;
 
+		// -- 0. Bound the contact-suppression basis ------------------------------
+		//
+		// Runs BEFORE the wheel loop reads the basis, so the budget expires on the
+		// evaluation it runs out on rather than one evaluation later.
+		//
+		// The fresh-contact rule further down is the normal way this basis ends, and it
+		// is the right rule whenever contact comes back. It has no answer when contact
+		// never does -- a reset that leaves the car airborne, inverted, wedged or under
+		// the world -- nor when the reset moved the car less than MaxContactDistanceCm,
+		// where every contact keeps matching the stale basis and so never counts as
+		// fresh. Without a second bound the basis stayed armed indefinitely and went on
+		// suppressing genuine InvalidContact near that one pose, in precisely the
+		// situations the reset path exists to recover from.
+		if (State.bHasPreDiscontinuityLocation)
+		{
+			if (!FMath::IsFinite(Current.SimulationTimeSeconds))
+			{
+				// No usable clock means no way to bound the suppression at all, and an
+				// unbounded suppression is worse than an early one: drop the basis and let
+				// the contact checks speak.
+				State.bHasPreDiscontinuityLocation = false;
+				State.PreDiscontinuityLocationCm = FVector::ZeroVector;
+				State.bHasPreDiscontinuityArmTime = false;
+				State.PreDiscontinuityArmSimSeconds = 0.0;
+			}
+			else if (!State.bHasPreDiscontinuityArmTime)
+			{
+				State.PreDiscontinuityArmSimSeconds = Current.SimulationTimeSeconds;
+				State.bHasPreDiscontinuityArmTime = true;
+			}
+			else
+			{
+				const double SuppressedForSeconds =
+					Current.SimulationTimeSeconds - State.PreDiscontinuityArmSimSeconds;
+
+				// A NEGATIVE delta expires it too. The simulated clock only runs backwards
+				// when it has been re-based under the detector, and a stamp from the old
+				// timeline can no longer bound anything.
+				if (SuppressedForSeconds < 0.0
+					|| SuppressedForSeconds > static_cast<double>(Thresholds.MaxContactSuppressionSeconds))
+				{
+					State.bHasPreDiscontinuityLocation = false;
+					State.PreDiscontinuityLocationCm = FVector::ZeroVector;
+					State.bHasPreDiscontinuityArmTime = false;
+					State.PreDiscontinuityArmSimSeconds = 0.0;
+				}
+			}
+		}
+
 		// -- 1. Non-finite state ------------------------------------------------
 		//
 		// Checked FIRST and used to gate everything numeric below. Once a NaN is in the
@@ -368,10 +417,16 @@ namespace RacingSim::Vehicle
 		// caught up with the teleport. Holding it any longer would eventually suppress a
 		// GENUINE bad contact that happened to land near a pose the car was reset from,
 		// which is a real reading this detector must still raise.
+		//
+		// This is the FIRST of two exits, and the one that fires in the ordinary case.
+		// The simulated-time budget in section 0 is the backstop for the cases where
+		// fresh contact evidence never arrives at all.
 		if (bAnyWheelReportsFreshContact)
 		{
 			State.bHasPreDiscontinuityLocation = false;
 			State.PreDiscontinuityLocationCm = FVector::ZeroVector;
+			State.bHasPreDiscontinuityArmTime = false;
+			State.PreDiscontinuityArmSimSeconds = 0.0;
 		}
 
 		// Wheels beyond NumWheels never accumulate, but a vehicle that loses wheels

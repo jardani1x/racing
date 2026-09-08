@@ -140,6 +140,15 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wheel state", meta = (ClampMin = "10.0", ClampMax = "100000.0"))
 	float MaxContactDistanceCm = 1000.0f;
 
+	/**
+	 * Hard upper bound on post-discontinuity contact suppression, SIMULATED SECONDS.
+	 * See FVehicleFailureThresholds::MaxContactSuppressionSeconds for the reasoning and
+	 * for the two cases -- no contact ever, and a reset shorter than MaxContactDistanceCm
+	 * -- that it is the only bound for.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wheel state", meta = (ClampMin = "0.05", ClampMax = "60.0"))
+	float MaxContactSuppressionSeconds = 0.5f;
+
 	// -- Persistent penetration ---------------------------------------------
 
 	/** Normalised suspension length at or below this counts as fully compressed, dimensionless. */

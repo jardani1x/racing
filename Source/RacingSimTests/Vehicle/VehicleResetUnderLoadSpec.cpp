@@ -391,10 +391,30 @@ bool FVehicleSafeResetUnderLoadTest::RunTest(const FString& Parameters)
 
 	// Still where it was put, plus settling. The car must not drift, sink through the
 	// slab or be flung by a residual impulse over the ten steps above.
+	//
+	// Unlike the null-track no-op further down, this case DOES tick, so it needs a real
+	// allowance -- but one with arithmetic behind it. ExecuteSafeReset zeroes both
+	// velocities (RacingVehiclePawn.cpp:1030-1031) and leaves the car at tyre-touch
+	// height, so across ten steps of 1/60 s = 0.167 s the largest displacement physics
+	// can produce is the unresisted fall 0.5 * 980 * 0.167^2 = 13.6 cm, and the springs
+	// oppose even that. 30 cm is a bit over twice the worst case: loose enough not to
+	// flake on settling, tight enough that the 100 cm it replaces -- 6 m/s of drift, and
+	// wider than the car is long -- can no longer pass as "stays at its reset pose".
+	constexpr double SettledDisplacementToleranceCm = 30.0;
 	TestTrue(
 		FString::Printf(TEXT("The car stays at its reset pose: moved %.2f cm in 10 neutral steps"),
 			FVector::Dist(Pawn->GetActorLocation(), PostResetLocation)),
-		FVector::Dist(Pawn->GetActorLocation(), PostResetLocation) <= 100.0);
+		FVector::Dist(Pawn->GetActorLocation(), PostResetLocation) <= SettledDisplacementToleranceCm);
+
+	// Split out because the two directions have different worst cases and lumping them
+	// together hides the interesting one: settling is VERTICAL, so any horizontal travel
+	// at all is drift or a residual impulse, and neutral input from zeroed velocity
+	// should produce essentially none.
+	constexpr double SettledHorizontalToleranceCm = 5.0;
+	TestTrue(
+		FString::Printf(TEXT("The car does not drift sideways while settling: %.2f cm horizontally"),
+			FVector::Dist2D(Pawn->GetActorLocation(), PostResetLocation)),
+		FVector::Dist2D(Pawn->GetActorLocation(), PostResetLocation) <= SettledHorizontalToleranceCm);
 
 	return true;
 }
@@ -450,13 +470,16 @@ bool FVehicleSafeResetWithoutTrackTest::RunTest(const FString& Parameters)
 
 	Pawn->ExecuteSafeReset(/*Track*/ nullptr, /*LapTracker*/ nullptr, RequestedProgressCm);
 
-	// One step of tolerance, not zero: the car was moving, and the no-op does not stop
-	// it. What must not happen is a teleport, which is three orders of magnitude larger
-	// than anything a single frame of coasting can produce.
+	// EXACT, not approximate. No world tick happens between BeforeLocation and this
+	// line -- ExecuteSafeReset returns without touching the transform on the null-track
+	// path, and nothing integrates the car's motion in between -- so the only correct
+	// displacement is zero, and KINDA_SMALL_NUMBER is float noise rather than a physics
+	// allowance. The previous 100 cm bound would have passed a no-op that moved the car
+	// most of a car length, which is not a no-op.
 	TestTrue(
-		FString::Printf(TEXT("A null track leaves the car where it was: moved %.2f cm"),
+		FString::Printf(TEXT("A null track leaves the car exactly where it was: moved %.4f cm"),
 			FVector::Dist(Pawn->GetActorLocation(), BeforeLocation)),
-		FVector::Dist(Pawn->GetActorLocation(), BeforeLocation) <= 100.0);
+		FVector::Dist(Pawn->GetActorLocation(), BeforeLocation) <= KINDA_SMALL_NUMBER);
 
 	TestTrue(TEXT("A null-track no-op does not teleport the car to the world origin"),
 		Pawn->GetActorLocation().Size2D() > 500.0);
