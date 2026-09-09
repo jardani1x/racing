@@ -375,7 +375,11 @@ bool FVehicleSafeResetUnderLoadTest::RunTest(const FString& Parameters)
 	// not exist yet at that point -- it is produced by the NEXT capture, which compares
 	// the post-teleport snapshot against the pre-teleport one. Driving on with neutral
 	// input is therefore not a tidy-up step; it is the assertion.
-	Fixture.Drive(FVehicleInputRawSample(), 10, StepSeconds);
+	// Named, because the settling tolerance below is DERIVED from it. A silent bump from
+	// ten steps to fifty would otherwise leave a 30 cm bound justified by arithmetic that
+	// no longer describes the loop it bounds, and nothing would go red.
+	constexpr int32 PostResetSettleSteps = 10;
+	Fixture.Drive(FVehicleInputRawSample(), PostResetSettleSteps, StepSeconds);
 
 	const FVehicleFailureReport& PostResetReport = Pawn->GetLastFailureReport();
 	TestFalse(
@@ -393,17 +397,32 @@ bool FVehicleSafeResetUnderLoadTest::RunTest(const FString& Parameters)
 	// slab or be flung by a residual impulse over the ten steps above.
 	//
 	// Unlike the null-track no-op further down, this case DOES tick, so it needs a real
-	// allowance -- but one with arithmetic behind it. ExecuteSafeReset zeroes both
-	// velocities (RacingVehiclePawn.cpp:1030-1031) and leaves the car at tyre-touch
-	// height, so across ten steps of 1/60 s = 0.167 s the largest displacement physics
-	// can produce is the unresisted fall 0.5 * 980 * 0.167^2 = 13.6 cm, and the springs
-	// oppose even that. 30 cm is a bit over twice the worst case: loose enough not to
-	// flake on settling, tight enough that the 100 cm it replaces -- 6 m/s of drift, and
-	// wider than the car is long -- can no longer pass as "stays at its reset pose".
-	constexpr double SettledDisplacementToleranceCm = 30.0;
+	// allowance -- but one COMPUTED from the things it depends on rather than asserted in
+	// prose. ExecuteSafeReset zeroes both velocities (RacingVehiclePawn.cpp:1030-1031) and
+	// leaves the car at tyre-touch height, so the largest displacement physics can produce
+	// over the settle loop is the unresisted fall 0.5 * g * t^2, and the springs oppose
+	// even that. Doubling it is the margin: loose enough not to flake on a bouncing
+	// settle, tight enough that the 100 cm this replaces -- 6 m/s of drift, wider than the
+	// car is long -- can no longer pass as "stays at its reset pose". Reading gravity and
+	// the step count from the run means retuning either one moves the bound with it
+	// instead of silently invalidating the comment that justifies it. Ten steps of 1/60 s
+	// against 980 cm/s^2 gives 2 * 13.6 = 27.2 cm, the same order as the 30 cm it replaces.
+	const double SettleSeconds = static_cast<double>(PostResetSettleSteps) * StepSeconds;
+	const UWorld* SettleWorld = Fixture.GetWorld();
+	if (SettleWorld == nullptr)
+	{
+		AddError(TEXT("The fixture world vanished after the reset, so the settle bound cannot be computed."));
+		return false;
+	}
+
+	const double GravityCmsSq = FMath::Abs(static_cast<double>(SettleWorld->GetGravityZ()));
+	const double SettledDisplacementToleranceCm =
+		2.0 * 0.5 * GravityCmsSq * SettleSeconds * SettleSeconds;
 	TestTrue(
-		FString::Printf(TEXT("The car stays at its reset pose: moved %.2f cm in 10 neutral steps"),
-			FVector::Dist(Pawn->GetActorLocation(), PostResetLocation)),
+		FString::Printf(
+			TEXT("The car stays at its reset pose: moved %.2f cm in %d neutral steps, bound %.2f cm"),
+			FVector::Dist(Pawn->GetActorLocation(), PostResetLocation),
+			PostResetSettleSteps, SettledDisplacementToleranceCm),
 		FVector::Dist(Pawn->GetActorLocation(), PostResetLocation) <= SettledDisplacementToleranceCm);
 
 	// Split out because the two directions have different worst cases and lumping them

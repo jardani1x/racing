@@ -1,0 +1,7 @@
+﻿TESTNAMES=RacingSim.Vehicle.Manoeuvre.Acceleration+RacingSim.Vehicle.Manoeuvre.Braking+RacingSim.Vehicle.Manoeuvre.Steering+RacingSim.Vehicle.Manoeuvre.FrameRateIndependence+RacingSim.Vehicle.Manoeuvre.SafeResetUnderLoad+RacingSim.Vehicle.Manoeuvre.SafeResetWithoutTrackIsANoOp+RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport+RacingSim.Vehicle.Manoeuvre.FailureDetectorSilentOnHealthyDriving
+PROCESS_EXITCODE=0
+reportCreatedOn=2026.09.09-05.42.27
+succeeded=8 succeededWithWarnings=0 passedTotal=8 failed=0 notRun=0
+testsInReport=8
+totalDuration=2.9347333908081055
+NON_SUCCESS_COUNT=0

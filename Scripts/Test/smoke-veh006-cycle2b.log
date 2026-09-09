@@ -1,0 +1,7 @@
+﻿PROCESS_EXITCODE=0
+reportCreatedOn=2026.09.09-05.40.11
+succeeded=521 succeededWithWarnings=2 passedTotal=523 failed=0 notRun=0
+testsInReport=523
+totalDuration=9.2096662521362305
+NON_SUCCESS_COUNT=0
+--- RacingSim.* suites ---

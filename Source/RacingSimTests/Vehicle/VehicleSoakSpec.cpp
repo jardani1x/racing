@@ -174,16 +174,6 @@ namespace
 	 */
 	constexpr double SoakMinimumTravelCm = 200.0;
 
-	/**
-	 * Slack on the per-window capture count, in captures.
-	 *
-	 * The capture clock is re-based on the current simulation time rather than advanced
-	 * by a fixed interval (see ARacingVehiclePawn), so window boundaries can land
-	 * either side of a due time and the count per window drifts by one. Two captures of
-	 * slack absorbs that. It does NOT absorb a stalled capture loop, which is the fault
-	 * being checked: that loses 600 captures per window, not two.
-	 */
-	constexpr int64 SoakCaptureAdvanceToleranceCaptures = 2;
 
 	/**
 	 * Memory-growth ceiling, bytes. 64 MiB across 108,000 steps.
@@ -257,7 +247,15 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	const FVehicleInputRawSample Sample =
 		FVehicleManoeuvreFixture::ThrottleSample(SoakThrottle, SoakSteer);
 
+	// TWO distances, because they answer different questions and only coincide by
+	// accident. MaxDistanceCm is measured from the WORLD ORIGIN and exists to prove the
+	// car stays on the ground slab, which is centred there. Travel is measured from where
+	// the car actually settled and exists to prove the car went somewhere. They agree
+	// today only because the spawn transform puts the car on the Z axis; move the spawn
+	// and a single figure would quietly stop meaning one of the two things it is asked to.
+	const FVector StartLocationCm = Fixture.GetLocation();
 	double MaxDistanceCm = 0.0;
+	double MaxTravelCm = 0.0;
 	double MinObservedSpeedCms = TNumericLimits<double>::Max();
 	int64 PreviousCaptureIndex = 0;
 	int32 InspectionCount = 0;
@@ -305,19 +303,37 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 		}
 		// LIVENESS. Everything above this point passes on a frozen car with latched
 		// telemetry; these two checks are the ones that do not.
-		const int64 ExpectedCaptures = static_cast<int64>(
-			static_cast<double>(BlockSteps) * static_cast<double>(SoakStepSeconds)
-				* static_cast<double>(Pawn->TelemetrySampleRateHz));
+		// CLAMPED to the step count, because capture is driven from the pawn's tick and so
+		// can physically happen at most once per step however high the sample rate is set.
+		// Without the clamp this expectation exceeds what the pawn is able to deliver the
+		// moment TelemetrySampleRateHz rises above the soak's step rate, and the soak goes
+		// permanently red with a message blaming the pawn for having stopped capturing. It
+		// passes today only because 1/60 s rounds up and clears the capture deadline on
+		// every single step -- a coincidence of two independently tunable numbers, which is
+		// not something a thirty-minute gate should rest on.
+		const int64 ExpectedCaptures = FMath::Min<int64>(
+			static_cast<int64>(BlockSteps),
+			static_cast<int64>(
+				static_cast<double>(BlockSteps) * static_cast<double>(SoakStepSeconds)
+					* static_cast<double>(Pawn->TelemetrySampleRateHz)));
+
+		// Half the expectation, not two captures. The failure being detected is a capture
+		// loop that has STOPPED, which loses the whole window -- six hundred captures, not
+		// two -- so slack this wide costs no detection power at all, while a two-capture
+		// tolerance turns any ordinary rounding disagreement between the sample rate and
+		// the step rate into a red gate.
+		const int64 CaptureFloor = ExpectedCaptures / 2;
 		const int64 ActualCaptures = Snapshot.CaptureIndex - PreviousCaptureIndex;
 
-		if (ActualCaptures < ExpectedCaptures - SoakCaptureAdvanceToleranceCaptures)
+		if (ActualCaptures < CaptureFloor)
 		{
 			AddError(FString::Printf(
 				TEXT("Telemetry captured %lld times over the window ending at step %d ")
-				TEXT("(t=%.2f s simulated), against %lld expected at %.1f Hz; the pawn stopped ")
-				TEXT("capturing. bIsValid does not catch this: it latches true and is never cleared."),
+				TEXT("(t=%.2f s simulated), against %lld expected at %.1f Hz and a floor of %lld; ")
+				TEXT("the pawn stopped capturing. bIsValid does not catch this: it latches true ")
+				TEXT("and is never cleared."),
 				ActualCaptures, StepsCompleted, SimulatedSecondsSoFar, ExpectedCaptures,
-				Pawn->TelemetrySampleRateHz));
+				Pawn->TelemetrySampleRateHz, CaptureFloor));
 			return false;
 		}
 
@@ -328,9 +344,10 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 		{
 			AddError(FString::Printf(
 				TEXT("The car was doing %.1f cm/s at step %d (t=%.2f s simulated), below the ")
-				TEXT("%.1f cm/s liveness floor, while full-throttle input was still being held; ")
+				TEXT("%.1f cm/s liveness floor, while %.2f throttle was still being held; ")
 				TEXT("the chassis has most likely gone to sleep and latched its last output."),
-				SpeedCms, StepsCompleted, SimulatedSecondsSoFar, SoakMinimumCruiseSpeedCms));
+				SpeedCms, StepsCompleted, SimulatedSecondsSoFar, SoakMinimumCruiseSpeedCms,
+				SoakThrottle));
 			return false;
 		}
 
@@ -346,8 +363,11 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 			return false;
 		}
 
-		const double DistanceCm = Fixture.GetLocation().Size2D();
+		const FVector CurrentLocationCm = Fixture.GetLocation();
+		const double DistanceCm = CurrentLocationCm.Size2D();
 		MaxDistanceCm = FMath::Max(MaxDistanceCm, DistanceCm);
+		MaxTravelCm = FMath::Max(
+			MaxTravelCm, FVector::Dist2D(CurrentLocationCm, StartLocationCm));
 		if (DistanceCm > SoakPositionBoundCm)
 		{
 			AddError(FString::Printf(
@@ -377,13 +397,14 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	// numbers anyone will actually want to compare against next time.
 	const FString Summary = FString::Printf(
 		TEXT("VEH-006 soak: %d steps at %f s = %.1f s simulated (%.1f min) in %.1f s wall clock ")
-		TEXT("(%.0f steps/s, %.1fx real time); %d inspections; max distance %.1f cm of %.1f cm bound; ")
+		TEXT("(%.0f steps/s, %.1fx real time); %d inspections; max distance %.1f cm of %.1f cm bound ")
+		TEXT("(travelled %.1f cm from its start); ")
 		TEXT("slowest inspected speed %.1f cm/s against a %.1f cm/s liveness floor; ")
 		TEXT("resident memory %.1f -> %.1f MiB, delta %+.1f MiB against a %.1f MiB ceiling."),
 		StepsCompleted, SoakStepSeconds, SimulatedSeconds, SimulatedSeconds / 60.0, WallClockSeconds,
 		WallClockSeconds > 0.0 ? static_cast<double>(StepsCompleted) / WallClockSeconds : 0.0,
 		WallClockSeconds > 0.0 ? SimulatedSeconds / WallClockSeconds : 0.0,
-		InspectionCount, MaxDistanceCm, SoakPositionBoundCm,
+		InspectionCount, MaxDistanceCm, SoakPositionBoundCm, MaxTravelCm,
 		MinObservedSpeedCms == TNumericLimits<double>::Max() ? 0.0 : MinObservedSpeedCms,
 		SoakMinimumCruiseSpeedCms,
 		ToMebibytes(ResidentBeforeBytes), ToMebibytes(ResidentAfterBytes),
@@ -411,9 +432,9 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	TestTrue(
 		FString::Printf(
 			TEXT("The car never got further than %.1f cm from its start across the whole soak, ")
-			TEXT("below the %.1f cm minimum; it was held at full throttle for thirty minutes"),
-			MaxDistanceCm, SoakMinimumTravelCm),
-		MaxDistanceCm >= SoakMinimumTravelCm);
+			TEXT("below the %.1f cm minimum; %.2f throttle was held for thirty minutes"),
+			MaxTravelCm, SoakMinimumTravelCm, SoakThrottle),
+		MaxTravelCm >= SoakMinimumTravelCm);
 
 	TestTrue(
 		FString::Printf(

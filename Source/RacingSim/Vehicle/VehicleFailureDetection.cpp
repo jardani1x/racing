@@ -31,6 +31,32 @@ namespace
 		Report.Reason.Append(MoveTemp(Detail));
 	}
 
+	/**
+	 * Fewest evaluations the post-discontinuity contact basis is allowed to survive,
+	 * before MaxContactSuppressionSeconds is permitted to expire it.
+	 *
+	 * STRUCTURAL, not tunable, which is why it lives here and not in
+	 * FVehicleFailureThresholds. It is not a policy about how long suppression should
+	 * last -- that is the threshold's job -- it is the arithmetic fact that the stale
+	 * tail being suppressed is two captures long (see
+	 * FVehicleFailureDetectorState::PreDiscontinuityLocationCm), so any bound that can
+	 * fire before the third evaluation cannot do the job at all. Three is the tail plus
+	 * one evaluation of margin.
+	 */
+	constexpr int32 GVehicleFailureMinContactSuppressionEvaluations = 3;
+
+	/**
+	 * Most evaluations the basis may survive, whatever the clock says.
+	 *
+	 * Covers the one case the time budget cannot: a simulated clock that stops
+	 * advancing while evaluations keep arriving. SuppressedForSeconds then stays at
+	 * zero for ever and the time bound never fires, which is precisely the unbounded
+	 * suppression this whole section exists to prevent. Four seconds at the default
+	 * capture rate -- eight times the time budget, so it can only ever be the bound
+	 * that fires when the clock has stopped telling the truth.
+	 */
+	constexpr int32 GVehicleFailureMaxContactSuppressionEvaluations = 240;
+
 	// IsWithinVehicleFailureLimit was removed here on code review (VEH-004 MEDIUM-3):
 	// its only two call sites were both dead code (a non-finite Wheel.SpringForceN or
 	// Wheel.ContactPointCm can never reach them -- Wheel.IsFinite() already `continue`s
@@ -113,17 +139,52 @@ namespace RacingSim::Vehicle
 		// fresh. Without a second bound the basis stayed armed indefinitely and went on
 		// suppressing genuine InvalidContact near that one pose, in precisely the
 		// situations the reset path exists to recover from.
+		//
+		// TWO bounds, because one is not enough and they fail in opposite directions.
+		// MaxContactSuppressionSeconds is measured in simulated time; the stale tail it
+		// covers is measured in captures. A single long frame -- a teleport into a cell
+		// that then streams in -- can exceed the whole budget on its own, expiring the
+		// basis on the very evaluation that still needs it and raising the false
+		// InvalidContact this suppression was written to prevent. So the time budget may
+		// only expire the basis once GVehicleFailureMinContactSuppressionEvaluations
+		// evaluations have actually seen it. The evaluation CEILING then covers what the
+		// floor opens up plus what the clock cannot bound at all: a simulated clock that
+		// stops advancing leaves SuppressedForSeconds pinned at zero, and only a count
+		// can end that.
 		if (State.bHasPreDiscontinuityLocation)
 		{
-			if (!FMath::IsFinite(Current.SimulationTimeSeconds))
+			auto DropContactSuppressionBasis = [&State]()
 			{
-				// No usable clock means no way to bound the suppression at all, and an
-				// unbounded suppression is worse than an early one: drop the basis and let
-				// the contact checks speak.
 				State.bHasPreDiscontinuityLocation = false;
 				State.PreDiscontinuityLocationCm = FVector::ZeroVector;
 				State.bHasPreDiscontinuityArmTime = false;
 				State.PreDiscontinuityArmSimSeconds = 0.0;
+				State.PreDiscontinuityEvaluations = 0;
+			};
+
+			State.PreDiscontinuityEvaluations =
+				FMath::Min(State.PreDiscontinuityEvaluations + 1, MAX_int32);
+
+			const bool bPastEvaluationFloor =
+				State.PreDiscontinuityEvaluations > GVehicleFailureMinContactSuppressionEvaluations;
+			const bool bPastEvaluationCeiling =
+				State.PreDiscontinuityEvaluations >= GVehicleFailureMaxContactSuppressionEvaluations;
+
+			if (bPastEvaluationCeiling)
+			{
+				// The ceiling ignores the floor deliberately: it is the bound of last resort,
+				// and it is set far enough above the tail that reaching it always means
+				// something other than a normal reset is happening.
+				DropContactSuppressionBasis();
+			}
+			else if (!FMath::IsFinite(Current.SimulationTimeSeconds))
+			{
+				// A non-finite clock cannot bound anything, but it is ALSO about to raise
+				// NonFiniteState on this same evaluation, so the report already says what is
+				// wrong. Dropping the basis here as well would stack a second, misleading
+				// InvalidContact on top of it from contact geometry that is merely stale.
+				// Hold the basis and let the evaluation ceiling above be its bound; that is
+				// the bound written for exactly the case where the clock is unusable.
 			}
 			else if (!State.bHasPreDiscontinuityArmTime)
 			{
@@ -135,16 +196,20 @@ namespace RacingSim::Vehicle
 				const double SuppressedForSeconds =
 					Current.SimulationTimeSeconds - State.PreDiscontinuityArmSimSeconds;
 
-				// A NEGATIVE delta expires it too. The simulated clock only runs backwards
-				// when it has been re-based under the detector, and a stamp from the old
-				// timeline can no longer bound anything.
-				if (SuppressedForSeconds < 0.0
-					|| SuppressedForSeconds > static_cast<double>(Thresholds.MaxContactSuppressionSeconds))
+				if (SuppressedForSeconds < 0.0)
 				{
-					State.bHasPreDiscontinuityLocation = false;
-					State.PreDiscontinuityLocationCm = FVector::ZeroVector;
-					State.bHasPreDiscontinuityArmTime = false;
-					State.PreDiscontinuityArmSimSeconds = 0.0;
+					// RE-STAMPED, not expired. The simulated clock only runs backwards when it
+					// has been re-based under the detector; the stamp from the old timeline can
+					// no longer bound anything, but the basis itself is still as young as its
+					// evaluation count says it is, and expiring it on a clock event would be the
+					// same early-expiry bug the floor exists to prevent. Re-basing repeatedly
+					// cannot keep the basis alive for ever, because the ceiling still counts.
+					State.PreDiscontinuityArmSimSeconds = Current.SimulationTimeSeconds;
+				}
+				else if (bPastEvaluationFloor
+					&& SuppressedForSeconds > static_cast<double>(Thresholds.MaxContactSuppressionSeconds))
+				{
+					DropContactSuppressionBasis();
 				}
 			}
 		}
@@ -427,6 +492,7 @@ namespace RacingSim::Vehicle
 			State.PreDiscontinuityLocationCm = FVector::ZeroVector;
 			State.bHasPreDiscontinuityArmTime = false;
 			State.PreDiscontinuityArmSimSeconds = 0.0;
+			State.PreDiscontinuityEvaluations = 0;
 		}
 
 		// Wheels beyond NumWheels never accumulate, but a vehicle that loses wheels

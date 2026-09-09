@@ -332,6 +332,23 @@ struct FVehicleFailureDetectorState
 	/** Whether PreDiscontinuityArmSimSeconds holds a stamped time. */
 	bool bHasPreDiscontinuityArmTime = false;
 
+	/**
+	 * How many evaluations have seen the current basis, INCLUDING the one that stamped
+	 * PreDiscontinuityArmSimSeconds. Zero while no basis is armed.
+	 *
+	 * The time budget alone is not a safe bound, because the two quantities it relates
+	 * are measured in different things. The stale-contact tail this suppression exists
+	 * to cover is measured in CAPTURES (two of them, see PreDiscontinuityLocationCm),
+	 * while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
+	 * can be arbitrarily long. A teleport followed by a streaming hitch produces a
+	 * single frame longer than the whole budget, which would expire the basis on the
+	 * very evaluation that still needs it and raise the false InvalidContact this
+	 * suppression was written to prevent. Counting evaluations gives the budget a floor
+	 * that a long frame cannot cross; see the section 0 comment in
+	 * VehicleFailureDetection.cpp for how the two bounds combine.
+	 */
+	int32 PreDiscontinuityEvaluations = 0;
+
 	/** Drop all accumulated history. Call on teleport, respawn or session restart. */
 	void Reset()
 	{
@@ -352,6 +369,7 @@ struct FVehicleFailureDetectorState
 		bHasPreDiscontinuityLocation = false;
 		PreDiscontinuityArmSimSeconds = 0.0;
 		bHasPreDiscontinuityArmTime = false;
+		PreDiscontinuityEvaluations = 0;
 	}
 
 	/**

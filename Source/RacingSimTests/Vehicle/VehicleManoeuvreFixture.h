@@ -211,7 +211,17 @@ struct FVehicleManoeuvreFixture
 		// Settle. A car still falling onto its springs when a manoeuvre starts reports
 		// suspension bounce as longitudinal acceleration.
 		const double PreSettleZ = Pawn->GetActorLocation().Z;
-		Drive(FVehicleInputRawSample(), SettleSteps);
+
+		// CHECKED, because this is the one call site where ignoring it defeats the whole
+		// contract stated on Drive(). A settle phase on a world that never ticks would
+		// still return Setup() == true, and every spec built on this fixture would then
+		// measure a car in a dead world and report whatever it measured as a physics
+		// result. The soak happens to catch that on its first block; nothing else does.
+		if (!Drive(FVehicleInputRawSample(), SettleSteps))
+		{
+			ReportTickFailure(Test);
+			return false;
+		}
 
 		// Diagnostic, kept permanently rather than deleted once it had done its job. A
 		// manoeuvre test that fails reports "the car did not move", which is the same

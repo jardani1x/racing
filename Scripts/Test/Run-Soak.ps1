@@ -78,7 +78,18 @@ $Cmd = 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cm
 # The only validation this had was IsPathRooted, so a mistyped -ReportDir naming a real
 # directory was recursively force-deleted without a word. A stale report has to go,
 # because index.json from a previous run would otherwise be read as this run's result,
-# so the rule is narrow: empty, or already looking like an automation report.
+# so the rule is narrow: empty, ours, or already looking like an automation report.
+#
+# OURS is the marker file, and it is not decoration. index.json alone is not a workable
+# ownership test, because the run that fails hardest is the one that writes no index.json
+# at all -- and it still leaves the editor log behind, which makes the directory
+# non-empty. A crashed soak would therefore lock its own report directory out of every
+# future run, and the operator's only route back would be to delete it by hand: the
+# guard would be at its most obstructive in exactly the situation it was added to help
+# with. The marker is written by this script and by nothing else, so it says what
+# index.json cannot -- that whatever state this directory is in, we are the ones who
+# put it there.
+$OwnershipMarkerName = '.racingsim-soak-report'
 if (Test-Path -LiteralPath $ReportDir) {
     if (-not (Test-Path -LiteralPath $ReportDir -PathType Container)) {
         Write-Output "ReportDir exists and is not a directory: $ReportDir"
@@ -86,17 +97,41 @@ if (Test-Path -LiteralPath $ReportDir) {
     }
 
     $Existing = @(Get-ChildItem -LiteralPath $ReportDir -Force)
-    $LooksLikeReport = Test-Path -LiteralPath (Join-Path $ReportDir 'index.json')
+    $LooksLikeReport =
+        (Test-Path -LiteralPath (Join-Path $ReportDir 'index.json')) -or
+        (Test-Path -LiteralPath (Join-Path $ReportDir $OwnershipMarkerName))
 
     if ($Existing.Count -gt 0 -and -not $LooksLikeReport) {
-        Write-Output "REFUSING to delete $ReportDir : it is not empty and holds no index.json, so it is not a previous automation report. Point -ReportDir at a new or previously used report directory."
+        Write-Output "REFUSING to delete $ReportDir : it is not empty and holds neither index.json nor $OwnershipMarkerName, so it is not a previous automation report. Point -ReportDir at a new or previously used report directory."
         exit 1
     }
 
-    Remove-Item -Recurse -Force -LiteralPath $ReportDir
+    # CHECKED, because $ErrorActionPreference is Continue and a failed delete here is
+    # silent. The run would then carry on into a directory that still holds the PREVIOUS
+    # index.json, and the summary below would read that stale report as this run's result:
+    # a thirty-minute soak reported green on evidence produced by an entirely different
+    # build. Observed for real on a path Remove-Item could not resolve.
+    try {
+        Remove-Item -Recurse -Force -LiteralPath $ReportDir -ErrorAction Stop
+    }
+    catch {
+        Write-Output "FAILED to clear $ReportDir : $($_.Exception.Message)"
+        Write-Output 'Refusing to continue: a stale index.json left in place would be read as this run.'
+        exit 1
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
+
+# Written FIRST, before anything that can crash. A marker written at the end would be
+# absent from precisely the runs that need it -- the ones that die partway and leave
+# the directory non-empty.
+Set-Content -LiteralPath (Join-Path $ReportDir $OwnershipMarkerName) -Encoding utf8 -Value @(
+    'Written by Scripts/Test/Run-Soak.ps1. Its presence marks this directory as a soak',
+    'report directory that the script owns and may delete on the next run. Deleting this',
+    'file does not break anything; it only makes the next run refuse the directory until',
+    'it is emptied by hand.'
+)
 
 # Editor stdout goes to a FILE, not to Out-Null. When the NO_INDEX_JSON branch below
 # fires it means the editor produced no report at all, which is exactly the case where
@@ -189,14 +224,23 @@ foreach ($T in @($Report.tests | Where-Object { $_.fullTestPath -like 'RacingSim
     Write-Output "  $($T.fullTestPath) => $($T.state)"
 }
 
-# PROCESS_EXITCODE is part of the decision, not just printed. A non-zero editor exit
-# with a clean-looking report means the editor died after writing it -- an assertion, a
-# crash on shutdown, an ensure -- and reporting that as a passing thirty-minute soak is
-# precisely the kind of false green this gate exists to prevent.
-if ($ExitCode -ne 0) {
-    Write-Output "EDITOR_EXITED_NONZERO=$ExitCode -- the report was written but the editor did not exit cleanly; treat as a failure."
+# Both signals fail the run; the ORDER decides only which one gets named. The test
+# result is checked first because it is the more specific diagnosis: an editor that runs
+# a failing test and then exits non-zero because of it is an ordinary red gate, and
+# announcing EDITOR_EXITED_NONZERO for that sends the reader hunting a crash that never
+# happened. A non-zero exit alongside a CLEAN report is the interesting case -- the
+# editor died after writing it, an assertion or an ensure on shutdown -- and reporting
+# that as a passing thirty-minute soak is the false green this gate exists to prevent.
+if ($Report.failed -gt 0 -or $Report.notRun -gt 0) {
+    if ($ExitCode -ne 0) {
+        Write-Output "PROCESS_EXITCODE=$ExitCode, consistent with the failing tests above."
+    }
+
     exit 1
 }
 
-if ($Report.failed -gt 0 -or $Report.notRun -gt 0) { exit 1 }
+if ($ExitCode -ne 0) {
+    Write-Output "EDITOR_EXITED_NONZERO=$ExitCode -- every test passed but the editor did not exit cleanly; treat as a failure."
+    exit 1
+}
 exit 0

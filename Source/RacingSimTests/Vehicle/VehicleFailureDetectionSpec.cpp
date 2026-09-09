@@ -1102,10 +1102,67 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 	const FVehicleFailureThresholds Thresholds;
 	const FVehicleTelemetrySnapshot Base = MakeHealthyFailureSnapshot(10.0, 1);
 
-	// Comfortably past the 0.5 s budget without being so long that the test would still
-	// pass against a budget an order of magnitude too generous.
+	// Past the budget, and DERIVED from it -- worth being honest about, because it means
+	// this number pins nothing on its own. A budget ten times longer would still be
+	// cleared by a loop computed from it, so "the flag went false" is not by itself
+	// evidence that suppression is bounded anywhere useful. Two other things do that work:
+	// the behavioural probe below, which asserts the detector actually starts reporting
+	// again, and the below-budget case, which pins the budget from underneath so a
+	// detector that suppressed nothing at all would fail. The two spare steps absorb the
+	// rounding and the structural evaluation floor.
 	const int32 StepsPastBudget = FMath::CeilToInt32(
 		static_cast<double>(Thresholds.MaxContactSuppressionSeconds) / Step) + 2;
+
+	// The reset these cases model: a nudge off a wall, not a teleport across the map.
+	const double ShortResetCm = static_cast<double>(Thresholds.MaxContactDistanceCm) * 0.25;
+	const FVector RestLocationCm = Base.LocationCm + FVector(0.0, ShortResetCm, 0.0);
+
+	// The probe, and its geometry is the whole point of it.
+	//
+	// To tell "suppressed" from "reporting", a contact has to be simultaneously INSIDE the
+	// bound measured from the old basis -- so bContactPredatesDiscontinuity holds and
+	// suppression can swallow it -- and OUTSIDE the bound measured from the car, so that
+	// once suppression ends there is something left to report. A point outside both is
+	// raised either way; a point inside both is raised in neither; both would pass against
+	// a detector that had stopped checking contacts entirely. The triangle inequality opens
+	// the gap: the car sits ShortResetCm from the basis, so a point placed
+	// 0.99 * MaxContactDistanceCm from the basis on the OPPOSITE side is
+	// 0.99 * MaxContactDistanceCm + ShortResetCm from the car and clears the bound.
+	const FVector ProbeContactCm = Base.LocationCm
+		+ FVector(0.0, -0.99 * static_cast<double>(Thresholds.MaxContactDistanceCm), 0.0);
+
+	// Pinned, not assumed. Both halves are load-bearing, and a change to either threshold
+	// could collapse the gap and leave every case below asserting nothing.
+	TestTrue(TEXT("The probe contact is inside the bound measured from the pre-reset basis"),
+		FVector::Dist(Base.LocationCm, ProbeContactCm)
+			<= static_cast<double>(Thresholds.MaxContactDistanceCm));
+	TestTrue(TEXT("The probe contact is outside the bound measured from where the car ends up"),
+		FVector::Dist(RestLocationCm, ProbeContactCm)
+			> static_cast<double>(Thresholds.MaxContactDistanceCm));
+
+	// Stationary, deliberately. These cases are about the CONTACT half of the snapshot; a
+	// car that kept moving would drag its own contacts out of the basis within about twenty
+	// steps at the fixture's 100 km/h, ending the basis by the fresh-contact rule and
+	// leaving a case that looks like it tests the budget but does not.
+	auto MakeStalledSnapshot = [&Base, &RestLocationCm](
+		const double SimTimeSeconds, const int64 CaptureIndex, const FVector& ContactCm)
+	{
+		FVehicleTelemetrySnapshot Snapshot = Base;
+		Snapshot.TimestampSeconds = SimTimeSeconds;
+		Snapshot.SimulationTimeSeconds = SimTimeSeconds;
+		Snapshot.CaptureIndex = CaptureIndex;
+		Snapshot.VelocityCms = FVector::ZeroVector;
+		Snapshot.ForwardSpeedCms = 0.0f;
+		Snapshot.LocationCm = RestLocationCm;
+
+		for (int32 WheelIndex = 0; WheelIndex < Snapshot.NumWheels; ++WheelIndex)
+		{
+			Snapshot.Wheels[WheelIndex].bInContact = true;
+			Snapshot.Wheels[WheelIndex].ContactPointCm = ContactCm;
+		}
+
+		return Snapshot;
+	};
 
 	{
 		// -- CASE 1: contact never returns. --
@@ -1158,15 +1215,13 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 		// bContactPredatesDiscontinuity is true for all of them for ever and no contact is
 		// ever fresh. This is the case that hid best: nothing looks wrong, the car is
 		// driving normally, and the detector has quietly stopped checking contacts.
-		const double ShortResetCm = static_cast<double>(Thresholds.MaxContactDistanceCm) * 0.25;
-
 		FVehicleFailureDetectorState State;
 		State.NotifyDiscontinuity(Base.LocationCm);
 
 		FVehicleTelemetrySnapshot Nudged = AdvanceHealthyFailureSnapshot(Base, Step);
 		Nudged.VelocityCms = FVector::ZeroVector;
 		Nudged.ForwardSpeedCms = 0.0f;
-		Nudged.LocationCm = Base.LocationCm + FVector(0.0, ShortResetCm, 0.0);
+		Nudged.LocationCm = RestLocationCm;
 		for (int32 WheelIndex = 0; WheelIndex < Nudged.NumWheels; ++WheelIndex)
 		{
 			Nudged.Wheels[WheelIndex].bInContact = true;
@@ -1197,6 +1252,122 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 
 		TestFalse(TEXT("A reset shorter than MaxContactDistanceCm does not arm the basis for ever"),
 			State.bHasPreDiscontinuityLocation);
+
+		// And the behaviour the flag stands for, which is the assertion that actually carries
+		// this case. The flag going false proves a bool was cleared; only the probe proves
+		// the detector went back to reporting the contacts it had been swallowing.
+		const FVehicleTelemetrySnapshot Probe = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds + Step, Previous.CaptureIndex + 1, ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Probe, Thresholds, State);
+		TestTrue(TEXT("An impossible contact near the pre-reset pose is raised again once a short reset's budget expires"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
+		// -- CASE 3: the other direction. Below the budget, suppression is still on. --
+		//
+		// Without this, every assertion above is also satisfied by a detector that dropped
+		// the basis on its very first evaluation and suppressed nothing at all -- which is
+		// the bug the suppression was written to fix, so a suite that cannot tell that apart
+		// from the fix is not testing the fix. Five evaluations in: 0.083 s of simulated
+		// time, well inside the budget, and past the structural evaluation floor, so it is
+		// genuinely the budget being pinned here and not the floor.
+		constexpr int32 StepsBelowBudget = 5;
+
+		TestTrue(TEXT("The below-budget loop, probe included, really is below the budget"),
+			static_cast<double>(StepsBelowBudget + 1) * Step
+				< static_cast<double>(Thresholds.MaxContactSuppressionSeconds));
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		FVehicleTelemetrySnapshot Previous = Base;
+		for (int32 StepIndex = 0; StepIndex < StepsBelowBudget; ++StepIndex)
+		{
+			const FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+				Base.SimulationTimeSeconds + static_cast<double>(StepIndex + 1) * Step,
+				Base.CaptureIndex + StepIndex + 1,
+				ProbeContactCm);
+
+			RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Current, Thresholds, State);
+			Previous = Current;
+		}
+
+		TestTrue(TEXT("Below the budget the basis is still armed"),
+			State.bHasPreDiscontinuityLocation);
+
+		const FVehicleTelemetrySnapshot Probe = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds + Step, Previous.CaptureIndex + 1, ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Probe, Thresholds, State);
+		TestFalse(TEXT("Below the budget the same probe is still suppressed"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
+		// -- CASE 4: a single frame longer than the entire budget. --
+		//
+		// The case a time budget cannot handle alone, and the reason the basis is bounded by
+		// an evaluation count as well. The stale tail this suppression covers is measured in
+		// CAPTURES -- two of them -- while the budget is measured in SIMULATED TIME, and a
+		// frame can be arbitrarily long: a reset into a cell that then streams in produces a
+		// single step longer than the whole budget. A time bound on its own expires the basis
+		// on the very evaluation that still needs it, and raises the false InvalidContact
+		// this suppression exists to prevent -- at the worst possible moment, right after a
+		// recovery, which is when an operator is least able to tell a spurious report from a
+		// real one.
+		constexpr double LongFrameSeconds = 2.0;
+		constexpr int32 StaleTailCaptures = 2;
+
+		TestTrue(TEXT("The long frame really is longer than the whole budget"),
+			LongFrameSeconds > static_cast<double>(Thresholds.MaxContactSuppressionSeconds));
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		// The evaluation that spans the reset itself. Suppressed by bDiscontinuityPending
+		// rather than by the basis, so it proves nothing on its own -- it is here to get the
+		// state machine past the straddling evaluation and into the tail, which is where the
+		// basis is the only thing still suppressing anything.
+		FVehicleTelemetrySnapshot Previous = Base;
+		FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+			Base.SimulationTimeSeconds + Step, Base.CaptureIndex + 1, ProbeContactCm);
+		RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Current, Thresholds, State);
+		Previous = Current;
+
+		for (int32 TailIndex = 0; TailIndex < StaleTailCaptures; ++TailIndex)
+		{
+			Current = MakeStalledSnapshot(
+				Previous.SimulationTimeSeconds + LongFrameSeconds,
+				Previous.CaptureIndex + 1,
+				ProbeContactCm);
+
+			const FVehicleFailureReport TailReport = RacingSim::Vehicle::EvaluateVehicleFailures(
+				Previous, Current, Thresholds, State);
+			TestFalse(
+				*FString::Printf(
+					TEXT("A frame longer than the budget does not expire the basis on stale capture %d"),
+					TailIndex),
+				TailReport.Has(EVehicleFailureFlag::InvalidContact));
+
+			Previous = Current;
+		}
+
+		// And the floor is a floor, not an exemption. One evaluation past it and the budget
+		// -- long since exceeded -- takes effect, so a stopped or crawling clock cannot buy
+		// unbounded suppression by arriving in very few, very long steps.
+		Current = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds + LongFrameSeconds,
+			Previous.CaptureIndex + 1,
+			ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Current, Thresholds, State);
+		TestTrue(TEXT("Past the evaluation floor the exceeded budget expires the basis after all"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
 	}
 
 	{
