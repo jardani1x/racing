@@ -2719,6 +2719,75 @@ Two defects in the soak harness itself were found by running it and are fixed:
   precisely the run worth keeping. The summary now also goes through `AddInfo`, which is
   serialised either way.
 
+#### VEH-006 repair cycle 2 of 3, recorded 2026-09-09
+
+Commit `34da96d`. Both review gates returned CHANGES REQUESTED against repair cycle 1.
+The two reviewers again converged from opposite ends, this time on the *bound* rather
+than the *symptom*: production found that repair cycle 1 replaced an unbounded
+suppression with a bound expressed only in simulated seconds, and tests found that the
+spec pinning that bound asserted internal state rather than emitted behaviour, so it
+would have passed against either version of the fix.
+
+**Closed this cycle.**
+
+| ID | Finding | Fix |
+|---|---|---|
+| Production M-1 / L-2 | `MaxContactSuppressionSeconds` was the only bound on the contact-suppression basis, so a hitching or non-finite simulation clock could hold it armed indefinitely, or drop it after a single long frame -- either a suppressed genuine `InvalidContact` or a spurious one | The basis now also counts evaluations. `FVehicleFailureDetectorState::PreDiscontinuityEvaluations` is held for at least `GVehicleFailureMinContactSuppressionEvaluations = 3` no matter how much simulated time one frame swallowed, and always expires by `GVehicleFailureMaxContactSuppressionEvaluations = 240`. A non-finite clock *holds* rather than expires, so the ceiling is the bound and no spurious `InvalidContact` is stacked on the `NonFiniteState` report in the same frame; a backwards clock re-stamps the arm time rather than expiring; the fresh-contact exit clears the counter |
+| Test M-2 | `RacingSim.Vehicle.FailureDetectionSuppressionBound` asserted detector state, not what the detector emits, so it could not tell a suppressed contact from a reported one | Rewritten around a probe contact whose geometry distinguishes the two: with `ShortResetCm = 0.25 * MaxContactDistanceCm` the car rests 250 cm off the basis, and the probe sits at `-0.99 * MaxContactDistanceCm` on the same axis -- 990 cm from the pre-reset basis (inside the bound, suppressed while armed) and 1240 cm from where the car comes to rest (outside it, reported once the basis drops). CASE 3 pins the below-budget hold, CASE 4 pins the evaluation floor across two frames each longer than the whole time budget |
+| Test M-3 | Soak `ExpectedCaptures` could exceed the steps actually driven in a block, so a short block asserted against captures that could not exist | Clamped with `FMath::Min<int64>`, plus an explicit `CaptureFloor` |
+| Test M-4 | `VehicleManoeuvreFixture` ignored the settle `Drive()` return, so a failed settle became a silently wrong baseline for everything measured after it | Return checked; `ReportTickFailure` and bail |
+| Test L-1 | The stall message did not name the throttle being held | `%.2f throttle was still being held` |
+| Test L-2 | The soak reported max distance from the origin but never how far the car actually travelled | Summary now reports travel from the recorded start location alongside the bound |
+| Test L-4 | Post-reset settle tolerance was a magic number | Derived from world gravity and settle duration, via a null-checked `Fixture.GetWorld()` |
+| Harness M-1 | Repair cycle 1 taught `Run-Soak.ps1` to refuse a non-empty `-ReportDir`, which locked out precisely the crashed runs the guard was meant to help with: a soak that dies before writing `index.json` still leaves the editor stdout log behind, so the directory is non-empty, has no `index.json`, and can never be reused without a manual delete | An ownership marker `.racingsim-soak-report`, written by this script and nothing else, immediately after `New-Item` -- before anything that can crash, because a marker written at the end is absent from exactly the runs that need it. The directory is cleared if it holds `index.json` **or** the marker, refused otherwise |
+| Harness L-3 | The exit decision named a failing test as `EDITOR_EXITED_NONZERO`, sending the reader hunting a crash that never happened | Test result checked first; a non-zero exit alongside a clean report is now named as the editor dying *after* writing it, which is the false green the gate exists to catch |
+
+**Found while verifying the harness M-1 guard, and fixed in the same commit.**
+`$ErrorActionPreference` is `Continue`, so a failed `Remove-Item` of the stale report
+directory was **silent**. The run then continued into a directory still holding the
+PREVIOUS `index.json`, and the summary at the bottom of the script read that stale report
+as this run: a thirty-minute soak gate reporting green on evidence produced by an entirely
+different build. Observed for real, not hypothesised -- `An object at the specified path
+C:\Users\JUNYI~1 does not exist`, an 8.3 short path `Remove-Item` could not resolve. Now
+`-ErrorAction Stop` inside a `try`/`catch` that reports and exits 1.
+
+**Deferred again, with reasons rather than fixed.** Test M-1 (a memory-slope assertion over
+the last third of the soak) and test M-2 from cycle 1 (first-5-min vs last-5-min drift
+comparison) both need a longer statistical baseline than one green run provides, and a
+threshold guessed now would either never fire or fire on noise. Production M-4/M-5 and the
+production LOW items are unchanged from cycle 1. Asserting the return value of the other 14
+`Fixture.Drive(` call sites was explicitly ruled **not a blocker** by the cycle-1 test
+reviewer and is left alone.
+
+**Stated plainly, because the evidence does not cover it.** The harness L-3 branch
+reordering was **not** exercised under a genuinely failing soak. Both of its branches need
+a written report to reach, and every run in this cycle was green. It is verified by code
+reading only. The harness M-1 guard and the silent-delete fix *were* exercised, with
+synthetic fixtures: a foreign directory was REFUSED with its `notes.txt` intact; a
+simulated crashed-run directory (marker plus a stale editor log, no `index.json`) was
+ACCEPTED and cleared; a delete that could not resolve its path aborted with exit 1.
+
+#### VEH-006 repair cycle 2 verification evidence
+
+| Gate | Report | Result |
+|---|---|---|
+| Editor build | `Scripts/Test/build-editor-cycle2b.log` | `BUILD_EXITCODE=0`, `Result: Succeeded`, `WARNING_ERROR_MATCHES=0` |
+| Smoke | `Scripts/Test/smoke-veh006-cycle2b.log` | `succeeded=521 succeededWithWarnings=2 failed=0 notRun=0` across 523, `NON_SUCCESS_COUNT=0` |
+| Manoeuvre + detector | `Scripts/Test/man-veh006-cycle2b.log` | `succeeded=8 failed=0 notRun=0`, `NON_SUCCESS_COUNT=0` |
+| Soak | `Scripts/Test/soak-veh006-cycle2b.log` | `succeeded=1 failed=0 notRun=0`, `PROCESS_EXITCODE=0` |
+
+```
+VEH-006 soak: 108000 steps at 0.016667 s = 1800.0 s simulated (30.0 min) in 44.2 s wall
+clock (2441 steps/s, 40.7x real time); 180 inspections; max distance 919.7 cm of 8000.0 cm
+bound (travelled 919.8 cm from its start); slowest inspected speed 335.1 cm/s against a
+50.0 cm/s liveness floor; resident memory 1551.7 -> 1170.9 MiB, delta -380.8 MiB against a
+64.0 MiB ceiling.
+```
+
+The parenthesised travel figure is the test L-2 fix visible in output. The negative memory
+delta is a garbage collection landing inside the window, not a leak reversed; the ceiling
+is a one-sided bound and this run is nowhere near it either way.
+
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
