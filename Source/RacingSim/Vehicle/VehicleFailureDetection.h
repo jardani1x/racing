@@ -203,6 +203,45 @@ struct FVehicleFailureThresholds
 
 	/** A contact point further than this from the body origin is not a real contact, CENTIMETRES. Well outside any prototype chassis plus suspension travel. */
 	float MaxContactDistanceCm = 1000.0f;
+
+	/**
+	 * Hard upper bound on the post-discontinuity contact suppression, SIMULATED SECONDS.
+	 *
+	 * The suppression described by FVehicleFailureDetectorState::PreDiscontinuityLocationCm
+	 * normally ends by itself, the moment a wheel reports contact from somewhere other
+	 * than the pose the car left. That rule is right when contact comes back, and it has
+	 * no answer at all when contact does not: a reset that leaves the car airborne,
+	 * inverted, wedged or below the world produces no contact evidence ever again, and a
+	 * reset that moved the car less than MaxContactDistanceCm produces only contacts that
+	 * still match the stale basis. In both cases the basis stayed armed for the rest of
+	 * the session and swallowed every genuine InvalidContact near that one pose -- and
+	 * those are exactly the situations the reset path exists to recover from, so the
+	 * detector went deaf in the case it most needed to speak.
+	 *
+	 * Half a second is roughly thirty captures at the default rate against a measured tail
+	 * of two, so it cannot cut a legitimate suppression short. Expressed in SIMULATED time
+	 * for the same reason the rest of the detector is: a fixed capture count would mean
+	 * different things at different sample rates.
+	 *
+	 * NOT THE ONLY BOUND, and not the first one. The detector also counts evaluations, and
+	 * that count both floors and ceilings this threshold:
+	 *
+	 *   - A floor of GVehicleFailureMinContactSuppressionEvaluations evaluations must pass
+	 *     before this budget is allowed to expire the basis at all. Lowering the value here
+	 *     below roughly three evaluations of simulated time therefore has NO EFFECT, and
+	 *     setting it to 0.0 does not switch suppression off -- the first few evaluations
+	 *     after a discontinuity stay suppressed regardless. That floor exists because a
+	 *     single long frame can carry more simulated time than this whole budget, and
+	 *     expiring on it would drop the basis before the stale tail has even arrived.
+	 *   - A ceiling of GVehicleFailureMaxContactSuppressionEvaluations evaluations expires
+	 *     the basis whatever this value says, which is what bounds the case a seconds
+	 *     budget cannot see: a simulated clock that has stopped, or gone non-finite, or is
+	 *     being re-based backwards every frame.
+	 *
+	 * Both constants live in VehicleFailureDetection.cpp and are structural rather than
+	 * tunable. Raising this value past the ceiling's worth of simulated time makes it inert.
+	 */
+	float MaxContactSuppressionSeconds = 0.5f;
 };
 
 /**
@@ -226,6 +265,108 @@ struct FVehicleFailureDetectorState
 	/** Per-wheel seconds spent fully compressed under load. Index-parallel to FVehicleTelemetrySnapshot::Wheels. */
 	float PenetrationSeconds[MaxVehicleTelemetryWheels] = {};
 
+	/**
+	 * Set by NotifyDiscontinuity, consumed and cleared by the next evaluation, which then
+	 * judges NOTHING that straddles the discontinuity.
+	 *
+	 * WHAT STRADDLES IT is wider than it first looks, and getting that wrong is what this
+	 * flag exists to stop. The obvious half is every rate: a car teleported 5 m has moved
+	 * 5 m in one step, and Tunnelling is the correct verdict for motion nobody announced
+	 * and the wrong one for a reset somebody did. The non-obvious half is the CONTACT
+	 * GEOMETRY. InvalidContact compares Current.LocationCm -- a game-thread pose, read
+	 * after the teleport -- against Wheel.ContactPointCm, which the physics thread
+	 * produced before it. That is a cross-frame comparison wearing a single-snapshot
+	 * check's clothes, and it fired on exactly the reset it was meant to tolerate:
+	 * "wheel 2 reports contact 1150.085664 cm from the body, beyond the 1000.000000 cm
+	 * bound", one capture after an announced discontinuity, with the car sitting still.
+	 *
+	 * NonFiniteState, UnstableWheelState and StaleInput are deliberately NOT suppressed.
+	 * A NaN one frame after a reset is a real fault and the reset is the likeliest cause;
+	 * suppressing it would hide the failure at the moment it is most diagnosable.
+	 */
+	bool bDiscontinuityPending = false;
+
+	/**
+	 * Where the body was JUST BEFORE the last announced discontinuity, centimetres.
+	 * Only meaningful while bHasPreDiscontinuityLocation is set.
+	 *
+	 * ONE EVALUATION IS NOT ENOUGH FOR THE CONTACT CHECK, and measurement is the reason.
+	 * The two halves of a snapshot catch up to a teleport at different speeds: the
+	 * chassis pose is read from the game thread and is correct the instant
+	 * SetActorLocationAndRotation returns, while the wheel state is marshalled back from
+	 * the physics thread a frame later (UChaosWheeledVehicleMovementComponent::
+	 * FillWheelOutputState copies the async output, which the game thread also
+	 * INTERPOLATES between two physics results). Probed on the real pipeline, driving one
+	 * step at a time after an announced reset:
+	 *
+	 *   step=0 loc=(-2500,4330,55) [w0 contact=1 dist=3924.2 pt=(-297,1083,0)] ...
+	 *   step=1 loc=(-2500,4330,60) [w0 contact=1 dist=171.5 pt=(-2661,4329,0)] ...
+	 *
+	 * The pose moved at step 0; the wheels did not move until step 1. So the FIRST
+	 * post-reset evaluation and the one after it both read pre-teleport contact points,
+	 * and a suppression that lasted exactly one evaluation let the second one through as
+	 * Error-severity InvalidContact on a car sitting still.
+	 *
+	 * A fixed count of two would be wrong for a different reason: capture is paced on
+	 * TelemetrySampleRateHz, so at a rate below the tick rate two captures span many
+	 * ticks and the suppression would outlive the staleness it was aimed at. This is
+	 * SELF-TERMINATING instead. A wheel whose contact point is within
+	 * MaxContactDistanceCm of the PRE-discontinuity body pose is reporting a contact that
+	 * was true for where the car used to be, and is skipped; the basis is dropped the
+	 * first time a wheel in contact reports a point somewhere ELSE, which is the frame
+	 * the physics output caught up. Nothing here depends on the capture rate, the tick
+	 * rate, or whether Chaos is running its async path.
+	 *
+	 * Expiring on FRESH contact rather than on the absence of matching contact is load
+	 * bearing. The capture immediately after a teleport reports every wheel out of
+	 * contact with a zeroed contact point, and only the capture after THAT carries the
+	 * stale points. Measured on the real pipeline, with the basis at (-147.8,1032.3,69.6)
+	 * and dPre the distance from it:
+	 *
+	 *   cap=241 hasPre=1 loc=(-2500,4330,70) [w0 c=0 pt=(0,0,0)]      ... no evidence
+	 *   cap=242 hasPre=1 loc=(-2500,4330,72) [w0 c=1 pt=(-297,1083,0) dPre=172.1]  stale
+	 *   cap=243 hasPre=0 loc=(-2500,4330,74) [w0 c=1 pt=(-2661,4329,0) dPre=5081.2] fresh
+	 *
+	 * An earlier rule that expired the basis whenever nothing matched threw it away at
+	 * 241 -- on a snapshot with no contact evidence at all -- and then had nothing left
+	 * to suppress 242, which raised Error-severity InvalidContact on a stationary car.
+	 */
+	FVector PreDiscontinuityLocationCm = FVector::ZeroVector;
+
+	/** Whether PreDiscontinuityLocationCm holds a usable pose. See it for why. */
+	bool bHasPreDiscontinuityLocation = false;
+
+	/**
+	 * Simulated time at the first evaluation that saw the current basis, SECONDS.
+	 * Only meaningful while bHasPreDiscontinuityArmTime is set.
+	 *
+	 * Stamped at the first EVALUATION rather than at NotifyDiscontinuity, because the
+	 * caller announcing a teleport does not necessarily have a simulated clock to hand,
+	 * and the budget being bounded is the one measured in evaluated samples anyway.
+	 * See FVehicleFailureThresholds::MaxContactSuppressionSeconds for what it bounds.
+	 */
+	double PreDiscontinuityArmSimSeconds = 0.0;
+
+	/** Whether PreDiscontinuityArmSimSeconds holds a stamped time. */
+	bool bHasPreDiscontinuityArmTime = false;
+
+	/**
+	 * How many evaluations have seen the current basis, INCLUDING the one that stamped
+	 * PreDiscontinuityArmSimSeconds. Zero while no basis is armed.
+	 *
+	 * The time budget alone is not a safe bound, because the two quantities it relates
+	 * are measured in different things. The stale-contact tail this suppression exists
+	 * to cover is measured in CAPTURES (two of them, see PreDiscontinuityLocationCm),
+	 * while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
+	 * can be arbitrarily long. A teleport followed by a streaming hitch produces a
+	 * single frame longer than the whole budget, which would expire the basis on the
+	 * very evaluation that still needs it and raise the false InvalidContact this
+	 * suppression was written to prevent. Counting evaluations gives the budget a floor
+	 * that a long frame cannot cross; see the section 0 comment in
+	 * VehicleFailureDetection.cpp for how the two bounds combine.
+	 */
+	int32 PreDiscontinuityEvaluations = 0;
+
 	/** Drop all accumulated history. Call on teleport, respawn or session restart. */
 	void Reset()
 	{
@@ -234,6 +375,83 @@ struct FVehicleFailureDetectorState
 		{
 			Seconds = 0.0f;
 		}
+
+		// bDiscontinuityPending included deliberately. Reset() is documented as dropping
+		// ALL accumulated history, and an armed one-evaluation suppression is history: a
+		// caller using Reset() for a session restart was otherwise carrying a suppression
+		// across it. NotifyDiscontinuity() calls Reset() FIRST and re-arms afterwards, so
+		// clearing it here cannot disarm the announcement that follows.
+		bDiscontinuityPending = false;
+
+		PreDiscontinuityLocationCm = FVector::ZeroVector;
+		bHasPreDiscontinuityLocation = false;
+		PreDiscontinuityArmSimSeconds = 0.0;
+		bHasPreDiscontinuityArmTime = false;
+		PreDiscontinuityEvaluations = 0;
+	}
+
+	/**
+	 * Reset, AND arm the one-evaluation suppression above.
+	 *
+	 * Separate from Reset() because the two are not the same request. Reset() means "this
+	 * history is meaningless"; NotifyDiscontinuity() means that AND "the next sample is
+	 * not comparable to the last one". A caller that teleports a car needs both, and
+	 * every caller that only has Reset() available got the second one silently wrong.
+	 */
+	void NotifyDiscontinuity()
+	{
+		// The evaluation count survives the Reset() below, deliberately.
+		//
+		// Reset() zeroes PreDiscontinuityEvaluations, which is right for a session restart
+		// and wrong here. A caller that announces a discontinuity on every frame -- an
+		// auto-recover that keeps re-triggering while the car is wedged under the world is
+		// the realistic one -- would rewind the count to zero with every announcement, so
+		// neither the evaluation floor nor the evaluation ceiling could ever be reached and
+		// the contact-suppression basis would stay armed for the rest of the session.
+		//
+		// That is the same unbounded suppression the evaluation bound was added to close,
+		// reached through the front door instead of through a stopped clock. Carrying the
+		// count forward means N announcements followed by M evaluations are bounded exactly
+		// as one announcement followed by M evaluations would be: the detector cannot be
+		// made deaf by being told the same thing over and over.
+		//
+		// Only the COUNT is carried. The arm time is not: the fresh announcement genuinely
+		// re-bases the pose being suppressed, so the time budget should measure from now,
+		// while the count answers a different question -- how many chances the detector has
+		// already had to see contact from somewhere else -- and that history is not undone
+		// by announcing the same discontinuity again.
+		const int32 CarriedEvaluations = PreDiscontinuityEvaluations;
+
+		Reset();
+
+		PreDiscontinuityEvaluations = CarriedEvaluations;
+		bDiscontinuityPending = true;
+	}
+
+	/**
+	 * NotifyDiscontinuity, plus the pose the car is leaving behind.
+	 *
+	 * @param PreviousLocationCm where the body was before the teleport -- in practice the
+	 *        last captured snapshot's LocationCm, which is the only pose the detector can
+	 *        be sure the physics thread has already seen. Pass the no-argument overload
+	 *        when there is no such snapshot; the contact check then falls back to the
+	 *        single-evaluation suppression, which is strictly weaker but never wrong in
+	 *        the raising direction.
+	 */
+	void NotifyDiscontinuity(const FVector& PreviousLocationCm)
+	{
+		NotifyDiscontinuity();
+
+		if (PreviousLocationCm.ContainsNaN())
+		{
+			// A non-finite basis would make every distance comparison below false, which
+			// silently degrades to the no-argument behaviour. Refusing it explicitly says
+			// so rather than leaving it to floating-point luck.
+			return;
+		}
+
+		PreDiscontinuityLocationCm = PreviousLocationCm;
+		bHasPreDiscontinuityLocation = true;
 	}
 };
 

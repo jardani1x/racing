@@ -72,7 +72,12 @@ if ($Filter -and $TestNames) {
 
 $Cmd = 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
 
-if (Test-Path $ReportDir) { Remove-Item -Recurse -Force $ReportDir }
+. (Join-Path $PSScriptRoot 'ReportDirectory.ps1')
+
+# VEH-006 repair cycle 3. See ReportDirectory.ps1: this was an unchecked recursive
+# force-delete of any path the caller named.
+if (-not (Test-RacingSimAbsoluteReportDir -ReportDir $ReportDir)) { Write-RacingSimRefusals; exit 1 }
+if (-not (Reset-RacingSimReportDirectory -ReportDir $ReportDir -MarkerName '.racingsim-report' -OwnerScript 'Run-AutomationFilter.ps1')) { Write-RacingSimRefusals; exit 1 }
 
 if ($Filter) {
     Write-Output "FILTER=$Filter"
@@ -95,7 +100,19 @@ if (-not (Test-Path $IndexPath)) {
     exit 1
 }
 
-$Report = Get-Content -LiteralPath $IndexPath -Raw | ConvertFrom-Json
+# CHECKED. See Run-Smoke.ps1: unchecked, a truncated index.json left $Report null and the
+# whole report read as zeroes, which is indistinguishable from a clean run.
+try
+{
+    $Report = Get-Content -LiteralPath $IndexPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+}
+catch
+{
+    Write-Output "UNREADABLE_INDEX_JSON -- $IndexPath exists but could not be parsed: $($_.Exception.Message)"
+    Write-Output 'Treat as a harness failure, not a pass.'
+    exit 1
+}
+
 Write-Output "reportCreatedOn=$($Report.reportCreatedOn)"
 
 # See Run-Smoke.ps1: `succeeded` is NOT the pass count. A test that passes every assertion
@@ -120,3 +137,32 @@ Write-Output '--- RacingSim.* suites ---'
 foreach ($T in @($Report.tests | Where-Object { $_.fullTestPath -like 'RacingSim.*' } | Sort-Object fullTestPath)) {
     Write-Output "  $($T.fullTestPath) => $($T.state)"
 }
+
+# THE SCRIPT USED TO END HERE, exiting 0 whatever the report said -- the M7 residual in
+# Docs/Tickets.md. Nothing above this line changed, so past evidence citations stay
+# verifiable; what is added is the exit status they always implied.
+#
+# -TestNames gets a STRONGER check than -Filter can have. A filter's expected test set is
+# not knowable from here, so all that can be demanded of it is that something ran and
+# passed. A name list IS the expected set: `Automation RunTests A+B+C` silently drops a
+# name it cannot resolve -- a typo, a renamed spec, a test excluded by the build -- and
+# the report then comes back green with fewer tests in it than were asked for. Requiring
+# each name to be present AND Success is the difference between "the tests I named passed"
+# and "some tests passed".
+$RequiredTestNames = @()
+if ($TestNames)
+{
+    # Unreal accepts + and , as separators in RunTests. Split on both rather than assuming.
+    $RequiredTestNames = @($TestNames -split '[+,]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+$Problems = Test-RacingSimReportHasPositiveProof -Report $Report -RequiredTestNames $RequiredTestNames
+if ($Problems.Count -gt 0)
+{
+    Write-Output '--- GATE FAILED ---'
+    foreach ($Problem in $Problems) { Write-Output "  $Problem" }
+    exit 1
+}
+
+Write-Output "GATE_PASSED passedTotal=$Passed requiredNamesChecked=$($RequiredTestNames.Count)"
+exit 0

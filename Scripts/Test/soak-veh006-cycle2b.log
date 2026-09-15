@@ -1,0 +1,14 @@
+﻿TESTNAME=RacingSim.Vehicle.Soak.ThirtyMinuteDrive
+SOAK_STARTED=2026-09-09T13:40:14
+PROCESS_EXITCODE=0
+HARNESS_WALLCLOCK_SECONDS=81.9
+EDITOR_STDOUT_LOG=C:\Users\jun yi\Documents\central-command\racing\Saved\Automation\Cycle2bSoak\soak-editor-stdout.log
+reportCreatedOn=2026.09.09-05.41.34
+succeeded=1 succeededWithWarnings=0 passedTotal=1 failed=0 notRun=0
+testsInReport=1
+totalDuration=44.577503204345703
+--- soak summary ---
+  VEH-006 soak: 108000 steps at 0.016667 s = 1800.0 s simulated (30.0 min) in 44.2 s wall clock (2441 steps/s, 40.7x real time); 180 inspections; max distance 919.7 cm of 8000.0 cm bound (travelled 919.8 cm from its start); slowest inspected speed 335.1 cm/s against a 50.0 cm/s liveness floor; resident memory 1551.7 -> 1170.9 MiB, delta -380.8 MiB against a 64.0 MiB ceiling.
+NON_SUCCESS_COUNT=0
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.Soak.ThirtyMinuteDrive => Success

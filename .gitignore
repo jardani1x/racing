@@ -115,3 +115,18 @@ desktop.ini
 # checkout with its own .git link back to this repo -- local scratch space for
 # in-progress branches, never a thing this repo commits into itself.
 .claude/worktrees/
+
+# Obsidian. Docs/ is the vault; its shared settings (app.json, appearance.json,
+# core-plugins.json, templates.json) ARE committed so everyone opens the vault with
+# the same configuration. Everything below is per-machine state -- window layout,
+# search history, plugin caches, the file-recovery snapshot store -- and belongs to
+# whoever is sitting at the machine, not to the project.
+Docs/.obsidian/workspace.json
+Docs/.obsidian/workspace-mobile.json
+Docs/.obsidian/graph.json
+Docs/.obsidian/hotkeys.json
+Docs/.obsidian/plugins/
+Docs/.obsidian/themes/
+Docs/.obsidian/snippets/
+.obsidian/workspace*.json
+.trash/

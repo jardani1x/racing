@@ -240,6 +240,38 @@ public:
 		return Processor;
 	}
 
+#if WITH_AUTOMATION_TESTS
+	/**
+	 * VEH-006 TEST-ONLY SEAM: write a raw device sample directly, with no Enhanced Input.
+	 *
+	 * -----------------------------------------------------------------------
+	 * Why this exists, and why it is not "just make the handlers public"
+	 * -----------------------------------------------------------------------
+	 *
+	 * VEH-006 has to prove the whole input-to-physics chain -- shaping, rate limiting,
+	 * the reset hold, the stale-sample guard -- against a car that is actually being
+	 * simulated by Chaos. Every earlier vehicle spec tested FVehicleInputProcessor in
+	 * isolation, which proves the arithmetic and proves nothing about the wiring.
+	 *
+	 * The chain's real entry point is eight private Enhanced Input handlers
+	 * (HandleThrottle and friends), each reachable only through a UInputAction, a
+	 * UInputMappingContext, a UEnhancedInputComponent and a possessing APlayerController.
+	 * A test that stood all of that up would be testing Enhanced Input, not this project,
+	 * and it would need content assets for the actions -- which CLAUDE.md's content rules
+	 * would then require in the licence ledger, for a test.
+	 *
+	 * So the seam enters one level below the handlers, at the raw sample they all write.
+	 * It is guarded by WITH_AUTOMATION_TESTS rather than merely documented as test-only,
+	 * so it is compiled out of a shipping build entirely and no future gameplay code can
+	 * come to depend on it.
+	 *
+	 * @param Sample  raw device values. May be non-finite or out of range on purpose --
+	 *                the processor is the trust boundary and hostile values are a
+	 *                legitimate thing for a test to inject.
+	 */
+	void InjectRawSampleForTesting(const FVehicleInputRawSample& Sample);
+#endif
+
 	virtual void TickComponent(
 		float DeltaTime,
 		ELevelTick TickType,

@@ -101,7 +101,21 @@ public class RacingSim : ModuleRules
 			"ChaosVehicles"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { });
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			// VEH-006: ARacingVehiclePawn::BeginPlay pins the chassis rigid body to
+			// Chaos::ESleepType::NeverSleep via
+			// FSingleParticlePhysicsProxy::GetGameThreadAPI().SetSleepType. That is
+			// low-level Chaos, not the FBodyInstance wrapper Engine re-exports, so
+			// linking against ChaosVehicles alone left three unresolved externals
+			// (TThreadSingleton<Chaos::FPhysicsThreadContext>::GetTlsSlot,
+			// Chaos::EnsureSleepingObjectState, Chaos::CVars::bEnableAsyncInitBody).
+			//
+			// Private because the call lives entirely in RacingVehiclePawn.cpp: no
+			// public header of this module names a Chaos type, so dependents --
+			// including RacingSimTests -- do not inherit it.
+			"Chaos"
+		});
 	}
 
 	/**

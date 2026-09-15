@@ -3,6 +3,7 @@
 #include "Vehicle/RacingVehiclePawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "Chaos/ParticleHandle.h"
 #include "CollisionQueryParams.h"
 #include "Components/BoxComponent.h"
 #include "Core/RacingSimLog.h"
@@ -11,6 +12,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 // VEH-004/VEH-005: the project's Vehicle/ -> Race/ dependencies, confined to this .cpp.
 // The direction is justified in ARacingVehiclePawn::PublishCarSpecVersionTo's header
 // comment -- only the pawn knows whether a tune was APPLIED as opposed to referenced,
@@ -88,6 +90,78 @@ void ARacingVehiclePawn::BeginPlay()
 	Super::BeginPlay();
 
 	ApplyChassisAsset();
+
+	// VEH-006: keep the chassis rigid body out of Chaos' sleep state.
+	//
+	// UChaosVehicleMovementComponent::SetSleeping delegates to WakeAllEnabledRigidBodies and
+	// PutAllEnabledRigidBodiesToSleep, and BOTH open with
+	// `if (USkeletalMeshComponent* Mesh = GetSkeletalMesh())`
+	// (ChaosVehicleMovementComponent.cpp:2058-2090). This pawn is a blockout whose updated
+	// component is a UBoxComponent, so GetSkeletalMesh() returns null and neither call does
+	// anything at all. The vehicle literally cannot wake its own chassis.
+	//
+	// Chaos still sleeps the body on its own once it comes to rest, and for a vehicle a sleeping
+	// body is fatal rather than merely idle:
+	// FChaosVehicleManagerAsyncCallback::OnPreSimulate_Internal returns before
+	// FChaosVehicleAsyncInput::Simulate unless Handle->ObjectState() is Dynamic
+	// (ChaosVehicleManagerAsyncCallback.cpp:126-129). The entire vehicle simulation -- engine,
+	// transmission, suspension, tyres -- stops, the last FChaosVehicleAsyncOutput stays latched
+	// so telemetry keeps reporting plausible frozen numbers, and throttle does nothing. It is a
+	// one-way door: the car cannot produce the motion that would wake it.
+	//
+	// That is what the VEH-006 manoeuvre suite was actually measuring. The decisive evidence was
+	// per-wheel physics output identical to one decimal place before and after full throttle,
+	// with game-thread interpolated throttle 1.000 and the body reporting not awake
+	// (Saved/Automation/ReportVEH006Probe6).
+	//
+	// ESleepType::NeverSleep states the requirement directly, and FRigidBodyHandle_External::
+	// SetSleepType wakes an already-sleeping particle when handed it (ParticleHandle.h:3777-3781),
+	// so this is safe to call at any point after physics state creation. BeginPlay is after it.
+	//
+	// REMOVE THIS when the prototype gains a real skeletal mesh with a physics asset, together
+	// with p.Vehicle.DisableConstraintSuspension in Config/DefaultEngine.ini: both are the same
+	// missing-skeletal-mesh gap in Chaos Vehicles, seen from different sides.
+	//
+	// Every path that fails to reach SetSleepType is REPORTED, not skipped quietly. The
+	// failure this pin prevents is silent by construction: a slept chassis latches its
+	// last physics output, so the telemetry keeps reporting the speed the car had when it
+	// went to sleep and nothing in FVehicleFailureThresholds can raise a flag for it. If
+	// the pin does not get applied, the log line below is the only warning anyone gets.
+	bool bSleepPinApplied = false;
+
+	if (ChassisCollision != nullptr)
+	{
+		if (const FBodyInstance* ChassisBody = ChassisCollision->GetBodyInstance())
+		{
+			if (FPhysicsActorHandle ChassisActor = ChassisBody->GetPhysicsActor())
+			{
+				ChassisActor->GetGameThreadAPI().SetSleepType(Chaos::ESleepType::NeverSleep);
+				bSleepPinApplied = true;
+			}
+			else
+			{
+				UE_LOG(LogRacingVehicle, Warning,
+					TEXT("ARacingVehiclePawn '%s' has a chassis body instance with no physics actor at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+					*GetNameSafe(this));
+			}
+		}
+		else
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s' has a chassis collision component with no body instance at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+				*GetNameSafe(this));
+		}
+	}
+	else
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s' has no ChassisCollision at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+			*GetNameSafe(this));
+	}
+
+	UE_LOG(LogRacingVehicle, Verbose,
+		TEXT("ARacingVehiclePawn '%s' NeverSleep pin applied: %s."),
+		*GetNameSafe(this), bSleepPinApplied ? TEXT("yes") : TEXT("NO"));
 
 	// VEH-004: report the thresholds in force once, at start, rather than leaving a
 	// reader to guess which numbers a failure report was judged against. A null asset
@@ -275,12 +349,16 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 
 	if (TuneAsset == nullptr)
 	{
-		// Reported, never substituted. A silent fallback to Chaos' own engine/transmission
-		// defaults would give a car that drives -- badly, and unlike the authored tune --
-		// with nothing in the session saying which numbers were used. Same policy as the
-		// null-chassis path above.
+		// Reported, never substituted. The consequence is stated exactly, because it is
+		// worse than it reads: returning here skips the mechanical-simulation re-arm
+		// below, and bMechanicalSimEnabled has ALREADY latched false during component
+		// registration (see the long note at the re-arm). So a tuneless pawn does not fall
+		// back to Chaos' engine and transmission defaults -- it has no engine, no
+		// transmission and no differential at all, sits at gear 0 and 0.0 rpm, and does not
+		// respond to throttle. Anyone reading this line needs to know that, because a car
+		// that drives badly and a car that does not drive are different bug reports.
 		UE_LOG(LogRacingVehicle, Error,
-			TEXT("ARacingVehiclePawn '%s' has no TuneAsset; Chaos' built-in engine, transmission and steering defaults remain in place and no authored tune is applied."),
+			TEXT("ARacingVehiclePawn '%s' has no TuneAsset; no authored tune is applied AND mechanical simulation stays latched off, so this pawn has no engine, transmission or differential and will not respond to throttle."),
 			*GetNameSafe(this));
 		return;
 	}
@@ -331,6 +409,36 @@ void ARacingVehiclePawn::ApplyTuneAsset()
 		Engine.EngineBrakeEffect = TuneAsset->EngineBrakeEffect;
 		Engine.EngineRevUpMOI = TuneAsset->EngineRevUpMoi;
 		Engine.EngineRevDownRate = TuneAsset->EngineRevDownRate;
+
+		// VEH-006: re-arm mechanical simulation. This is NOT belt-and-braces; without it
+		// this pawn has no engine, no transmission and no differential for its whole life.
+		//
+		// UChaosWheeledVehicleMovementComponent::bMechanicalSimEnabled is set true in
+		// exactly one place -- the component constructor
+		// (ChaosWheeledVehicleMovementComponent.cpp:1135). SetupVehicle sets it FALSE
+		// when EngineSetup.TorqueCurve is empty (:1539-1549) and there is no path that
+		// ever sets it back. The physics state is created once at component REGISTRATION,
+		// which happens during spawn, before BeginPlay -- and at that moment
+		// EngineSetup.TorqueCurve is still the empty default, because the tune above has
+		// not been written yet. So the flag latches off, and the RecreatePhysicsState()
+		// that ApplyChassisAsset() performs immediately after this function returns
+		// rebuilds the vehicle with a perfectly good curve into a component that has
+		// already decided mechanical simulation is off. The `if (bMechanicalSimEnabled)`
+		// guard at :1551 then skips FSimpleEngineSim, FSimpleTransmissionSim and
+		// FSimpleDifferentialSim entirely.
+		//
+		// Symptom this produced, and what it cost to find: full throttle, a correctly
+		// shaped input command of 1.000 reaching the movement component, wheels created,
+		// rigid body settling correctly onto the ground -- and the car sitting still at
+		// gear 0 and 0.0 engine rpm, not even the 950 rpm idle. Three build-and-run
+		// cycles. Evidence: Saved/Automation/ReportVEH006Man1..3/index.json and the
+		// single LogVehicle line in Saved/Logs/RacingSim.log.
+		//
+		// EnableMechanicalSim is the supported public setter
+		// (ChaosWheeledVehicleMovementComponent.h:768-771). It is called only inside this
+		// branch: a tune whose curve was refused above must stay disabled, which is the
+		// engine's own correct behaviour for an unusable curve.
+		VehicleMovementComponent->EnableMechanicalSim(true);
 
 		// The car-spec-version gate (VEH-004 HIGH-2, see the header comment on
 		// ApplyTuneAsset()): only set once the engine has genuinely been written, so a
@@ -612,10 +720,98 @@ void ARacingVehiclePawn::NotifyTelemetryDiscontinuity()
 	// record of what happened, and a consumer inspecting why a car was reset must still
 	// be able to read the sample that preceded it. What is cleared is the COMPARISON
 	// BASIS and the accumulators, which is what would otherwise manufacture a fault.
+	//
+	// SimulationTimeSeconds is likewise NOT cleared: a reset does not un-happen the time
+	// that preceded it, and a clock that jumps backwards is precisely the TimeAnomaly the
+	// detector would then raise on the first sample after the reset. Zeroing
+	// NextCaptureTimeSeconds is enough to make the next Tick capture, because the
+	// simulation clock only ever counts up from zero.
 	PreviousSnapshot = FVehicleTelemetrySnapshot();
-	FailureState.Reset();
+
+	// NotifyDiscontinuity, NOT Reset. Reset alone drops the accumulators and nothing else,
+	// and clearing PreviousSnapshot above does not survive: CaptureAndEvaluateTelemetry
+	// opens its next capture with PreviousSnapshot = LastSnapshot, restoring the basis one
+	// line before the detector reads it. So an ANNOUNCED reset still raised Tunnelling on
+	// the following capture -- and then InvalidContact, because the contact check compares
+	// a post-teleport pose against pre-teleport wheel data. VEH-005's ExecuteSafeReset
+	// calls this precisely so neither happens. Both were caught by
+	// RacingSim.Vehicle.Manoeuvre.FailureDetectorCatchesUnannouncedTeleport.
+	// The LOCATION overload, and LastSnapshot rather than GetActorLocation(): the
+	// detector needs the pose the physics thread has already seen, which is the last one
+	// captured, not the one this actor was just teleported to. See
+	// FVehicleFailureDetectorState::PreDiscontinuityLocationCm for the measurement that
+	// made this necessary -- the wheel half of the telemetry keeps arriving from before
+	// the teleport for a capture longer than the pose half does.
+	if (LastSnapshot.bIsValid)
+	{
+		FailureState.NotifyDiscontinuity(LastSnapshot.LocationCm);
+	}
+	else
+	{
+		FailureState.NotifyDiscontinuity();
+	}
+
 	LoggedFailureFlags = 0;
 	NextCaptureTimeSeconds = 0.0;
+}
+
+double ARacingVehiclePawn::GetMinimumResetClearanceCm() const
+{
+	// No asset means no geometry to reason from, and 0 is the honest answer: it leaves
+	// FMath::Max in ExecuteSafeReset with the track's own lift, which is exactly the
+	// behaviour this pawn had before the chassis was consulted at all.
+	//
+	// Warned rather than checked. A tuneless-but-driveable pawn is a legitimate editor
+	// state and a fatal check here would take the whole session down for it; but the
+	// degraded path is invisible from the outside -- a reset that lands the car partly
+	// through the road looks like a track-lift problem, not a missing asset -- so it has
+	// to say so once. Once, not per reset: a reset can be spammed, and a repeating log
+	// line during a soak is its own defect.
+	if (ChassisAsset == nullptr)
+	{
+		if (!bWarnedMissingChassisForClearance)
+		{
+			bWarnedMissingChassisForClearance = true;
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn '%s' has no ChassisAsset, so the reset clearance falls back to 0 cm and the reset relies entirely on the track's own lift; a reset may leave the tyres intersecting the road."),
+				*GetNameSafe(this));
+		}
+
+		return 0.0;
+	}
+
+	// DEPENDENCY, stated because it is not visible from this function: the number below
+	// is a STATIC geometric height -- hub offset plus tyre radius, the pose the car has
+	// with its suspension neither compressed nor extended. It is correct as a starting
+	// height only while the tune's spring equilibrium puts the body near that pose. A
+	// tune whose springs settle the body significantly lower (SuspensionMaxDropCm, or a
+	// spring rate far softer than the sprung mass it carries) makes this an over-lift and
+	// turns the reset into a drop; one that settles it higher makes it an under-lift. The
+	// chassis asset alone cannot see that, because the springs live in the tune asset.
+	// If reset behaviour ever changes after a suspension retune, this is why.
+
+	// The deepest corner, not the average and not the front axle: the car must clear the
+	// road at EVERY wheel, and the prototype's front and rear radii differ (34 vs 35 cm).
+	double DeepestContactPatchBelowOriginCm = 0.0;
+
+	for (int32 CornerIndex = 0; CornerIndex < NumPrototypeVehicleWheels; ++CornerIndex)
+	{
+		const EVehicleWheelIndex WheelIndex = static_cast<EVehicleWheelIndex>(CornerIndex);
+
+		// WheelCentreHeightCm is negative (the hubs sit below the actor origin), so
+		// negating it gives a depth, and the tyre reaches one radius further down.
+		const double ContactPatchBelowOriginCm =
+			-static_cast<double>(ChassisAsset->GetWheelOffsetCm(WheelIndex).Z)
+			+ static_cast<double>(ChassisAsset->GetWheelRadiusCm(WheelIndex));
+
+		DeepestContactPatchBelowOriginCm =
+			FMath::Max(DeepestContactPatchBelowOriginCm, ContactPatchBelowOriginCm);
+	}
+
+	// No extra margin. This is the height at which the tyres just touch, which is where a
+	// suspension wants to start: lifting further makes the reset a small drop, and a drop
+	// is the other way to produce the acceleration spike this number exists to prevent.
+	return DeepestContactPatchBelowOriginCm;
 }
 
 FVehicleFailureThresholds ARacingVehiclePawn::ResolveFailureThresholds() const
@@ -776,7 +972,25 @@ void ARacingVehiclePawn::ExecuteSafeReset(
 	// One-shot ground trace, not per-Tick: corrects height for a crested or banked reset
 	// point rather than blindly trusting the seed's fixed PoseHeightOffsetCm lift.
 	const FVector SeedLocation = ResetSeedTransform.GetLocation();
-	const double GroundClearanceCm = Track->PoseHeightOffsetCm;
+
+	// THE MAXIMUM OF TWO NUMBERS THAT ANSWER TWO DIFFERENT QUESTIONS.
+	//
+	// ATrackDefinitionActor::PoseHeightOffsetCm is a TRACK property -- "how far above the
+	// road surface to place a car origin" -- authored once for a circuit, with no
+	// knowledge of which car will use it. Its 50 cm default is fine for a car whose
+	// origin sits near its axle plane and wrong for one whose wheels hang lower. The
+	// prototype chassis is the second kind: WheelCentreHeightCm = -35 with a 35 cm rear
+	// radius puts the tyre contact patch 70 cm BELOW the origin, so a 50 cm lift plants
+	// the car 20 cm inside the slab. The suspension then throws it out, and the detector
+	// is right to call that RunawayEnergy:
+	//
+	//   speed changed by 272.351990 cm/s over 0.016667 s (16341.118533 cm/s^2)
+	//
+	// -- 16.7 g, on a car that was supposed to have been placed gently. Taking the larger
+	// of the two never lowers a car the track wanted higher, and never plants a car whose
+	// own geometry needs more room than the track author assumed.
+	const double GroundClearanceCm = FMath::Max(
+		Track->PoseHeightOffsetCm, GetMinimumResetClearanceCm());
 
 	FHitResult Hit;
 	bool bTraceHit = false;
@@ -911,13 +1125,29 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 		return;
 	}
 
-	// FPlatformTime::Seconds() -- the same monotonic source RACE-001 uses for lap
-	// timing and VEH-001's component passes to the processor. Deliberately NOT world
-	// time, which a pause or a time dilation moves, and deliberately not accumulated
-	// from DeltaSeconds, which drifts.
+	// TWO CLOCKS, deliberately, because they answer two different questions.
+	//
+	// FPlatformTime::Seconds() -- the same monotonic source RACE-001 uses for lap timing
+	// and VEH-001's component passes to the processor -- records WHEN IN REAL TIME the
+	// sample was taken, which is what a staleness check needs. Deliberately not world
+	// time, which a pause or a time dilation moves.
+	//
+	// SimulationTimeSeconds accumulates the DeltaSeconds that actually produced the
+	// motion, and is the clock every RATE is derived from. Only this one can be divided
+	// by: the solver advanced by these deltas and by nothing else. VEH-004 had a single
+	// wall clock doing both jobs, which is invisible in a real-time session and wrong
+	// everywhere else -- see FVehicleTelemetrySnapshot::SimulationTimeSeconds.
+	//
+	// Accumulated BEFORE the rate gate below, so decimating capture never loses time:
+	// the clock counts every frame, capture reads it every Nth.
 	const double NowSeconds = FPlatformTime::Seconds();
+	SimulationTimeSeconds += static_cast<double>(DeltaSeconds);
 
-	if (NowSeconds < NextCaptureTimeSeconds)
+	// Paced on SIMULATED time, so the sample rate means the same thing in a fixed-step
+	// test as it does at runtime -- a 60 Hz rate is one sample per simulated 1/60 s
+	// either way. Pacing on the wall clock instead would let a fast test loop take one
+	// sample per Tick regardless of the configured rate.
+	if (SimulationTimeSeconds < NextCaptureTimeSeconds)
 	{
 		return;
 	}
@@ -928,7 +1158,7 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	// alternative accumulates a backlog after a hitch and then fires every frame to
 	// "catch up", which is a burst of capture cost at precisely the moment the frame is
 	// already late. Telemetry must never be the reason a hitch gets worse.
-	NextCaptureTimeSeconds = NowSeconds + IntervalSeconds;
+	NextCaptureTimeSeconds = SimulationTimeSeconds + IntervalSeconds;
 
 	++CaptureIndex;
 
@@ -941,9 +1171,14 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	CaptureInput.InputDeviceType = Command.DeviceType;
 	CaptureInput.CarSpecVersion = RacingSim::Vehicle::ResolveCarSpecVersion(TuneAsset, bTuneEngineApplied);
 	CaptureInput.TimestampSeconds = NowSeconds;
+	CaptureInput.SimulationTimeSeconds = SimulationTimeSeconds;
 	CaptureInput.FrameDeltaSeconds = DeltaSeconds;
 	CaptureInput.CaptureIndex = CaptureIndex;
 
+	// Unconditional, including across a discontinuity: the detector, not this function,
+	// decides what a discontinuity suppresses, and it holds that latch in
+	// FVehicleFailureDetectorState. Duplicating the decision here would give one concept
+	// two owners that could disagree.
 	PreviousSnapshot = LastSnapshot;
 	LastSnapshot = RacingSim::Vehicle::CaptureVehicleTelemetry(CaptureInput);
 

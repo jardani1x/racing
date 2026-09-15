@@ -1,0 +1,11 @@
+﻿TESTNAMES=RacingSim.Vehicle.FailureDetectionSuppressionBound
+PROCESS_EXITCODE=0
+reportCreatedOn=2026.09.15-07.52.16
+succeeded=1 succeededWithWarnings=0 passedTotal=1 failed=0 notRun=0
+testsInReport=1
+totalDuration=0.013304799795150757
+NON_SUCCESS_COUNT=0
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.FailureDetectionSuppressionBound => Success
+GATE_PASSED passedTotal=1 requiredNamesChecked=1
+SCRIPT_EXITCODE=0

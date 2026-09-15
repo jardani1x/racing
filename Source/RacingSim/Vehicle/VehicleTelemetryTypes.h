@@ -97,8 +97,11 @@ class UVehicleTuneDataAsset;
  * ATrackDefinitionActor::TrackSchemaVersion. A recorded snapshot that does not carry
  * its own layout version is unreadable the first time the layout changes, which is the
  * failure this constant exists to prevent.
+ *
+ * 2 (VEH-006): added FVehicleTelemetrySnapshot::SimulationTimeSeconds. TimestampSeconds
+ *     is unchanged in meaning but is no longer what the failure detector divides by.
  */
-inline constexpr int32 VehicleTelemetrySchemaVersion = 1;
+inline constexpr int32 VehicleTelemetrySchemaVersion = 2;
 
 /**
  * Fixed wheel count for a telemetry snapshot.
@@ -259,9 +262,42 @@ struct RACINGSIM_API FVehicleTelemetrySnapshot
 	 */
 	FRacingContentVersion CarSpecVersion;
 
-	/** Monotonic SECONDS. Same class of source as RACE-001's lap clock (FPlatformTime), supplied by the caller. */
+	/**
+	 * WALL-CLOCK monotonic SECONDS. Same class of source as RACE-001's lap clock
+	 * (FPlatformTime), supplied by the caller.
+	 *
+	 * This is a RECORD of when the sample was taken in real time, and it is what an
+	 * age check (FRacingTelemetrySample's staleness test) compares against. It is
+	 * NOT the clock the physics ran on, so nothing may divide simulated motion by a
+	 * difference of two of these -- see SimulationTimeSeconds, which exists because
+	 * VEH-004 did exactly that.
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Vehicle|Telemetry")
 	double TimestampSeconds = 0.0;
+
+	/**
+	 * SIMULATED monotonic SECONDS: the sum of the DeltaSeconds that actually produced
+	 * the motion in this snapshot, accumulated by the capturing pawn from its own Tick.
+	 *
+	 * THE ONLY CLOCK A RATE MAY BE DIVIDED BY. Every quantity this snapshot holds --
+	 * position, velocity, wheel angular velocity -- was produced by stepping the solver
+	 * with DeltaSeconds, so the elapsed time between two snapshots is the sum of those
+	 * deltas and nothing else.
+	 *
+	 * VEH-004 shipped with the detector deriving its step from TimestampSeconds instead.
+	 * In a real-time session the two clocks advance together and the bug is invisible;
+	 * in a fixed-step test loop, where sixty simulated frames run in a millisecond of
+	 * wall time, they are unrelated, and the detector divides real motion by a
+	 * near-zero step and manufactures impossible accelerations for a car behaving
+	 * perfectly. That is not only a test artefact: the same divergence appears under a
+	 * hitch, a breakpoint, or any dilated or substepped time, i.e. exactly the
+	 * conditions a failure detector exists to survive.
+	 *
+	 * Monotonic ACROSS a reset. NotifyTelemetryDiscontinuity drops the comparison basis,
+	 * not the clock: a reset does not un-happen the time that preceded it.
+	 */
+	UPROPERTY(BlueprintReadOnly, Category = "Vehicle|Telemetry")
+	double SimulationTimeSeconds = 0.0;
 
 	/**
 	 * The DeltaSeconds the game thread observed for the frame this sample was taken on.
@@ -417,6 +453,7 @@ struct RACINGSIM_API FVehicleTelemetrySnapshot
 	bool IsFinite() const
 	{
 		if (!FMath::IsFinite(TimestampSeconds)
+			|| !FMath::IsFinite(SimulationTimeSeconds)
 			|| !FMath::IsFinite(FrameDeltaSeconds)
 			|| !FMath::IsFinite(ForwardSpeedCms)
 			|| !FMath::IsFinite(EngineRpm)
@@ -507,8 +544,11 @@ struct FVehicleTelemetryCaptureInput
 	/** From ResolveCarSpecVersion. Unpopulated is legal and means "no tune is in force". */
 	FRacingContentVersion CarSpecVersion;
 
-	/** Monotonic SECONDS, supplied by the caller so a test can drive time deterministically. */
+	/** Wall-clock monotonic SECONDS, supplied by the caller so a test can drive time deterministically. */
 	double TimestampSeconds = 0.0;
+
+	/** Simulated monotonic SECONDS. See FVehicleTelemetrySnapshot::SimulationTimeSeconds. */
+	double SimulationTimeSeconds = 0.0;
 
 	/** The frame's DeltaSeconds, recorded for pacing only. See FVehicleTelemetrySnapshot::FrameDeltaSeconds. */
 	float FrameDeltaSeconds = 0.0f;

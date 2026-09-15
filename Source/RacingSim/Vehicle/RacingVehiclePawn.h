@@ -379,6 +379,15 @@ private:
 	/** Thresholds from FailureThresholdsAsset, or FVehicleFailureThresholds' defaults when it is null. */
 	FVehicleFailureThresholds ResolveFailureThresholds() const;
 
+	/**
+	 * How far above a road surface this car's ORIGIN must sit for its tyres to just
+	 * touch, centimetres. Zero when no chassis asset is set.
+	 *
+	 * A track's PoseHeightOffsetCm cannot answer this: it is authored per circuit, with
+	 * no knowledge of the car. See ExecuteSafeReset, which takes the larger of the two.
+	 */
+	double GetMinimumResetClearanceCm() const;
+
 	bool bChassisApplied = false;
 	bool bTuneApplied = false;
 	bool bTuneEngineApplied = false;
@@ -406,7 +415,15 @@ private:
 	/** 1-based; see FVehicleTelemetrySnapshot::CaptureIndex. */
 	int64 CaptureIndex = 0;
 
-	/** Monotonic SECONDS at which the next capture is due. 0 means "capture on the next Tick". */
+	/**
+	 * Monotonic SIMULATED SECONDS: the running sum of every Tick's DeltaSeconds since
+	 * this pawn began playing. Stamped into each snapshot and the only clock the failure
+	 * detector divides by. See FVehicleTelemetrySnapshot::SimulationTimeSeconds for why
+	 * the wall clock cannot do this job. Survives a reset; see NotifyTelemetryDiscontinuity.
+	 */
+	double SimulationTimeSeconds = 0.0;
+
+	/** SIMULATED SECONDS at which the next capture is due. 0 means "capture on the next Tick". */
 	double NextCaptureTimeSeconds = 0.0;
 
 	/**
@@ -414,4 +431,13 @@ private:
 	 * raised flag logs again. Edge-triggered logging, not level-triggered.
 	 */
 	uint8 LoggedFailureFlags = 0;
+
+	/**
+	 * Whether the missing-ChassisAsset reset-clearance warning has been emitted.
+	 *
+	 * mutable because GetMinimumResetClearanceCm() is const and stays const: it is a
+	 * query, and the flag records that the warning was said, not anything about the car.
+	 * Once per pawn rather than once per reset, so a soak cannot fill the log with it.
+	 */
+	mutable bool bWarnedMissingChassisForClearance = false;
 };

@@ -270,6 +270,25 @@ void UVehicleInputComponent::SetVehicleSpeedCms(const float SpeedCms)
 	PendingSample.SpeedCms = SpeedCms;
 }
 
+#if WITH_AUTOMATION_TESTS
+void UVehicleInputComponent::InjectRawSampleForTesting(const FVehicleInputRawSample& Sample)
+{
+	// SpeedCms is deliberately NOT taken from the injected sample. It is the one field
+	// of PendingSample the component does not own: the pawn pushes it every Tick via
+	// SetVehicleSpeedCms, from the movement component's real forward speed. Letting a
+	// test overwrite it would silently disable speed-sensitive steering -- the test
+	// would drive at 200 km/h while the steering curve was told the car was stationary,
+	// and would then "prove" a steering authority the game never grants.
+	const double PreservedSpeedCms = PendingSample.SpeedCms;
+	PendingSample = Sample;
+	PendingSample.SpeedCms = PreservedSpeedCms;
+
+	// Same call every real handler makes. Without it the stale-sample guard would treat
+	// injected input as never-spoken and neutralise it after InputStaleAfterSeconds.
+	MarkSampleFresh();
+}
+#endif
+
 void UVehicleInputComponent::NotifyVehicleReset()
 {
 	Processor.ResetState();

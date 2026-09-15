@@ -40,10 +40,33 @@ public class RacingSimTests : ModuleRules
 		// (VehicleChassisSpec.cpp), and a module that directly references another
 		// module's exported symbols must depend on it directly rather than relying on
 		// a transitive re-export for linking.
+		// AIModule is here for AAIController, which VEH-006's manoeuvre fixture uses to
+		// POSSESS the vehicle pawn. That is not a convenience: an unpossessed Chaos
+		// vehicle never receives its own input.
+		// UChaosVehicleMovementComponent::UpdateState computes
+		//     bProcessLocally = bRequiresControllerForInputs
+		//         ? (Controller && Controller->IsLocalController())
+		//         : true
+		// (ChaosVehicleMovementComponent.cpp:1281), and bRequiresControllerForInputs
+		// defaults true. When bProcessLocally is false the component ignores the
+		// game-thread input entirely and takes its values from ReplicatedState instead,
+		// which only the server RPC ServerUpdateState ever writes -- so in a test world
+		// throttle would be silently discarded.
+		//
+		// AAIController rather than APlayerController because
+		// APlayerController::IsLocalController() returns false with no NetDriver and no
+		// ULocalPlayer, which a bare test world has neither of, while AController's own
+		// implementation returns true for NM_Standalone. See VehicleManoeuvreFixture.h.
+		//
+		// Possession is NOT what keeps the chassis awake, and an earlier version of this
+		// comment claimed it was. Sleep is a separate defect with a separate fix in
+		// ARacingVehiclePawn::BeginPlay -- SetSleeping() cannot wake a pawn that has no
+		// skeletal mesh, controller or not.
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
 			"RacingSim",
-			"ChaosVehicles"
+			"ChaosVehicles",
+			"AIModule"
 		});
 	}
 }

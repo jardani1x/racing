@@ -1,0 +1,14 @@
+﻿TESTNAMES=RacingSim.Vehicle.ManoeuvreWorldProbe
+PROCESS_EXITCODE=255
+reportCreatedOn=2026.09.02-02.59.10
+succeeded=0 succeededWithWarnings=0 passedTotal=0 failed=1 notRun=0
+testsInReport=1
+totalDuration=0.47770088911056519
+NON_SUCCESS_COUNT=1
+  FAIL: RacingSim.Vehicle.ManoeuvreWorldProbe => Fail
+     Error: Expected 'The created world has begun play' to be true.
+     Error: Expected 'The spawned pawn applied its chassis asset' to be true.
+     Error: Expected 'The pawn has four wheel setups' to be 4, but it was 0.
+     Error: Expected 'The pawn fell under gravity, so the world is simulating physics' to be true.
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.ManoeuvreWorldProbe => Fail

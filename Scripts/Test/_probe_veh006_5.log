@@ -1,0 +1,11 @@
+﻿TESTNAMES=RacingSim.Vehicle.ManoeuvreWorldProbe
+PROCESS_EXITCODE=255
+reportCreatedOn=2026.09.02-03.21.46
+succeeded=0 succeededWithWarnings=0 passedTotal=0 failed=1 notRun=0
+testsInReport=1
+totalDuration=0.12582549452781677
+NON_SUCCESS_COUNT=1
+  FAIL: RacingSim.Vehicle.ManoeuvreWorldProbe => Fail
+     Error: LogRacingVehicle: ARacingVehiclePawn 'RacingVehiclePawn_0' VEH-004 failure detected at capture 3 (t=16785157.423227, step=0.016757 s) [RunawayEnergy,Tunnelling]: speed changed by 456.153702 cm/s over 0.016757 s (27220.869306 cm/s^2), exceeding the 8000.000000 cm/s^2 envelope; moved 117.940788 cm in 0.016757 s, but 472.484314 cm/s explains at most 115.835311 cm
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.ManoeuvreWorldProbe => Fail

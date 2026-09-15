@@ -57,6 +57,7 @@ TConstArrayView<FRacingPropertyRange> UVehicleFailureThresholdsDataAsset::Static
 		FRacingPropertyRange::Between(TEXT("SuspensionLengthTolerance"), 0.0, 0.5),
 		FRacingPropertyRange::Between(TEXT("MaxAirborneSeconds"), 0.1, 600.0),
 		FRacingPropertyRange::Between(TEXT("MaxContactDistanceCm"), 10.0, 100000.0),
+		FRacingPropertyRange::Between(TEXT("MaxContactSuppressionSeconds"), 0.05, 60.0),
 
 		FRacingPropertyRange::Between(TEXT("PenetrationSuspensionLengthFraction"), 0.0, 0.5),
 		FRacingPropertyRange::Between(TEXT("PenetrationSpringForceN"), 0.0, 1000000.0),
@@ -156,6 +157,7 @@ FVehicleFailureThresholds UVehicleFailureThresholdsDataAsset::GetThresholds() co
 	Thresholds.SuspensionLengthTolerance = SuspensionLengthTolerance;
 	Thresholds.MaxAirborneSeconds = MaxAirborneSeconds;
 	Thresholds.MaxContactDistanceCm = MaxContactDistanceCm;
+	Thresholds.MaxContactSuppressionSeconds = MaxContactSuppressionSeconds;
 	Thresholds.PenetrationSuspensionLengthFraction = PenetrationSuspensionLengthFraction;
 	Thresholds.PenetrationSpringForceN = PenetrationSpringForceN;
 	Thresholds.PenetrationPersistSeconds = PenetrationPersistSeconds;

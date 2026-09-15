@@ -50,6 +50,7 @@ namespace RacingSim::Vehicle
 		Snapshot.SchemaVersion = VehicleTelemetrySchemaVersion;
 		Snapshot.CarSpecVersion = Input.CarSpecVersion;
 		Snapshot.TimestampSeconds = Input.TimestampSeconds;
+		Snapshot.SimulationTimeSeconds = Input.SimulationTimeSeconds;
 		Snapshot.FrameDeltaSeconds = Input.FrameDeltaSeconds;
 		Snapshot.CaptureIndex = Input.CaptureIndex;
 
