@@ -222,6 +222,24 @@ struct FVehicleFailureThresholds
 	 * of two, so it cannot cut a legitimate suppression short. Expressed in SIMULATED time
 	 * for the same reason the rest of the detector is: a fixed capture count would mean
 	 * different things at different sample rates.
+	 *
+	 * NOT THE ONLY BOUND, and not the first one. The detector also counts evaluations, and
+	 * that count both floors and ceilings this threshold:
+	 *
+	 *   - A floor of GVehicleFailureMinContactSuppressionEvaluations evaluations must pass
+	 *     before this budget is allowed to expire the basis at all. Lowering the value here
+	 *     below roughly three evaluations of simulated time therefore has NO EFFECT, and
+	 *     setting it to 0.0 does not switch suppression off -- the first few evaluations
+	 *     after a discontinuity stay suppressed regardless. That floor exists because a
+	 *     single long frame can carry more simulated time than this whole budget, and
+	 *     expiring on it would drop the basis before the stale tail has even arrived.
+	 *   - A ceiling of GVehicleFailureMaxContactSuppressionEvaluations evaluations expires
+	 *     the basis whatever this value says, which is what bounds the case a seconds
+	 *     budget cannot see: a simulated clock that has stopped, or gone non-finite, or is
+	 *     being re-based backwards every frame.
+	 *
+	 * Both constants live in VehicleFailureDetection.cpp and are structural rather than
+	 * tunable. Raising this value past the ceiling's worth of simulated time makes it inert.
 	 */
 	float MaxContactSuppressionSeconds = 0.5f;
 };
@@ -382,7 +400,31 @@ struct FVehicleFailureDetectorState
 	 */
 	void NotifyDiscontinuity()
 	{
+		// The evaluation count survives the Reset() below, deliberately.
+		//
+		// Reset() zeroes PreDiscontinuityEvaluations, which is right for a session restart
+		// and wrong here. A caller that announces a discontinuity on every frame -- an
+		// auto-recover that keeps re-triggering while the car is wedged under the world is
+		// the realistic one -- would rewind the count to zero with every announcement, so
+		// neither the evaluation floor nor the evaluation ceiling could ever be reached and
+		// the contact-suppression basis would stay armed for the rest of the session.
+		//
+		// That is the same unbounded suppression the evaluation bound was added to close,
+		// reached through the front door instead of through a stopped clock. Carrying the
+		// count forward means N announcements followed by M evaluations are bounded exactly
+		// as one announcement followed by M evaluations would be: the detector cannot be
+		// made deaf by being told the same thing over and over.
+		//
+		// Only the COUNT is carried. The arm time is not: the fresh announcement genuinely
+		// re-bases the pose being suppressed, so the time budget should measure from now,
+		// while the count answers a different question -- how many chances the detector has
+		// already had to see contact from somewhere else -- and that history is not undone
+		// by announcing the same discontinuity again.
+		const int32 CarriedEvaluations = PreDiscontinuityEvaluations;
+
 		Reset();
+
+		PreDiscontinuityEvaluations = CarriedEvaluations;
 		bDiscontinuityPending = true;
 	}
 

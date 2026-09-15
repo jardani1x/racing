@@ -40,8 +40,16 @@ namespace
 	 * last -- that is the threshold's job -- it is the arithmetic fact that the stale
 	 * tail being suppressed is two captures long (see
 	 * FVehicleFailureDetectorState::PreDiscontinuityLocationCm), so any bound that can
-	 * fire before the third evaluation cannot do the job at all. Three is the tail plus
-	 * one evaluation of margin.
+	 * fire before the third evaluation cannot do the job at all.
+	 *
+	 * Three is the tail exactly, and NOT the tail plus a margin -- an earlier version of
+	 * this comment claimed a margin it does not have. Evaluation 1 is always the straddling
+	 * evaluation, already suppressed by bDiscontinuityPending, which is consumed on the
+	 * first valid evaluation after the announcement; invalid snapshots return before both
+	 * that consumption and this section, so the flag and this counter cannot drift apart.
+	 * The basis alone therefore covers evaluations 2 and 3, which is the two-capture tail
+	 * and nothing spare. If the tail is ever measured at three captures, this constant has
+	 * to rise with it; it will not absorb the change on its own.
 	 */
 	constexpr int32 GVehicleFailureMinContactSuppressionEvaluations = 3;
 
@@ -162,8 +170,13 @@ namespace RacingSim::Vehicle
 				State.PreDiscontinuityEvaluations = 0;
 			};
 
-			State.PreDiscontinuityEvaluations =
-				FMath::Min(State.PreDiscontinuityEvaluations + 1, MAX_int32);
+			// Plain increment. This used to be clamped against MAX_int32, which read as an
+			// overflow guard and was not one: the ceiling below drops the basis two orders
+			// of magnitude short of that, so the clamp was unreachable, and had it ever been
+			// reachable the signed addition would already have been undefined behaviour
+			// before FMath::Min saw the result. The real bound on this counter is the
+			// ceiling, and pretending otherwise only hid where the bound actually lives.
+			++State.PreDiscontinuityEvaluations;
 
 			const bool bPastEvaluationFloor =
 				State.PreDiscontinuityEvaluations > GVehicleFailureMinContactSuppressionEvaluations;
@@ -175,6 +188,16 @@ namespace RacingSim::Vehicle
 				// The ceiling ignores the floor deliberately: it is the bound of last resort,
 				// and it is set far enough above the tail that reaching it always means
 				// something other than a normal reset is happening.
+				//
+				// It is also tested BEFORE the non-finite branch below, which costs that
+				// branch its guarantee on exactly one evaluation. If the clock is non-finite
+				// at the moment the count reaches the ceiling, the basis drops here, and a
+				// stale-but-finite contact can then raise InvalidContact alongside the
+				// NonFiniteState report -- the stacking the branch below says must not
+				// happen. Accepted, and stated rather than papered over: the alternative is
+				// letting a non-finite clock outrank the only bound that still works when
+				// the clock is unusable, and one evaluation of a doubled report is a much
+				// smaller problem than suppression with no bound at all.
 				DropContactSuppressionBasis();
 			}
 			else if (!FMath::IsFinite(Current.SimulationTimeSeconds))
@@ -184,7 +207,9 @@ namespace RacingSim::Vehicle
 				// wrong. Dropping the basis here as well would stack a second, misleading
 				// InvalidContact on top of it from contact geometry that is merely stale.
 				// Hold the basis and let the evaluation ceiling above be its bound; that is
-				// the bound written for exactly the case where the clock is unusable.
+				// the bound written for exactly the case where the clock is unusable. The
+				// one evaluation on which this does not hold is the ceiling evaluation
+				// itself -- see the note there.
 			}
 			else if (!State.bHasPreDiscontinuityArmTime)
 			{

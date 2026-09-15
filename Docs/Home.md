@@ -94,8 +94,7 @@ signalling, session lifecycle, WebRTC telemetry. No race truth lives here.
 
 ## Where the project stands
 
-Epics 0 through 3 (environment, core, vehicle, track/race) are complete or in
-their final gate; UI and streaming have not started; the operations epic is
+Epics 0 through 3 (environment, core, vehicle, track/race) are complete; UI and streaming have not started; the operations epic is
 blocked on hardware.
 
 | Epic | State | Note |
@@ -103,8 +102,8 @@ blocked on hardware.
 | Environment and governance (`ENV`, `LEGAL`, `ARCH`) | Complete | |
 | Core (`CORE`, `TEST`) | Complete | |
 | Track and race (`TRACK`, `RACE`) | Complete | |
-| Vehicle (`VEH`) | Final gate | `VEH-006` in review; everything before it merged |
-| UI (`UI-001`..`UI-004`) | Not started | Next epic once `VEH-006` closes |
+| Vehicle (`VEH`) | Complete | `VEH-006` closed 2026-09-15; follow-ups tracked in [[Tickets]] |
+| UI (`UI-001`..`UI-004`) | Not started | Next epic |
 | Streaming (`STREAM-001`..`003`) | Not started | |
 | Streaming infrastructure (`STREAM-004`..`006`), operations | Blocked | `BLOCKER-001`: no reference GPU worker |
 
@@ -131,3 +130,6 @@ Every command below is run from the repository root. Counts are read from
 
 Test evidence logs are committed under `Scripts/Test/*.log` on purpose: a gate
 result that cannot be re-read later is not evidence.
+
+Which of this can run in a cloud Claude Code session and which needs this machine is
+in [[CloudAndLocalWork]].

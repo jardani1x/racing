@@ -1087,7 +1087,30 @@ bool FRacingSimVehicleFailureDiscontinuityTest::RunTest(const FString& Parameter
  * swallowing genuine InvalidContact near that one pose -- and those are exactly the
  * situations the reset path exists to recover from, so it went deaf where it mattered
  * most. FVehicleFailureThresholds::MaxContactSuppressionSeconds is the backstop, and
- * these are the two cases that prove it fires.
+ * CASE 1 and CASE 2 prove it fires.
+ *
+ * Repair cycle 2 then found that a seconds budget is not a bound on its own, because it
+ * assumes a usable clock. CASE 4 through CASE 7 cover the four ways that assumption
+ * fails, and each of them goes RED against the cycle-1 detector:
+ *
+ *   A LONG FRAME      one step longer than the whole budget expires the basis on the
+ *                     evaluation that still needs it. Bounded by an evaluation FLOOR.
+ *
+ *   A STOPPED CLOCK   SuppressedForSeconds is pinned at 0.0 for ever, so the budget
+ *                     never expires anything. Bounded by an evaluation CEILING.
+ *
+ *   A NON-FINITE      the clock cannot bound anything, and the same evaluation already
+ *   CLOCK             reports NonFiniteState. The basis is held rather than dropped, so
+ *                     stale geometry cannot stack a second, misleading flag beside it.
+ *
+ *   A BACKWARDS       the clock was re-based under the detector. The stamp is dead but
+ *   CLOCK             the basis is not, so the stamp is renewed and the count -- which a
+ *                     clock event cannot rewind -- keeps doing the bounding.
+ *
+ *   REPEATED          Reset() zeroes the evaluation count and NotifyDiscontinuity calls
+ *   ANNOUNCEMENTS     it, so a caller re-announcing at a wedged car would rewind the
+ *                     only bound that still works. The count is carried across the
+ *                     Reset() instead, and the ceiling still lands.
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FRacingSimVehicleFailureSuppressionBoundTest,
@@ -1113,6 +1136,15 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 	const int32 StepsPastBudget = FMath::CeilToInt32(
 		static_cast<double>(Thresholds.MaxContactSuppressionSeconds) / Step) + 2;
 
+	// The evaluation ceiling, PINNED BY HAND because it cannot be referenced.
+	// GVehicleFailureMaxContactSuppressionEvaluations lives in the anonymous namespace of
+	// VehicleFailureDetection.cpp -- it is structural rather than tunable, so it is not on
+	// FVehicleFailureThresholds and is not visible from this file. Hard-coding it is the
+	// deliberate choice: if the constant moves, CASE 5 goes RED and names the mismatch,
+	// whereas a bound discovered by looping until the basis drops would silently re-test
+	// whatever the new value happened to be.
+	constexpr int32 CeilingEvaluations = 240;
+
 	// The reset these cases model: a nudge off a wall, not a teleport across the map.
 	const double ShortResetCm = static_cast<double>(Thresholds.MaxContactDistanceCm) * 0.25;
 	const FVector RestLocationCm = Base.LocationCm + FVector(0.0, ShortResetCm, 0.0);
@@ -1131,8 +1163,20 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 	const FVector ProbeContactCm = Base.LocationCm
 		+ FVector(0.0, -0.99 * static_cast<double>(Thresholds.MaxContactDistanceCm), 0.0);
 
-	// Pinned, not assumed. Both halves are load-bearing, and a change to either threshold
-	// could collapse the gap and leave every case below asserting nothing.
+	// Pinned, and honest about what the pins are worth. Both distances above are fixed
+	// FRACTIONS of MaxContactDistanceCm -- 0.99 of it from the basis, 0.99 + 0.25 of it
+	// from the car -- so the two inequalities below hold for EVERY positive value of that
+	// threshold and cannot catch a change to it. They are not tautologies about nothing:
+	// they catch either derived constant being replaced by a literal, which is the
+	// realistic way this geometry gets broken. But the earlier claim that they guard
+	// against a threshold change was wrong, and a pin nobody can rely on is worse than no
+	// pin at all.
+	//
+	// The assumption that is NOT structural is positivity. At zero or negative the gap
+	// collapses, every distance comparison inverts or degenerates, and every case below
+	// would assert nothing while staying green -- so that is asserted first and directly.
+	TestTrue(TEXT("MaxContactDistanceCm is positive, which is the only thing making this a gap"),
+		static_cast<double>(Thresholds.MaxContactDistanceCm) > 0.0);
 	TestTrue(TEXT("The probe contact is inside the bound measured from the pre-reset basis"),
 		FVector::Dist(Base.LocationCm, ProbeContactCm)
 			<= static_cast<double>(Thresholds.MaxContactDistanceCm));
@@ -1215,6 +1259,12 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 		// bContactPredatesDiscontinuity is true for all of them for ever and no contact is
 		// ever fresh. This is the case that hid best: nothing looks wrong, the car is
 		// driving normally, and the detector has quietly stopped checking contacts.
+		//
+		// What this case does NOT do, stated because the suite is easier to trust when its
+		// gaps are written down: it does not discriminate against the cycle-1 detector. The
+		// clock advances normally here, so a detector bounded by time alone expires this
+		// basis on exactly the same evaluation. CASE 4 through CASE 7 are the cases that
+		// separate the two; this one pins the ordinary path that they do not cover.
 		FVehicleFailureDetectorState State;
 		State.NotifyDiscontinuity(Base.LocationCm);
 
@@ -1274,6 +1324,10 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 		// from the fix is not testing the fix. Five evaluations in: 0.083 s of simulated
 		// time, well inside the budget, and past the structural evaluation floor, so it is
 		// genuinely the budget being pinned here and not the floor.
+		//
+		// Same caveat as CASE 2: a detector bounded by time alone also passes this. It is
+		// here to stop the suite being satisfied by a detector that suppressed nothing at
+		// all, not to tell the two bounding schemes apart.
 		constexpr int32 StepsBelowBudget = 5;
 
 		TestTrue(TEXT("The below-budget loop, probe included, really is below the budget"),
@@ -1368,6 +1422,267 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 			Previous, Current, Thresholds, State);
 		TestTrue(TEXT("Past the evaluation floor the exceeded budget expires the basis after all"),
 			Report.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
+		// -- CASE 5: the simulated clock stops. --
+		//
+		// The hole a seconds budget cannot see at all, and the reason there is an evaluation
+		// ceiling. If SimulationTimeSeconds stops advancing -- a paused or single-stepped
+		// simulation, a stalled physics thread, a clock a caller has pinned -- then
+		// SuppressedForSeconds is 0.0 on every evaluation for ever. It is never negative, so
+		// nothing re-stamps; it never exceeds the budget, so nothing expires. A detector
+		// bounded by time alone then swallows genuine InvalidContact near that one pose for
+		// the whole remaining session and never says why. That is the same unbounded
+		// suppression CASE 1 and CASE 2 exist to close, reached through the clock.
+		//
+		// This case is RED against the cycle-1 detector: there the basis is still armed at
+		// evaluation 240 and the probe is still swallowed.
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		// Every snapshot carries the SAME simulated time. CaptureIndex still advances, so
+		// these are genuinely distinct captures rather than one sample delivered repeatedly
+		// -- the detector is being told the clock stopped, not that nothing arrived.
+		const double StoppedSimSeconds = Base.SimulationTimeSeconds;
+
+		FVehicleTelemetrySnapshot Previous = Base;
+		bool bReportedBeforeTheCeiling = false;
+		for (int32 EvaluationIndex = 1; EvaluationIndex < CeilingEvaluations; ++EvaluationIndex)
+		{
+			const FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+				StoppedSimSeconds, Base.CaptureIndex + EvaluationIndex, ProbeContactCm);
+
+			const FVehicleFailureReport StepReport = RacingSim::Vehicle::EvaluateVehicleFailures(
+				Previous, Current, Thresholds, State);
+			bReportedBeforeTheCeiling |= StepReport.Has(EVehicleFailureFlag::InvalidContact);
+
+			Previous = Current;
+		}
+
+		// Accumulated rather than asserted per step, so a break reports once with a name
+		// that can be read instead of 239 times with one that cannot.
+		TestFalse(TEXT("A stopped clock keeps the probe suppressed on every evaluation below the ceiling"),
+			bReportedBeforeTheCeiling);
+		TestTrue(TEXT("One evaluation below the ceiling a stopped clock still has the basis armed"),
+			State.bHasPreDiscontinuityLocation);
+
+		const FVehicleTelemetrySnapshot Probe = MakeStalledSnapshot(
+			StoppedSimSeconds, Base.CaptureIndex + CeilingEvaluations, ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Probe, Thresholds, State);
+		TestTrue(TEXT("At the ceiling evaluation a stopped clock stops buying suppression"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+		TestFalse(TEXT("...and the basis is dropped with it, so the ceiling is not re-paid every evaluation"),
+			State.bHasPreDiscontinuityLocation);
+	}
+
+	{
+		// -- CASE 6: the simulated clock goes non-finite. --
+		//
+		// A NaN clock cannot bound anything, so the basis is HELD and the ceiling is left to
+		// be its bound. What the holding is for is the point of the case: the same
+		// evaluation already raises NonFiniteState, which names exactly what is wrong, and
+		// dropping the basis here as well would stack a second InvalidContact beside it out
+		// of contact geometry that is merely stale. Two flags, one of them misleading, at
+		// the moment an operator most needs the report to be readable.
+		//
+		// This case is RED against the cycle-1 detector, which dropped the basis on a
+		// non-finite clock and produced exactly that doubled report.
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		// Evaluation 1, the straddling one. Suppressed by bDiscontinuityPending rather than
+		// by the basis, so the corrupt frame below lands on an evaluation where the basis is
+		// the only thing still suppressing anything.
+		FVehicleTelemetrySnapshot Previous = Base;
+		const FVehicleTelemetrySnapshot Straddle = MakeStalledSnapshot(
+			Base.SimulationTimeSeconds + Step, Base.CaptureIndex + 1, ProbeContactCm);
+		RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Straddle, Thresholds, State);
+		Previous = Straddle;
+
+		FVehicleTelemetrySnapshot Corrupt = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds + Step, Previous.CaptureIndex + 1, ProbeContactCm);
+		Corrupt.SimulationTimeSeconds = std::numeric_limits<double>::quiet_NaN();
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Corrupt, Thresholds, State);
+		TestTrue(TEXT("A non-finite simulated clock is reported as NonFiniteState"),
+			Report.Has(EVehicleFailureFlag::NonFiniteState));
+		TestFalse(TEXT("...and does not also raise a stale InvalidContact beside it"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+		TestTrue(TEXT("...because the basis is held rather than dropped, leaving the ceiling as its bound"),
+			State.bHasPreDiscontinuityLocation);
+	}
+
+	{
+		// -- CASE 7: the simulated clock steps backwards. --
+		//
+		// The clock only runs backwards when it has been re-based under the detector: a
+		// replay scrub, a rewind, a fresh session reusing a live state. The STAMP from the
+		// old timeline is dead and cannot bound anything. The BASIS is not what went wrong,
+		// and it is still exactly as young as its evaluation count says it is, so expiring
+		// it on a clock event is the same early-expiry bug the evaluation floor exists to
+		// prevent -- a rewind landing inside the stale tail would raise the false
+		// InvalidContact this suppression was written to stop. Re-stamping instead keeps the
+		// suppression and hands the bounding job to the count, which a clock event cannot
+		// rewind. CASE 5 is what stops that from becoming unbounded.
+		//
+		// This case is RED against the cycle-1 detector on its very first backwards step,
+		// which expired the basis on the negative delta.
+		constexpr int32 BackwardsSteps = 10;
+		constexpr double BackwardsStepSeconds = 5.0;
+
+		// Pinned, and this one is not a tautology: if a single rewind were SMALLER than the
+		// budget the case would still pass while proving much less, because nothing would
+		// have been rewound past the point where the budget could have expired anything.
+		TestTrue(TEXT("Each backwards step is larger than the whole suppression budget"),
+			BackwardsStepSeconds > static_cast<double>(Thresholds.MaxContactSuppressionSeconds));
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		FVehicleTelemetrySnapshot Previous = Base;
+		FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+			Base.SimulationTimeSeconds + Step, Base.CaptureIndex + 1, ProbeContactCm);
+		RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Current, Thresholds, State);
+		Previous = Current;
+
+		bool bReportedWhileRewinding = false;
+		for (int32 StepIndex = 0; StepIndex < BackwardsSteps; ++StepIndex)
+		{
+			// CaptureIndex still advances. TIME is what runs backwards, not the recording; a
+			// capture counter that rewound as well would be a different fault entirely and
+			// would end the basis by a different rule.
+			Current = MakeStalledSnapshot(
+				Previous.SimulationTimeSeconds - BackwardsStepSeconds,
+				Previous.CaptureIndex + 1,
+				ProbeContactCm);
+
+			const FVehicleFailureReport StepReport = RacingSim::Vehicle::EvaluateVehicleFailures(
+				Previous, Current, Thresholds, State);
+			bReportedWhileRewinding |= StepReport.Has(EVehicleFailureFlag::InvalidContact);
+
+			Previous = Current;
+		}
+
+		TestFalse(TEXT("A backwards clock does not expire the basis into a false contact report"),
+			bReportedWhileRewinding);
+		TestTrue(TEXT("A backwards clock leaves the basis armed, re-stamped rather than expired"),
+			State.bHasPreDiscontinuityLocation);
+
+		// And it is the re-stamping holding it, not some other bound that merely has not run
+		// out yet. Well below the ceiling, so CASE 5 is not what this case is re-testing.
+		TestTrue(TEXT("The rewind stayed far below the evaluation ceiling"),
+			State.PreDiscontinuityEvaluations < CeilingEvaluations);
+
+		const FVehicleTelemetrySnapshot Probe = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds - BackwardsStepSeconds,
+			Previous.CaptureIndex + 1,
+			ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Probe, Thresholds, State);
+		TestFalse(TEXT("...and the probe it had been suppressing stays suppressed"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+	}
+
+	{
+		// -- CASE 8: the same discontinuity announced over and over. --
+		//
+		// The hole the evaluation bound opens in itself, and the only behavioural cover the
+		// repair cycle 3 carry has. NotifyDiscontinuity() calls Reset(), and Reset() zeroes
+		// PreDiscontinuityEvaluations -- correct for a session restart, wrong here. A caller
+		// that re-announces while the car is still wedged would rewind the count on every
+		// announcement, so neither the floor nor the ceiling could ever be reached and the
+		// basis would stay armed for the rest of the session. That is CASE 5's unbounded
+		// suppression reached through the front door rather than through a stopped clock,
+		// and carrying the count across the Reset() is what closes it.
+		//
+		// Nothing else in the suite covers this. Every other case announces exactly once,
+		// so a detector that rewound the count on re-announcement would pass all of them.
+		//
+		// The clock is stopped for the same reason CASE 5 stops it: with the time budget
+		// unable to expire anything, the evaluation count is the only bound left, so what
+		// this case measures is the count and nothing else.
+		//
+		// The re-announcement carries the SAME pose deliberately. The motivating caller is
+		// an auto-recover firing repeatedly at a car that is not moving, so the pose it
+		// leaves behind is the pose it left behind last time; it also keeps the probe
+		// geometry above valid across every announcement, which a moving basis would not.
+		constexpr int32 EvaluationsPerAnnouncement = 3;
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		const double StoppedSimSeconds = Base.SimulationTimeSeconds;
+
+		FVehicleTelemetrySnapshot Previous = Base;
+		int32 Announcements = 1;
+		bool bEveryAnnouncementLanded = true;
+		bool bReportedBeforeTheCeiling = false;
+		for (int32 EvaluationIndex = 1; EvaluationIndex < CeilingEvaluations; ++EvaluationIndex)
+		{
+			const FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+				StoppedSimSeconds, Base.CaptureIndex + EvaluationIndex, ProbeContactCm);
+
+			const FVehicleFailureReport StepReport = RacingSim::Vehicle::EvaluateVehicleFailures(
+				Previous, Current, Thresholds, State);
+			bReportedBeforeTheCeiling |= StepReport.Has(EVehicleFailureFlag::InvalidContact);
+
+			Previous = Current;
+
+			// Announced AFTER the evaluation, so the last announcement follows evaluation
+			// 237: evaluation 238 consumes the one-evaluation bDiscontinuityPending latch and
+			// evaluation 239 is suppressed by the BASIS alone. The latch is spent before the
+			// ceiling probe, so the ceiling assertion below tests the count rather than the
+			// latch. Any spacing of two or more keeps that true.
+			if (EvaluationIndex % EvaluationsPerAnnouncement == 0)
+			{
+				State.NotifyDiscontinuity(Base.LocationCm);
+				++Announcements;
+
+				// Each announcement must actually LAND. A NotifyDiscontinuity that did nothing
+				// while a basis was already armed would still let the count reach the ceiling,
+				// and every other assertion in this case would pass as a copy of CASE 5. An
+				// evaluation has consumed the latch and stamped the arm time since the last
+				// announcement, so a no-op leaves the latch clear and the stamp set, and a real
+				// announcement re-arms the one and clears the other. Accumulated so a break
+				// reports once rather than eighty times.
+				bEveryAnnouncementLanded &= State.bDiscontinuityPending
+					&& !State.bHasPreDiscontinuityArmTime
+					&& State.bHasPreDiscontinuityLocation;
+			}
+		}
+
+		// Pinned so the case cannot quietly degenerate into a second copy of CASE 5: if the
+		// loop ever stops re-announcing, this is what says so.
+		TestTrue(TEXT("The basis really was re-announced many times over the run"),
+			Announcements > 2);
+		TestTrue(TEXT("Every re-announcement re-armed the latch and cleared the arm time"),
+			bEveryAnnouncementLanded);
+
+		// The direct statement of the carry, and the assertion that goes RED against a
+		// detector that rewinds on re-announcement -- there the count is bounded by
+		// EvaluationsPerAnnouncement and never approaches the ceiling.
+		TestEqual(TEXT("Re-announcement carries the evaluation count rather than rewinding it"),
+			State.PreDiscontinuityEvaluations, CeilingEvaluations - 1);
+
+		TestFalse(TEXT("Re-announcement keeps the probe suppressed on every evaluation below the ceiling"),
+			bReportedBeforeTheCeiling);
+		TestTrue(TEXT("One evaluation below the ceiling the re-announced basis is still armed"),
+			State.bHasPreDiscontinuityLocation);
+
+		const FVehicleTelemetrySnapshot Probe = MakeStalledSnapshot(
+			StoppedSimSeconds, Base.CaptureIndex + CeilingEvaluations, ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Probe, Thresholds, State);
+		TestTrue(TEXT("Re-announcing cannot buy suppression past the evaluation ceiling"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+		TestFalse(TEXT("...and the basis is dropped at the ceiling however many announcements paid into it"),
+			State.bHasPreDiscontinuityLocation);
 	}
 
 	{

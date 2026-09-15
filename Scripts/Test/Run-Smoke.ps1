@@ -24,7 +24,19 @@ $ErrorActionPreference = 'Continue'
 
 $Cmd = 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe'
 
-if (Test-Path $ReportDir) { Remove-Item -Recurse -Force $ReportDir }
+. (Join-Path $PSScriptRoot 'ReportDirectory.ps1')
+
+# VEH-006 repair cycle 3. This used to be one line:
+#
+#     if (Test-Path $ReportDir) { Remove-Item -Recurse -Force $ReportDir }
+#
+# a recursive force-delete of whatever path the caller named, unchecked, under
+# $ErrorActionPreference = 'Continue'. See ReportDirectory.ps1 for what that cost and
+# what the replacement refuses to do. The header policy above -- no existing output
+# field removed or changed in meaning -- still holds: every Write-Output below is
+# untouched, and everything added here either refuses before the run or appends after it.
+if (-not (Test-RacingSimAbsoluteReportDir -ReportDir $ReportDir)) { Write-RacingSimRefusals; exit 1 }
+if (-not (Reset-RacingSimReportDirectory -ReportDir $ReportDir -MarkerName '.racingsim-report' -OwnerScript 'Run-Smoke.ps1')) { Write-RacingSimRefusals; exit 1 }
 
 & $Cmd $ProjectPath `
     -ExecCmds="Automation RunFilter Smoke; Quit" `
@@ -39,7 +51,22 @@ if (-not (Test-Path $IndexPath)) {
     exit 1
 }
 
-$Report = Get-Content -LiteralPath $IndexPath -Raw | ConvertFrom-Json
+# CHECKED. Unchecked, a truncated or malformed index.json -- the shape an editor killed
+# partway through leaves behind -- made ConvertFrom-Json emit a non-terminating error under
+# $ErrorActionPreference = 'Continue' and left $Report null. Every field below then
+# expanded to the empty string, `failed` compared as 0, and the run reported green on a
+# report it could not read.
+try
+{
+    $Report = Get-Content -LiteralPath $IndexPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+}
+catch
+{
+    Write-Output "UNREADABLE_INDEX_JSON -- $IndexPath exists but could not be parsed: $($_.Exception.Message)"
+    Write-Output 'Treat as a harness failure, not a pass.'
+    exit 1
+}
+
 Write-Output "reportCreatedOn=$($Report.reportCreatedOn)"
 
 # `succeeded` IS NOT THE PASS COUNT. The report splits passing tests into `succeeded` and
@@ -68,3 +95,23 @@ Write-Output '--- RacingSim.* suites ---'
 foreach ($T in @($Report.tests | Where-Object { $_.fullTestPath -like 'RacingSim.*' } | Sort-Object fullTestPath)) {
     Write-Output "  $($T.fullTestPath) => $($T.state)"
 }
+
+# THE SCRIPT USED TO END HERE, exiting 0 whatever the report said. That is the M7 residual
+# recorded in Docs/Tickets.md: the only non-zero exit was the missing-index.json branch, so
+# a run with failing tests, or with no tests at all, was indistinguishable from a clean one
+# to anything reading the exit code -- CI, a wrapper script, or a gate report written from
+# the outside. The counts were printed correctly the whole time; nothing was ever obliged
+# to read them.
+#
+# Nothing above this line changed, so every past evidence citation of this script's output
+# stays verifiable. What is added is the exit status those citations always implied.
+$Problems = Test-RacingSimReportHasPositiveProof -Report $Report
+if ($Problems.Count -gt 0)
+{
+    Write-Output '--- GATE FAILED ---'
+    foreach ($Problem in $Problems) { Write-Output "  $Problem" }
+    exit 1
+}
+
+Write-Output "GATE_PASSED passedTotal=$Passed"
+exit 0

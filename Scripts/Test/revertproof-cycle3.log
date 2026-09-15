@@ -1,0 +1,23 @@
+﻿TESTNAMES=RacingSim.Vehicle.FailureDetectionSuppressionBound
+PROCESS_EXITCODE=255
+reportCreatedOn=2026.09.09-06.48.41
+succeeded=0 succeededWithWarnings=0 passedTotal=0 failed=1 notRun=0
+testsInReport=1
+totalDuration=0.16089099645614624
+NON_SUCCESS_COUNT=1
+  FAIL: RacingSim.Vehicle.FailureDetectionSuppressionBound => Fail
+     Error: Expected 'A frame longer than the budget does not expire the basis on stale capture 0' to be false.
+     Error: Expected 'A frame longer than the budget does not expire the basis on stale capture 1' to be false.
+     Error: Expected 'At the ceiling evaluation a stopped clock stops buying suppression' to be true.
+     Error: Expected '...and the basis is dropped with it, so the ceiling is not re-paid every evaluation' to be false.
+     Error: Expected '...and does not also raise a stale InvalidContact beside it' to be false.
+     Error: Expected '...because the basis is held rather than dropped, leaving the ceiling as its bound' to be true.
+     Error: Expected 'A backwards clock does not expire the basis into a false contact report' to be false.
+     Error: Expected 'A backwards clock leaves the basis armed, re-stamped rather than expired' to be true.
+     Error: Expected '...and the probe it had been suppressing stays suppressed' to be false.
+--- RacingSim.* suites ---
+  RacingSim.Vehicle.FailureDetectionSuppressionBound => Fail
+--- GATE FAILED ---
+  no test passed (succeeded=0, succeededWithWarnings=0)
+  1 test(s) failed
+  RacingSim.Vehicle.FailureDetectionSuppressionBound is Fail, not Success

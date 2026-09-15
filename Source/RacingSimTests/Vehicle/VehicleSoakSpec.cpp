@@ -319,10 +319,34 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 
 		// Half the expectation, not two captures. The failure being detected is a capture
 		// loop that has STOPPED, which loses the whole window -- six hundred captures, not
-		// two -- so slack this wide costs no detection power at all, while a two-capture
-		// tolerance turns any ordinary rounding disagreement between the sample rate and
-		// the step rate into a red gate.
-		const int64 CaptureFloor = ExpectedCaptures / 2;
+		// two -- while a two-capture tolerance would turn any ordinary rounding
+		// disagreement between the sample rate and the step rate into a red gate.
+		//
+		// What it costs, stated because an earlier version of this comment claimed it cost
+		// nothing: a capture loop running at EXACTLY HALF RATE passes this check. That is a
+		// real degradation and this gate will not see it. The check is deliberately scoped
+		// to "stopped", not to "slower than it should be"; a rate regression needs its own
+		// assertion against ExpectedCaptures directly, and does not have one yet.
+		//
+		// FLOORED AT ONE, because the division is integer. A window whose expectation is 0
+		// or 1 -- a very low TelemetrySampleRateHz, or a short window -- yields a floor of
+		// 0, and "captured at least 0 times" is satisfied by a pawn that captured nothing
+		// at all. That is the exact failure this check exists to catch, passing silently.
+		const int64 CaptureFloor = FMath::Max<int64>(1, ExpectedCaptures / 2);
+
+		// And a floor of 1 out of an expectation of 1 is not a half-rate tolerance, it is
+		// an equality test wearing one. Say so rather than let a later reader assume the
+		// window still has the slack the comment above describes.
+		if (ExpectedCaptures < 2)
+		{
+			AddError(FString::Printf(
+				TEXT("The capture window ending at step %d expects only %lld captures at %.1f Hz, ")
+				TEXT("so the half-rate floor collapses onto it and this check no longer has the ")
+				TEXT("slack it is documented to have. Raise TelemetrySampleRateHz or lengthen the ")
+				TEXT("window; do not read a pass here as evidence the capture loop is healthy."),
+				StepsCompleted, ExpectedCaptures,
+				static_cast<double>(Pawn->TelemetrySampleRateHz)));
+		}
 		const int64 ActualCaptures = Snapshot.CaptureIndex - PreviousCaptureIndex;
 
 		if (ActualCaptures < CaptureFloor)
@@ -397,8 +421,9 @@ bool FRacingSimVehicleSoakTest::RunTest(const FString&)
 	// numbers anyone will actually want to compare against next time.
 	const FString Summary = FString::Printf(
 		TEXT("VEH-006 soak: %d steps at %f s = %.1f s simulated (%.1f min) in %.1f s wall clock ")
-		TEXT("(%.0f steps/s, %.1fx real time); %d inspections; max distance %.1f cm of %.1f cm bound ")
-		TEXT("(travelled %.1f cm from its start); ")
+		TEXT("(%.0f steps/s, %.1fx real time); %d inspections; ")
+		TEXT("furthest 3D distance from the world origin %.1f cm of %.1f cm bound ")
+		TEXT("(furthest horizontal distance from its own start %.1f cm); ")
 		TEXT("slowest inspected speed %.1f cm/s against a %.1f cm/s liveness floor; ")
 		TEXT("resident memory %.1f -> %.1f MiB, delta %+.1f MiB against a %.1f MiB ceiling."),
 		StepsCompleted, SoakStepSeconds, SimulatedSeconds, SimulatedSeconds / 60.0, WallClockSeconds,

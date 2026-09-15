@@ -416,8 +416,30 @@ bool FVehicleSafeResetUnderLoadTest::RunTest(const FString& Parameters)
 	}
 
 	const double GravityCmsSq = FMath::Abs(static_cast<double>(SettleWorld->GetGravityZ()));
-	const double SettledDisplacementToleranceCm =
-		2.0 * 0.5 * GravityCmsSq * SettleSeconds * SettleSeconds;
+
+	// A LOWER GUARD, because the derivation degenerates at one specific input. Gravity of
+	// zero -- a map that overrides it, a physics scene that has not finished initialising,
+	// a deliberate zero-g test world -- makes this expression exactly 0.0, and the
+	// assertion below then demands BIT-EXACT equality between two float positions across
+	// ten simulated steps. Solver noise alone breaks that, so the case that should be the
+	// easiest one for the car to pass becomes the only one it cannot.
+	//
+	// One centimetre is the smallest displacement worth calling movement on a car roughly
+	// four hundred centimetres long, so the guard cannot mask anything this assertion is
+	// for. It only ever binds when the derived bound is smaller than the noise floor.
+	constexpr double SettledDisplacementFloorCm = 1.0;
+
+	// Derived from VERTICAL free fall and asserted against a 3D distance, which is not the
+	// same shape. Two settle-steps' worth of free fall is the worst case for the axis
+	// gravity acts on; horizontal travel is charged against that same budget even though
+	// nothing in the derivation accounts for it. That is conservative in the direction
+	// that matters -- the test can only be too strict, never too lax -- and the horizontal
+	// component has its own tighter assertion below, which is the one that would actually
+	// name sideways drift. Recorded because a bound that measures one thing and is
+	// justified by another invites a later reader to widen it for the wrong reason.
+	const double SettledDisplacementToleranceCm = FMath::Max(
+		SettledDisplacementFloorCm,
+		2.0 * 0.5 * GravityCmsSq * SettleSeconds * SettleSeconds);
 	TestTrue(
 		FString::Printf(
 			TEXT("The car stays at its reset pose: moved %.2f cm in %d neutral steps, bound %.2f cm"),

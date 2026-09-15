@@ -67,8 +67,27 @@ param(
 
 $ErrorActionPreference = 'Continue'
 
-if (-not [System.IO.Path]::IsPathRooted($ReportDir)) {
-    Write-Output "ReportDir must be an ABSOLUTE path; UnrealEditor-Cmd resolves -ReportExportPath against the engine directory, not the working directory. Got: $ReportDir"
+. (Join-Path $PSScriptRoot 'ReportDirectory.ps1')
+
+# IsPathRooted was the check here, and it is not an absolute-path test: "C:report" and
+# "\report" both pass it and both resolve against per-process state this script does not
+# set. See Test-RacingSimAbsoluteReportDir.
+if (-not (Test-RacingSimAbsoluteReportDir -ReportDir $ReportDir)) { Write-RacingSimRefusals; exit 1 }
+
+# A non-default -TestName is legitimate -- iterating on a smaller soak is why the parameter
+# exists -- but its output must not be mistaken for the gate afterwards, and a transcript
+# read a week later has nothing in it to say which was run. Say so in the output itself.
+if ($TestName -ne 'RacingSim.Vehicle.Soak.ThirtyMinuteDrive') {
+    Write-Output "NOT_THE_GATE -- TestName is $TestName, not the ticket's RacingSim.Vehicle.Soak.ThirtyMinuteDrive. This run is an iteration aid; do not cite its output as VEH-006 soak evidence."
+}
+
+# Guards the one shape that fails LATE and confusingly. `Automation RunTests <name>` with
+# an empty or whitespace name requests the empty test list, and the editor then exits
+# cleanly having run nothing, producing a report with zero tests -- which the positive
+# proof below correctly rejects, but only after the operator has waited out an editor
+# start-up for a mistake visible before it.
+if ([string]::IsNullOrWhiteSpace($TestName)) {
+    Write-Output 'TestName must be a non-empty automation test path.'
     exit 1
 }
 
@@ -89,49 +108,24 @@ $Cmd = 'C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cm
 # with. The marker is written by this script and by nothing else, so it says what
 # index.json cannot -- that whatever state this directory is in, we are the ones who
 # put it there.
+#
+# The rule this file introduced is now shared with the two sibling scripts, which had no
+# guard at all, and it gained three things it was missing here:
+#
+#   - index.json ALONE no longer licenses the delete. Mere existence of a file with that
+#     name was enough, and any tool can write one; it must now parse and carry the fields
+#     an automation report has.
+#   - New-Item and Set-Content are CHECKED. Both ran unchecked under
+#     $ErrorActionPreference = 'Continue', so a read-only or otherwise unwritable
+#     ReportDir produced no marker, no directory and no complaint, and the run went on to
+#     fail later for a reason that had nothing to do with the cause.
+#   - A live owner is REFUSED. Two runs pointed at one report directory used to race, the
+#     second deleting the first one's output partway through its thirty minutes.
 $OwnershipMarkerName = '.racingsim-soak-report'
-if (Test-Path -LiteralPath $ReportDir) {
-    if (-not (Test-Path -LiteralPath $ReportDir -PathType Container)) {
-        Write-Output "ReportDir exists and is not a directory: $ReportDir"
-        exit 1
-    }
-
-    $Existing = @(Get-ChildItem -LiteralPath $ReportDir -Force)
-    $LooksLikeReport =
-        (Test-Path -LiteralPath (Join-Path $ReportDir 'index.json')) -or
-        (Test-Path -LiteralPath (Join-Path $ReportDir $OwnershipMarkerName))
-
-    if ($Existing.Count -gt 0 -and -not $LooksLikeReport) {
-        Write-Output "REFUSING to delete $ReportDir : it is not empty and holds neither index.json nor $OwnershipMarkerName, so it is not a previous automation report. Point -ReportDir at a new or previously used report directory."
-        exit 1
-    }
-
-    # CHECKED, because $ErrorActionPreference is Continue and a failed delete here is
-    # silent. The run would then carry on into a directory that still holds the PREVIOUS
-    # index.json, and the summary below would read that stale report as this run's result:
-    # a thirty-minute soak reported green on evidence produced by an entirely different
-    # build. Observed for real on a path Remove-Item could not resolve.
-    try {
-        Remove-Item -Recurse -Force -LiteralPath $ReportDir -ErrorAction Stop
-    }
-    catch {
-        Write-Output "FAILED to clear $ReportDir : $($_.Exception.Message)"
-        Write-Output 'Refusing to continue: a stale index.json left in place would be read as this run.'
-        exit 1
-    }
+if (-not (Reset-RacingSimReportDirectory -ReportDir $ReportDir -MarkerName $OwnershipMarkerName -OwnerScript 'Run-Soak.ps1')) {
+    Write-RacingSimRefusals
+    exit 1
 }
-
-New-Item -ItemType Directory -Force -Path $ReportDir | Out-Null
-
-# Written FIRST, before anything that can crash. A marker written at the end would be
-# absent from precisely the runs that need it -- the ones that die partway and leave
-# the directory non-empty.
-Set-Content -LiteralPath (Join-Path $ReportDir $OwnershipMarkerName) -Encoding utf8 -Value @(
-    'Written by Scripts/Test/Run-Soak.ps1. Its presence marks this directory as a soak',
-    'report directory that the script owns and may delete on the next run. Deleting this',
-    'file does not break anything; it only makes the next run refuse the directory until',
-    'it is emptied by hand.'
-)
 
 # Editor stdout goes to a FILE, not to Out-Null. When the NO_INDEX_JSON branch below
 # fires it means the editor produced no report at all, which is exactly the case where
@@ -144,10 +138,18 @@ Write-Output "TESTNAME=$TestName"
 $StartedAt = Get-Date
 Write-Output "SOAK_STARTED=$($StartedAt.ToString('s'))"
 
+# 2>&1 MERGES STDERR IN. Without it the log captured stdout only, and the failures worth
+# capturing are the ones that write to stderr: a fatal assertion, a missing DLL, an access
+# violation handler. The NO_INDEX_JSON branch below then printed forty lines of ordinary
+# start-up chatter and called it the evidence, with the actual message discarded.
+#
+# The cost, stated because it bites in this specific shell: PowerShell 5.1 wraps each
+# stderr line from a native executable in an ErrorRecord and sets $? to $false, so
+# $LASTEXITCODE is read into $ExitCode immediately below and NOT inferred from $?.
 & $Cmd $ProjectPath `
     -ExecCmds="Automation SetFilter Stress; RunTests $TestName; Quit" `
     -ReportExportPath="$ReportDir" `
-    -unattended -nopause -nosplash -nullrhi -stdout -utf8output |
+    -unattended -nopause -nosplash -nullrhi -stdout -utf8output 2>&1 |
     Tee-Object -FilePath $EditorLog | Out-Null
 
 $ExitCode = $LASTEXITCODE
@@ -178,7 +180,27 @@ if (-not (Test-Path -LiteralPath $IndexPath)) {
     exit 1
 }
 
-$Report = Get-Content -LiteralPath $IndexPath -Raw | ConvertFrom-Json
+# CHECKED. Unchecked, this was the widest false-green path left in the script: a truncated
+# index.json -- the shape an editor killed during the write leaves behind -- made
+# ConvertFrom-Json emit a non-terminating error under $ErrorActionPreference = 'Continue'
+# and left $Report null. $Report.failed then compared as 0, $Report.notRun as 0, and the
+# final decision below exited 0. A thirty-minute soak whose report could not be read at
+# all was reported as a passing gate.
+try
+{
+    $Report = Get-Content -LiteralPath $IndexPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+}
+catch
+{
+    Write-Output "UNREADABLE_INDEX_JSON -- $IndexPath exists but could not be parsed: $($_.Exception.Message)"
+    if (Test-Path -LiteralPath $EditorLog) {
+        Write-Output '--- last 40 lines of editor stdout ---'
+        Get-Content -LiteralPath $EditorLog -Tail 40 | ForEach-Object { Write-Output "  $_" }
+    }
+    Write-Output 'Treat as a harness failure, not a pass.'
+    exit 1
+}
+
 Write-Output "reportCreatedOn=$($Report.reportCreatedOn)"
 
 $Passed = $Report.succeeded + $Report.succeededWithWarnings
@@ -231,16 +253,51 @@ foreach ($T in @($Report.tests | Where-Object { $_.fullTestPath -like 'RacingSim
 # happened. A non-zero exit alongside a CLEAN report is the interesting case -- the
 # editor died after writing it, an assertion or an ensure on shutdown -- and reporting
 # that as a passing thirty-minute soak is the false green this gate exists to prevent.
-if ($Report.failed -gt 0 -or $Report.notRun -gt 0) {
+#
+# The condition was `$Report.failed -gt 0 -or $Report.notRun -gt 0`, which can only ever
+# FAIL a run and can never pass one. A report containing NO TESTS satisfies it -- failed=0
+# and notRun=0 are exactly what an empty report holds -- and every one of these produces
+# an empty report: a misspelled -TestName, the Stress filter not being set so RunTests
+# finds nothing, a build in which the soak spec was compiled out, an editor that started
+# and quit before running anything. All of them exited 0 and were reportable as a green
+# thirty-minute soak.
+#
+# Test-RacingSimReportHasPositiveProof inverts that: the run passes only if the report
+# holds tests, at least one passed, none failed, none were skipped, and $TestName is
+# present in it with state Success. The last clause is the one that matters most here,
+# because this script names a single test and its whole purpose is that that test ran.
+$Problems = Test-RacingSimReportHasPositiveProof -Report $Report -RequiredTestNames @($TestName)
+if ($Problems.Count -gt 0) {
+    Write-Output '--- GATE FAILED ---'
+    foreach ($Problem in $Problems) { Write-Output "  $Problem" }
+
     if ($ExitCode -ne 0) {
-        Write-Output "PROCESS_EXITCODE=$ExitCode, consistent with the failing tests above."
+        Write-Output "PROCESS_EXITCODE=$ExitCode, consistent with the failures above."
+    }
+    else {
+        # NAMED, because a clean editor exit next to a bad report is the confusing case and
+        # was previously left to the reader to notice. The editor did what it was told and
+        # the report still does not prove the test ran, so the fault is in what it was
+        # told -- the test name, the filter, the build -- not in the run.
+        Write-Output 'PROCESS_EXITCODE=0 -- the editor exited cleanly and the report still does not prove the named test passed. Suspect the test name, the automation filter, or a build that does not contain the test, rather than a crash.'
+    }
+
+    if (Test-Path -LiteralPath $EditorLog) {
+        Write-Output '--- last 40 lines of editor stdout ---'
+        Get-Content -LiteralPath $EditorLog -Tail 40 | ForEach-Object { Write-Output "  $_" }
     }
 
     exit 1
 }
 
+# A non-zero exit alongside a report that DOES prove the test passed is the remaining
+# interesting case: the editor died after writing it, on an assertion or an ensure during
+# shutdown. Reporting that as a passing soak is the other false green this gate exists to
+# prevent, so it fails even though every test succeeded.
 if ($ExitCode -ne 0) {
     Write-Output "EDITOR_EXITED_NONZERO=$ExitCode -- every test passed but the editor did not exit cleanly; treat as a failure."
     exit 1
 }
+
+Write-Output "GATE_PASSED $TestName passedTotal=$Passed"
 exit 0
