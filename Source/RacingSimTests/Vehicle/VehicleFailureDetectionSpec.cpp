@@ -1111,6 +1111,11 @@ bool FRacingSimVehicleFailureDiscontinuityTest::RunTest(const FString& Parameter
  *   ANNOUNCEMENTS     it, so a caller re-announcing at a wedged car would rewind the
  *                     only bound that still works. The count is carried across the
  *                     Reset() instead, and the ceiling still lands.
+ *
+ *   RE-ANNOUNCED      VEH-007, spec S-M1: carrying is right for the ceiling and wrong for
+ *   PAST THE FLOOR    the floor, because each announcement starts a new stale tail. The
+ *                     floor now reads a per-arm count that every announcement restarts
+ *                     (CASE 9).
  */
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FRacingSimVehicleFailureSuppressionBoundTest,
@@ -1682,6 +1687,96 @@ bool FRacingSimVehicleFailureSuppressionBoundTest::RunTest(const FString& Parame
 		TestTrue(TEXT("Re-announcing cannot buy suppression past the evaluation ceiling"),
 			Report.Has(EVehicleFailureFlag::InvalidContact));
 		TestFalse(TEXT("...and the basis is dropped at the ceiling however many announcements paid into it"),
+			State.bHasPreDiscontinuityLocation);
+	}
+
+	{
+		// -- CASE 9: a re-announcement after the carried count has passed the floor. --
+		//
+		// VEH-007, spec S-M1. CASE 8's carry is right for the ceiling and was wrong for the
+		// floor: while one counter did both jobs, a basis re-announced after that counter
+		// had climbed past GVehicleFailureMinContactSuppressionEvaluations started its NEW
+		// stale tail already past the floor. A single long frame inside that tail -- CASE 4's
+		// hazard, reached through a second announcement instead of a first -- then expired
+		// the basis and raised a false Error-level InvalidContact on a stationary car.
+		//
+		// This is CASE 4 run a second time on a state that has already been announced and
+		// evaluated past the floor. It is RED against the single-counter detector on the
+		// first stale capture.
+		constexpr int32 EvaluationsBeforeReannouncement = 10;
+		constexpr int32 FloorEvaluations = 3;
+		constexpr double LongFrameSeconds = 2.0;
+		constexpr int32 StaleTailCaptures = 2;
+
+		TestTrue(TEXT("CASE 9's long frame really is longer than the whole budget"),
+			LongFrameSeconds > static_cast<double>(Thresholds.MaxContactSuppressionSeconds));
+
+		FVehicleFailureDetectorState State;
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		// Clock stopped for the first announcement, so neither the budget nor fresh contact
+		// can end the basis and the count climbs past the floor while it stays armed.
+		const double StoppedSimSeconds = Base.SimulationTimeSeconds;
+		FVehicleTelemetrySnapshot Previous = Base;
+		for (int32 EvaluationIndex = 1; EvaluationIndex <= EvaluationsBeforeReannouncement; ++EvaluationIndex)
+		{
+			const FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+				StoppedSimSeconds, Base.CaptureIndex + EvaluationIndex, ProbeContactCm);
+			RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Current, Thresholds, State);
+			Previous = Current;
+		}
+
+		// Pinned: without these the case could pass with the count still below the floor,
+		// which is not the state S-M1 describes.
+		TestTrue(TEXT("Before re-announcement the basis is still armed"),
+			State.bHasPreDiscontinuityLocation);
+		TestTrue(TEXT("Before re-announcement the carried count is past the evaluation floor"),
+			State.PreDiscontinuityEvaluations > FloorEvaluations);
+
+		State.NotifyDiscontinuity(Base.LocationCm);
+
+		TestEqual(TEXT("Re-announcement carries the ceiling count"),
+			State.PreDiscontinuityEvaluations, EvaluationsBeforeReannouncement);
+		TestEqual(TEXT("Re-announcement restarts the floor count"),
+			State.PreDiscontinuityArmEvaluations, 0);
+
+		// The straddling evaluation, suppressed by the latch. It also stamps the arm time,
+		// so every capture after it is measured against a live time budget.
+		FVehicleTelemetrySnapshot Current = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds + Step, Previous.CaptureIndex + 1, ProbeContactCm);
+		RacingSim::Vehicle::EvaluateVehicleFailures(Previous, Current, Thresholds, State);
+		Previous = Current;
+
+		for (int32 TailIndex = 0; TailIndex < StaleTailCaptures; ++TailIndex)
+		{
+			Current = MakeStalledSnapshot(
+				Previous.SimulationTimeSeconds + LongFrameSeconds,
+				Previous.CaptureIndex + 1,
+				ProbeContactCm);
+
+			const FVehicleFailureReport TailReport = RacingSim::Vehicle::EvaluateVehicleFailures(
+				Previous, Current, Thresholds, State);
+			TestFalse(
+				*FString::Printf(
+					TEXT("A re-announced basis is not expired by a long frame on stale capture %d"),
+					TailIndex),
+				TailReport.Has(EVehicleFailureFlag::InvalidContact));
+
+			Previous = Current;
+		}
+
+		// And the restarted floor is still a floor: one evaluation past it the long-exceeded
+		// budget takes effect, exactly as in CASE 4.
+		Current = MakeStalledSnapshot(
+			Previous.SimulationTimeSeconds + LongFrameSeconds,
+			Previous.CaptureIndex + 1,
+			ProbeContactCm);
+
+		const FVehicleFailureReport Report = RacingSim::Vehicle::EvaluateVehicleFailures(
+			Previous, Current, Thresholds, State);
+		TestTrue(TEXT("Past the restarted floor the exceeded budget expires the re-announced basis"),
+			Report.Has(EVehicleFailureFlag::InvalidContact));
+		TestFalse(TEXT("...and the basis is dropped with it"),
 			State.bHasPreDiscontinuityLocation);
 	}
 
