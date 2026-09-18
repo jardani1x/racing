@@ -7,6 +7,8 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/GameModeBase.h"
+#include "GameFramework/WorldSettings.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/AutomationTest.h"
 #include "Tests/AutomationCommon.h"
@@ -196,6 +198,15 @@ struct FVehicleManoeuvreFixture
 		// dispatches BeginPlay at spawn time when the world already reports having begun
 		// play, and ARacingVehiclePawn builds its wheel setups in BeginPlay. Spawn first
 		// and the car exists with zero wheels and no explanation.
+		// PIN THE ENGINE GAME MODE. SetGameMode falls back to the project's
+		// GlobalDefaultGameMode, which since RACE-005 is ARacingGameMode: it would spawn a
+		// race director that finds no track and logs an Error, and possess nothing this
+		// fixture spawns. The vehicle suite tests the car, not the session composition.
+		if (AWorldSettings* WorldSettings = World->GetWorldSettings())
+		{
+			WorldSettings->DefaultGameMode = AGameModeBase::StaticClass();
+		}
+
 		if (!WorldWrapper.BeginPlayInTestWorld())
 		{
 			WorldWrapper.ForwardErrorMessages(&Test);

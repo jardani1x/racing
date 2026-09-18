@@ -51,8 +51,10 @@ public:
 	 * 2 = RACE-002: bResetInvalidatesLap. A version-1 result and a version-2 result are
 	 *     not comparable even on identical geometry, because this field decides whether
 	 *     a lap containing a reset counts at all.
+	 * 3 = RACE-005: LapsToFinish. A three-lap race and a five-lap race on the same
+	 *     circuit are different competitions.
 	 */
-	static constexpr int32 RulesetSchemaVersion = 2;
+	static constexpr int32 RulesetSchemaVersion = 3;
 
 	/**
 	 * Stable identifier written into every result, e.g. "Ruleset.TimeTrial.Default".
@@ -112,6 +114,20 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Ruleset")
 	bool bResetInvalidatesLap = true;
+
+	/**
+	 * Completed laps that end the race. RACE-005: ARaceDirector finishes the session
+	 * once the primary lap tracker's GetLapsCompleted() reaches this -- completed, not
+	 * valid, laps, so an invalidated lap still counts toward the distance and the result
+	 * records its validity.
+	 *
+	 * On the ruleset rather than the director because a result must be able to say how
+	 * long the race was: it is in ComputeContentHash(), so two lengths never share a
+	 * ruleset identity. Validate() rejects values below 1 (the ClampMin only guards the
+	 * editor, not a value set from C++ or config).
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Race|Ruleset", meta = (ClampMin = "1", UIMin = "1", UIMax = "50"))
+	int32 LapsToFinish = 3;
 
 	/**
 	 * The identity of this ruleset for FRacingSimVersionStamp::RulesetVersion.

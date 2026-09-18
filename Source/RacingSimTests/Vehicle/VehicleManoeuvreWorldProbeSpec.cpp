@@ -3,6 +3,7 @@
 #include "Components/BoxComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "GameFramework/GameModeBase.h"
 #include "GameFramework/WorldSettings.h"
 #include "Kismet/GameplayStatics.h"
 #include "Misc/AutomationTest.h"
@@ -179,6 +180,14 @@ bool FVehicleManoeuvreWorldProbeTest::RunTest(const FString& Parameters)
 	AddInfo(FString::Printf(TEXT("World->GetPhysicsScene() is %s."),
 		bHasPhysicsScene ? TEXT("non-null") : TEXT("NULL")));
 	TestTrue(TEXT("The created world has a physics scene"), bHasPhysicsScene);
+
+	// Pinned to the engine game mode for the same reason as VehicleManoeuvreFixture: the
+	// project's GlobalDefaultGameMode (ARacingGameMode since RACE-005) would spawn a race
+	// director into a world with no track.
+	if (AWorldSettings* WorldSettings = World->GetWorldSettings())
+	{
+		WorldSettings->DefaultGameMode = AGameModeBase::StaticClass();
+	}
 
 	if (!WorldWrapper.BeginPlayInTestWorld())
 	{

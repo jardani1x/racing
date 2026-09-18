@@ -71,7 +71,23 @@ public class RacingSimTests : ModuleRules
 			// UI-002: the HUD widget specs read UTextBlock/UWidget state.
 			"UMG",
 			"Slate",
-			"SlateCore"
+			"SlateCore",
+
+			// RACE-005: RacingSim.Game.Session.DefaultConfig reads UGameMapsSettings.
+			"EngineSettings"
 		});
+
+		// RACE-005: RacingSim.Game.Session.BlueprintEmptyTreeFallback compiles a transient
+		// Widget Blueprint, which needs the Kismet compiler and the UMG blueprint types.
+		// Editor only; the test body is under WITH_EDITOR to match.
+		if (Target.bBuildEditor)
+		{
+			PrivateDependencyModuleNames.AddRange(new string[]
+			{
+				"UnrealEd",
+				"Kismet",
+				"UMGEditor"
+			});
+		}
 	}
 }
