@@ -3081,6 +3081,7 @@ restores the cycle-2 detector, spec and harness. No binary assets are involved.
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | **DONE** 2026-08-21 — `code-reviewer` returned CHANGES REQUESTED against `6b92557` (2 HIGH blocking: `H1` phantom laps from a spin on the start/finish line, `H2` missing spin-on-the-line test); repair cycle 1 (`d4fded6`) closed both, verified by stashing the fix back out and re-running against the pre-fix tree; re-review independently hand-traced the fix and returned APPROVED WITH FOLLOW-UPS, plus three doc-only corrections (`3870be8`). `test-engineer` independently confirmed both targets build clean, Smoke `passedTotal=472, failed=0, notRun=0` (6 lap suites), and all three TRACK-002 placed-level tests still pass 3/0/0. Merged to `main` at `7f82e79` (merge of `3870be8`). Non-blocking findings (`M1`–`M3`, `L1`–`L9`, plus repair-cycle `R2-M1`/`R2-L1`/`R2-L2`) tracked forward into `RACE-003`/`VEH-005`/`UI-001` |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
+| RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | OPEN — opened 2026-09-18 by UI-002. Nothing in the project yet creates a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
 valid laps count exactly once; 100 skipped/out-of-order/reverse/double-cross
@@ -5039,8 +5040,8 @@ routed here. Read before writing `UI-001`'s acceptance criteria.
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
 | UI-001 | HUD view model and data contract | race-systems-engineer | RACE-003 | B | DONE 2026-09-18 |
-| UI-002 | Speed/RPM/gear/lap/time/delta/countdown/results | race-systems-engineer | UI-001 | B | OPEN |
-| UI-003 | Input prompts, settings, restart flow, accessibility baseline | race-systems-engineer | UI-002 | B | OPEN |
+| UI-002 | Speed/RPM/gear/lap/time/delta/countdown/results | race-systems-engineer | UI-001 | B | DONE 2026-09-18 |
+| UI-003 | Input prompts, settings, restart flow, accessibility baseline | race-systems-engineer | UI-002 | B | OPEN. Inherits UI-002 `L2`: every default-tree widget, root included, is `HitTestInvisible`, so relax it on `ResultsPanel` before adding a clickable restart control |
 | UI-004 | HUD functional and screenshot tests | test-engineer + implementer | UI-003 | B, D | OPEN |
 
 HUD reads authoritative race state; it never computes race truth. Position is shown
@@ -5216,6 +5217,160 @@ correction is batched forward to `UI-002`.
 
 **Closed 2026-09-18.** Both gates passed in repair cycle 1 of 3. One criterion is met by trace rather than execution: RACE-003 M1 "revert-provable" (see M4 above). Known risks carried forward: L5, L7, N2, N3, and the Core telemetry timestamp doc.
 
+### UI-002 — acceptance criteria, opened 2026-09-18
+
+Scope: the in-race HUD widget — speed, RPM, gear, lap, lap time, last/best, delta,
+countdown, position and results — bound to UI-001's `FRacingHudViewModel`. Owner
+`race-systems-engineer` (implemented directly in the local session). Gate B. Depends on
+UI-001 (merged).
+
+**The widget is native C++ UMG, not a `.uasset`.** `URacingHudWidget` derives from
+`UUserWidget` and builds a default widget tree in C++ when no designer tree exists. Its
+child widgets are `BindWidgetOptional`, so a later Widget Blueprint subclass can replace
+the layout and styling (CLAUDE.md: Blueprint for presentation) without a code change.
+Reasons: Unreal MCP is unavailable, binary assets cannot be reviewed as diffs, and a
+native tree can be tested without an editor. UMG is still the HUD technology.
+
+**Formatting is separate from the widget.** `URacingHudFormatLibrary`
+(`Source/RacingSim/UI/`) holds pure `BlueprintPure` functions from view-model fields to
+`FText`. The widget does no formatting of its own, so every display string is testable
+without a world.
+
+- [x] **UMG dependency.** `RacingSim.Build.cs` adds `UMG` (public: `UI/RacingHudWidget.h`
+  exposes `UUserWidget` to `RacingSimTests`) and `Slate`/`SlateCore` only where a header
+  or source actually needs them. The UI-001 comment on the dependency list is updated.
+- [x] **Format library.** `RacingSim.UI.HudFormat` asserts exact strings for each function:
+  - speed: whole units, magnitude shown for reverse, round-half-up (`99.5` → `100`); unit
+    labels `km/h`, `mph`, `m/s`; stale → `--`;
+  - RPM: whole RPM, stale → `--`;
+  - gear: `R` for any negative, `N` for 0, digits otherwise; stale → `-`;
+  - lap time `M:SS.mmm`, rounded to the nearest millisecond with correct carry
+    (`59.9996` → `1:00.000`), minutes unbounded to 999 then clamped; absent or non-finite →
+    `-:--.---`; negative → `0:00.000` (amended in review cycle 1: the UI-001 view model
+    already clamps negative lap times to zero, and the formatter matches that contract);
+  - delta `+S.mmm`/`-S.mmm`, `+0.000` for zero, empty when absent;
+  - countdown: whole seconds, `GO` when shown at 0, empty when hidden;
+  - lap counter `LAP n`, `LAP -` for lap 0;
+  - position `P n/m`, empty when hidden;
+  - result validity: one distinct, non-empty label per `ERacingRunValidity` value
+    (enumerated by reflection so a new enum value fails the test).
+  Every function is a `UFUNCTION` flagged `FUNC_BlueprintPure`, found by name. Output is
+  culture-invariant: the spec sets a culture with a `,` decimal separator and asserts the
+  same strings.
+- [x] **Native widget tree.** `URacingHudWidget` built with `CreateWidget` against a
+  transient world with no game instance and no viewport. `RacingSim.UI.HudWidget.Tree`
+  asserts that every documented child widget exists, is named as documented, and has a
+  default font size ≥ `URacingHudWidget::MinReadableFontSize` (18). This is a provisional
+  floor for the lowest stream tier; UI-004 owns the screenshot proof. A widget whose tree
+  already has a root (the future Blueprint path) is not overwritten, and the spec proves
+  that by pre-seeding a root.
+- [x] **ApplyViewModel.** `URacingHudWidget::ApplyViewModel(const FRacingHudViewModel&)`
+  (`BlueprintCallable`) sets every text from the format library, never from its own
+  formatting. It toggles visibility:
+  - countdown shown only when `bShowCountdown`;
+  - position only when `bShowPosition`;
+  - delta only when `bHasDelta`;
+  - best lap only when `bHasBestLap`;
+  - the invalid-lap marker only when `bCurrentLapInvalid`;
+  - the results panel only when `bShowResults`.
+  `RacingSim.UI.HudWidget.Apply` asserts each text equals the format function's output
+  for the same field, and each visibility for both states of its flag.
+- [x] **No per-frame churn.** The widget caches the display quantum of each field (whole
+  speed unit, whole RPM, lap millisecond, and so on) and calls `SetText`/`SetVisibility`
+  only when it changes. `GetTextUpdateCountForTest()` exposes the count. The spec asserts:
+  - applying the same view model twice performs 0 updates the second time;
+  - a speed change inside one whole unit performs 0 updates;
+  - a one-field change performs exactly 1 text update.
+  Known residual cost: a running lap timer changes every frame, so it reformats every
+  frame (one small `FString`). It is bounded and stated, not hidden.
+- [x] **Against the real race stack.** `RacingSim.UI.HudWidget.RaceIntegration` drives
+  UI-001's procedural circuit through PreRace, Countdown, Racing, one lap close, Finished,
+  Results and Restart. At each stage it runs gather → `BuildHudViewModel` →
+  `ApplyViewModel` and asserts:
+  - the widget's countdown, lap counter, last lap, best lap and results texts equal the
+    format functions applied to the authoritative getters;
+  - the results panel is visible only in Finished/Results;
+  - Restart hides results and clears last/best to the absent text.
+- [x] **UI-001 L7.** `URaceStateMachine` gains `PeekCountdownRemainingSeconds() const`,
+  which does not sample `CountdownClock`. `GatherHudRaceInputs` takes `const` race
+  objects, uses only the peek, and becomes `BlueprintPure`. The spec proves that gathering
+  twice without a state-machine `Tick` leaves the countdown clock's high-water mark
+  unchanged, and that the peeked value equals the sampled one immediately after a
+  `Tick`.
+- [x] **UI-001 L5.** `URaceLapTracker` exposes `GetObservedSessionId()`. The gatherer
+  reports no lap data (laps 0, no last/best, no lap in progress) when the tracker's
+  observed session differs from the state machine's `SessionId`. The spec proves it with a
+  tracker **not** registered with the recorder: after Restart and before the tracker's
+  next `Advance()`, the view model shows no laps, where before the fix it showed the
+  previous session's.
+- [x] **UI-001 N3.** Every `URaceFunctionLibrary` track-actor wrapper tests
+  `IsValid(Track)`, not `!= nullptr`. The spec proves that a track actor marked as
+  garbage returns the same safe default as null. `!= nullptr` does not appear in the
+  track wrappers (grep).
+- [x] **UI-001 telemetry doc.** `RacingTelemetry.h` describes
+  `FRacingVehicleTelemetrySample::TimestampSeconds` as `FPlatformTime::Seconds()` (what
+  `ARacingVehiclePawn` stamps), not race-clock time.
+- [x] `UI/` includes no `Race/` header (grep). The widget reads no world state: no
+  `GetWorld()`, `GetAllActorsOfClass` or `UGameplayStatics` in `UI/` (grep).
+- [x] The new specs pass. Smoke passes with `failed=0 notRun=0` and at least 527 tests
+  plus the ones added here.
+- [x] The Editor **and** Game targets build with zero new warnings.
+
+**Deliberately excluded:**
+- **Who ticks the chain** (`RACE-005`): the game mode, race director and pawn spawn, and
+  adding the widget to a viewport. The race-integration spec calls the chain directly.
+- **Input prompts, settings, restart button and accessibility** (`UI-003`).
+- **Screenshots at stream tiers and functional maps** (`UI-004`).
+- **A delta source.** The view model still carries `bHasDelta=false`; the widget and
+  format paths for delta are built and tested with synthetic values.
+- **Total lap count.** No ruleset field exists yet.
+- **Art direction.** The default tree is a legible graybox layout, not final styling.
+
+
+### UI-002 — review and repair record
+
+**Pass 1 (code-reviewer): FAIL on MEDIUM findings.** No BLOCKER or HIGH.
+
+Pre-review test fixes (implementer, before pass 1):
+- The widget specs asserted the test world had no game instance; `FTestWorldWrapper`'s
+  Game world has one. The wrong precondition was removed (`Saved/Automation/ui002-named-r1`
+  failed 3, `-r2`/`-r3` passed).
+- `RacingSim.Race.FunctionLibrary.GarbageTrack` logged a bake warning because spawn-time
+  construction baked the default 200 cm spline. It now uses `SpawnActorDeferred`, authors
+  the circle, then `FinishSpawning`, and asserts the live length precondition.
+
+**Repair cycle 1:**
+
+| ID | Finding | Disposition |
+|---|---|---|
+| M1 | The criterion said negative lap time formats `-:--.---`; code and spec clamp to `0:00.000` | **Criterion amended** (above) to match the UI-001 view-model clamp, with the reason inline. |
+| M2 | The default tree was built after `Super::Initialize()`, so bindings were null during `OnInitialized` | **Fixed.** `URacingHudWidget::InitializeNativeClassData()` creates `WidgetTree` and builds the default tree before `NativeOnInitialized` (engine order checked in `UserWidget.cpp`: its only caller is the native branch at `:157`). The `Initialize()` fallback remains for a Blueprint subclass with an empty tree, documented as null-bindings-in-`OnInitialized`. **Residual forwarded to `RACE-005`:** no test runs with a player context (the test world has no local player, so `OnInitialized` never fires in automation). |
+| M3 | The editor re-saved `Config/DefaultGame.ini` during automation (dropped the BLOCKER-005 comment, added placeholder `ProjectID`) | **Fixed.** Reverted; excluded from the commit; stayed clean through every later run. |
+| L1 | Visibility caching was unproven | **Fixed.** `GetVisibilityUpdateCountForTest()`; `Apply` asserts 6 on the first apply, exactly 1 per flag change, 0 on a repeat, 6 after `InvalidateDisplayCache`. |
+| L2 | Forced `HitTestInvisible` (root included) would swallow a restart button in `ResultsPanel` | **Forwarded to `UI-003`**, noted in the class doc and the UI-003 row. |
+| L3 | Result best lap and live best lap had equal fixture values | **Fixed.** `ResultBestLapSeconds = 81.777`, `BestLapSeconds = 82.001`. |
+| L4 | L7 post-poll assert compared the peek with a value derived from the peek | **Fixed.** Compares `PeekCountdownRemainingSeconds()` with a fresh `GetCountdownRemainingSeconds()` at the same fake instant. |
+
+**Pass 2 (code-reviewer, re-review of cycle 1): PASS.** No BLOCKER, HIGH or MEDIUM.
+Conditions: record L2/M2 forwards (done above) and keep `Config/DefaultGame.ini`,
+`Docs/.obsidian/*` and `Scripts/Test/build-*.log` out of the commit.
+
+**Test pass (test-engineer): PASS.** Every criterion mapped to evidence; independent
+reversed-order rerun `Saved/Automation/ui002-te-named` 5/5.
+
+**Evidence (after the final source edit):**
+- Editor build `Scripts/Test/build-ui002-e5.log`, Game build `Scripts/Test/build-ui002-g2.log`:
+  `Result: Succeeded`, 0 warnings (logs are local, not committed).
+- Named UI tests `Saved/Automation/ui002-named-r4`: 5/5 (`RacingSim.UI.HudFormat`,
+  `RacingSim.UI.HudViewModel.RaceIntegration`, `RacingSim.UI.HudWidget.{Tree,Apply,RaceIntegration}`).
+- Smoke `Saved/Automation/ui002-smoke-r2`: 528 (526 + 2 with the pre-existing expected
+  bake-failure warnings in `TrackFailedBakeIsNotRetried`/`TrackValidation`), failed 0, notRun 0.
+- Product: `RunFilter Product` crashes in the engine's `PixelStreaming2
+  FPS2DataChannelEchoTest` under `-nullrhi` (`Assertion failed: IsValid()
+  [Templates/SharedPointer.h:1133]`) after all RacingSim Product tests have passed
+  (`Saved/Automation/ui002-product-r1/RunFilterProduct-discoverability.log`). The gate is
+  the named run of all 16 RacingSim Product tests: `Saved/Automation/ui002-product-named-r2`, 16/16.
+
 ---
 
 ## Epic 5 — Pixel Streaming
@@ -5287,7 +5442,7 @@ build-time only, but it belongs in the exposure audit.
 ## Critical path
 
 `ENV-004` → `CORE-001` → `CORE-002` → `RACE-001` → `TRACK-001` → `TRACK-002` →
-`RACE-002` → `RACE-003` → `UI-001` → `UI-002` → `STREAM-001`
+`RACE-002` → `RACE-003` → `UI-001` → `UI-002` → `RACE-005` → `STREAM-001`
 
 Vehicle work (Epic 2) parallelises with track work (Epic 3) after `CORE-002`,
 provided the two owners do not touch the same content assets — which, given

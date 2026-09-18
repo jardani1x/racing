@@ -6,7 +6,9 @@
 #include "Race/TrackDefinitionActor.h"
 
 #include "Components/SplineComponent.h"
+#include "Engine/World.h"
 #include "Misc/AutomationTest.h"
+#include "Tests/AutomationCommon.h"
 
 #include <limits>
 
@@ -18,10 +20,11 @@
  * GatherHudRaceInputs is tested against a live session in RacingSim.UI.HudViewModel.
  * RaceIntegration, not here.
  *
- * No actor is spawned. The track-actor wrappers are checked against the
+ * The Smoke test spawns no actor. The track-actor wrappers are checked against the
  * ATrackDefinitionActor CDO (see RaceResultSpec's header for why the CDO is the only actor
  * this gate can obtain), with a circle authored on it for the duration of the block and
- * every touched property restored afterwards -- see FRaceLibSpecTrackFixture.
+ * every touched property restored afterwards -- see FRaceLibSpecTrackFixture. The one
+ * case the CDO cannot model, a destroyed (garbage) actor, is the Product test at the end.
  */
 
 namespace RaceFunctionLibrarySpecPrivate
@@ -383,9 +386,91 @@ bool FRaceFunctionLibraryTest::RunTest(const FString& Parameters)
 		RaceLibExpectFunction(*this, Name, FUNC_BlueprintPure, FUNC_None);
 	}
 
-	// The gatherer samples the countdown clock, so it must be an exec node, not Pure: a Pure
-	// node re-evaluates once per connected output pin.
-	RaceLibExpectFunction(*this, TEXT("GatherHudRaceInputs"), FUNC_BlueprintCallable, FUNC_BlueprintPure);
+	// UI-002 made the gatherer read-only (it peeks the countdown instead of sampling it), so it
+	// is Pure: re-evaluating it once per connected output pin cannot move any clock.
+	RaceLibExpectFunction(*this, TEXT("GatherHudRaceInputs"), FUNC_BlueprintPure, FUNC_None);
 
+	return true;
+}
+
+/**
+ * UI-001 N3 (closed at UI-002): the track wrappers test IsValid(), not != nullptr, so a
+ * track actor that has been destroyed -- marked garbage but not yet collected -- reads the
+ * same 0 defaults as a null one instead of its stale cached centerline.
+ *
+ * ProductFilter, not Smoke: it spawns a real (non-template) actor, which the smoke window
+ * cannot do -- see Docs/Environment.md. The CDO cannot stand in, because a CDO is never
+ * marked garbage.
+ */
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRaceFunctionLibraryGarbageTrackTest,
+	"RacingSim.Race.FunctionLibrary.GarbageTrack",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::ProductFilter)
+
+bool FRaceFunctionLibraryGarbageTrackTest::RunTest(const FString& Parameters)
+{
+	using namespace RaceFunctionLibrarySpecPrivate;
+	using Lib = URaceFunctionLibrary;
+
+	FTestWorldWrapper WorldWrapper;
+	if (!WorldWrapper.CreateTestWorld(EWorldType::Game) || WorldWrapper.GetTestWorld() == nullptr)
+	{
+		AddError(TEXT("FTestWorldWrapper::CreateTestWorld(EWorldType::Game) failed."));
+		return false;
+	}
+	UWorld* World = WorldWrapper.GetTestWorld();
+
+	// Deferred, so construction bakes the authored circle rather than the default two-point
+	// spline (which is too short for the generated gates and would log a warning).
+	ATrackDefinitionActor* Track = World->SpawnActorDeferred<ATrackDefinitionActor>(
+		ATrackDefinitionActor::StaticClass(), FTransform::Identity);
+	if (!TestNotNull(TEXT("The track actor spawns"), Track))
+	{
+		return false;
+	}
+	Track->SetFlags(RF_Transient);
+
+	if (USplineComponent* Spline = Track->GetCenterlineSpline())
+	{
+		TArray<FVector> Points;
+		for (int32 Index = 0; Index < 12; ++Index)
+		{
+			const double Angle = 2.0 * UE_DOUBLE_PI * static_cast<double>(Index) / 12.0;
+			Points.Add(FVector(RaceLibSpecTrackRadiusCm * FMath::Cos(Angle), RaceLibSpecTrackRadiusCm * FMath::Sin(Angle), 0.0));
+		}
+		Spline->SetClosedLoop(true, /*bUpdateSpline*/ false);
+		Spline->SetSplinePoints(Points, ESplineCoordinateSpace::Local, /*bUpdateSpline*/ true);
+	}
+	Track->TrackId = FName(TEXT("Track.Test.RaceLibGarbage"));
+	Track->FinishSpawning(FTransform::Identity);
+	Track->RebuildTrackData();
+
+	// Live: the wrappers agree with the actor, so the zeros below are the guard, not a blank track.
+	const double LiveLengthCm = Track->GetTrackLengthCm();
+	TestTrue(TEXT("Live: precondition -- the track is the authored circle, not the default spline"),
+		LiveLengthCm > 0.9 * 2.0 * UE_DOUBLE_PI * RaceLibSpecTrackRadiusCm);
+	TestEqual(TEXT("Live: GetTrackLengthCm is the actor's"), Lib::GetTrackLengthCm(Track), LiveLengthCm);
+
+	TestTrue(TEXT("DestroyActor succeeds"), World->DestroyActor(Track));
+	TestFalse(TEXT("Garbage: precondition -- IsValid() is false"), IsValid(Track));
+	// Not yet collected, so the member still answers with the stale centerline: that is what
+	// a != nullptr guard would have passed through.
+	TestEqual(TEXT("Garbage: precondition -- the stale member still reports the old length"),
+		Track->GetTrackLengthCm(), LiveLengthCm);
+
+	TestEqual(TEXT("Garbage track length is 0 cm, as for null"), Lib::GetTrackLengthCm(Track), Lib::GetTrackLengthCm(nullptr));
+	TestEqual(TEXT("Garbage track length is 0 m, as for null"), Lib::GetTrackLengthMetres(Track), Lib::GetTrackLengthMetres(nullptr));
+	TestEqual(TEXT("Garbage track progress is 0, as for null"),
+		Lib::GetTrackLapProgressFraction(Track, 777.0), Lib::GetTrackLapProgressFraction(nullptr, 777.0));
+	TestEqual(TEXT("Garbage track wrap is 0, as for null"),
+		Lib::WrapTrackDistanceCm(Track, LiveLengthCm + 777.0), Lib::WrapTrackDistanceCm(nullptr, LiveLengthCm + 777.0));
+	TestEqual(TEXT("Garbage track delta is 0, as for null"),
+		Lib::GetTrackSignedDistanceDeltaCm(Track, 10.0, 777.0), Lib::GetTrackSignedDistanceDeltaCm(nullptr, 10.0, 777.0));
+	TestEqual(TEXT("...and that default is 0"), Lib::GetTrackLengthCm(Track), 0.0);
+
+	Track = nullptr;
+	WorldWrapper.DestroyTestWorld(/*bForceGarbageCollect*/ false);
 	return true;
 }

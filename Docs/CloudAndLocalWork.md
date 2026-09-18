@@ -85,8 +85,8 @@ decision.
 
 1. ~~**Local** — close `VEH-006` (gates, commit, merge).~~ Done 2026-09-15.
 2. ~~**Cloud/Local** — write `UI-001`, implement it, gate and merge.~~ Done locally 2026-09-18.
-3. **Cloud** — write tickets `UI-002`..`UI-004` with acceptance criteria; carry `UI-001`'s forwarded risks (L5, L7, N3, telemetry timestamp doc) into `UI-002`.
-4. **Local** — `UI-002` UMG widgets bound to `FRacingHudViewModel`.
+3. ~~**Cloud** — write ticket `UI-002`; carry `UI-001`'s forwarded risks (L5, L7, N3, telemetry timestamp doc) into it.~~ Done 2026-09-18.
+4. ~~**Local** — `UI-002` UMG widgets bound to `FRacingHudViewModel`.~~ Done locally 2026-09-18 (native C++ tree; no `.uasset`). Next: `RACE-005` race session wiring, which `STREAM-001` needs.
 5. **Cloud** — VEH-006 production finding 2 + CASE 9, and harness `H-*` edits, on a branch.
 6. **Local** — verify and merge those.
 7. **Cloud** — `STREAM-002` frontend groundwork in the pinned Pixel Streaming clone (can run in parallel with 3–6).

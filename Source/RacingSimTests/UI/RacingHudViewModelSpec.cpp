@@ -1,22 +1,8 @@
 // Copyright RacingSim. All Rights Reserved.
 
-#include "Core/RacingHudTypes.h"
-#include "Core/RacingTelemetry.h"
+#include "UI/HudSpecRig.h"
+
 #include "Core/RacingTelemetryFunctionLibrary.h"
-#include "UI/RacingHudViewModel.h"
-
-#include "Race/RaceFunctionLibrary.h"
-#include "Race/RaceLapTracker.h"
-#include "Race/RaceResult.h"
-#include "Race/RaceRulesetDataAsset.h"
-#include "Race/RaceStateMachine.h"
-#include "Race/TrackCenterline.h"
-#include "Race/TrackCheckpointGate.h"
-#include "Race/TrackDefinitionActor.h"
-
-#include "Misc/AutomationTest.h"
-#include "UObject/Package.h"
-#include "UObject/StrongObjectPtr.h"
 
 #include <limits>
 
@@ -35,176 +21,10 @@
  *   restart. Every value is checked against the getter that owns it, so the gatherer is
  *   proven to copy the race truth and not to derive a second version of it.
  *
- * The rig is RaceResultSpec's -- procedural circle, arithmetic gates, fake monotonic clock --
- * copied under its own namespace and clock global rather than shared, so neither suite can
- * perturb the other's clock through test order.
+ * The rig (UI/HudSpecRig.h) is RaceResultSpec's -- procedural circle, arithmetic gates,
+ * fake monotonic clock -- under its own namespace and clock global, so this file cannot
+ * perturb RaceResultSpec's clock through test order. UI-002's widget spec shares it.
  */
-
-namespace HudViewModelSpecPrivate
-{
-	constexpr double HudSpecCircleRadiusCm = 10000.0;
-	constexpr int32 HudSpecCircleSamples = 720;
-	constexpr double HudSpecGateHalfWidthCm = 900.0;
-	constexpr double HudSpecGateHalfHeightCm = 500.0;
-	constexpr int32 HudSpecStepsPerLap = 400;
-	constexpr double HudSpecSecondsPerStep = 0.016;
-	constexpr double HudSpecCountdownSeconds = 3.0;
-
-	double GHudSpecNowSeconds = 0.0;
-	double HudSpecTimeSource()
-	{
-		return GHudSpecNowSeconds;
-	}
-
-	struct FHudSpecRig
-	{
-		FTrackCenterline Circle;
-		FRacingCheckpointGateSet Gates;
-		TArray<double> SectorStartsCm;
-		TStrongObjectPtr<URaceRulesetDataAsset> Ruleset;
-		TStrongObjectPtr<URaceStateMachine> Machine;
-		TStrongObjectPtr<URaceLapTracker> Tracker;
-		TStrongObjectPtr<URaceResultRecorder> Recorder;
-
-		double LapLengthCm = 0.0;
-		double CurrentDistanceCm = 0.0;
-
-		bool Build(FAutomationTestBase& Test)
-		{
-			GHudSpecNowSeconds = 7000.0;
-
-			const double TotalCm = 2.0 * UE_DOUBLE_PI * HudSpecCircleRadiusCm;
-			const double StepCm = TotalCm / static_cast<double>(HudSpecCircleSamples);
-
-			TArray<FVector> Locations;
-			TArray<double> Distances;
-			for (int32 Index = 0; Index < HudSpecCircleSamples; ++Index)
-			{
-				const double Angle = 2.0 * UE_DOUBLE_PI * static_cast<double>(Index) / static_cast<double>(HudSpecCircleSamples);
-				Locations.Add(FVector(HudSpecCircleRadiusCm * FMath::Cos(Angle), HudSpecCircleRadiusCm * FMath::Sin(Angle), 0.0));
-				Distances.Add(static_cast<double>(Index) * StepCm);
-			}
-
-			FString Error;
-			if (!Circle.Build(Locations, Distances, TotalCm, /*bClosedLoop*/ true, Error))
-			{
-				Test.AddError(FString::Printf(TEXT("Circle centerline failed to build: %s"), *Error));
-				return false;
-			}
-
-			LapLengthCm = Circle.GetLengthCm();
-
-			TArray<FRacingCheckpointGateSpec> Specs;
-			for (int32 Index = 0; Index < 4; ++Index)
-			{
-				FRacingCheckpointGateSpec Spec;
-				Spec.GateId = (Index == 0)
-					? FName(TEXT("Gate.StartFinish"))
-					: FName(*FString::Printf(TEXT("Gate.%02d"), Index));
-				Spec.DistanceAlongCm = (Index == 0) ? 0.0 : LapLengthCm * static_cast<double>(Index) / 4.0;
-				Spec.HalfWidthCm = HudSpecGateHalfWidthCm;
-				Spec.HalfHeightCm = HudSpecGateHalfHeightCm;
-				Spec.LegalDirection = ERacingGateDirection::Forward;
-				Specs.Add(Spec);
-			}
-
-			if (!Gates.Build(Specs, Circle, HudSpecCircleRadiusCm, Error))
-			{
-				Test.AddError(FString::Printf(TEXT("Gate set failed to build: %s"), *Error));
-				return false;
-			}
-
-			SectorStartsCm = { 0.0, LapLengthCm / 3.0, LapLengthCm * 2.0 / 3.0 };
-
-			Ruleset.Reset(NewObject<URaceRulesetDataAsset>(GetTransientPackage()));
-			Ruleset->RulesetId = FName(TEXT("Ruleset.Test.Hud"));
-			Ruleset->CountdownSeconds = HudSpecCountdownSeconds;
-
-			Machine.Reset(URaceStateMachine::CreateWithTimeSource(GetTransientPackage(), Ruleset.Get(), &HudSpecTimeSource));
-			if (!Machine.IsValid())
-			{
-				Test.AddError(TEXT("URaceStateMachine::CreateWithTimeSource returned null."));
-				return false;
-			}
-
-			Tracker.Reset(URaceLapTracker::Create(GetTransientPackage(), Machine.Get(), Ruleset.Get()));
-			if (!Tracker.IsValid() || !Tracker->ConfigureTrack(Gates, SectorStartsCm, LapLengthCm, Error))
-			{
-				Test.AddError(FString::Printf(TEXT("Lap tracker failed to configure: %s"), *Error));
-				return false;
-			}
-
-			Recorder.Reset(URaceResultRecorder::Create(GetTransientPackage(), Machine.Get()));
-			if (!Recorder.IsValid())
-			{
-				Test.AddError(TEXT("URaceResultRecorder::Create returned null."));
-				return false;
-			}
-
-			Recorder->RegisterLapTracker(Tracker.Get());
-
-			FRacingContentVersion TrackVersion;
-			TrackVersion.AssetId = FName(TEXT("Track.Test.HudCircle"));
-			TrackVersion.SchemaVersion = ATrackDefinitionActor::TrackSchemaVersion;
-			TrackVersion.ContentHash = 0x0DD0C1C1;
-			Recorder->SetTrackSnapshot(TrackVersion, SectorStartsCm.Num(), /*bValidated*/ true, FString());
-
-			return true;
-		}
-
-		FVector PositionAt(const double DistanceCm, const double OutwardOffsetCm = 0.0) const
-		{
-			const FVector Base = Circle.GetLocationAtDistanceCm(DistanceCm);
-			// The circle is centred on the origin, so radially outward is the position's own direction.
-			return Base + Base.GetSafeNormal2D() * OutwardOffsetCm;
-		}
-
-		/**
-		 * Drive forward to ToDistanceCm in Steps steps. Inside [WideFromCm, WideToCm] the car
-		 * runs OutwardOffsetCm wide, which takes it round the outside of any gate there.
-		 */
-		void Drive(
-			const double ToDistanceCm,
-			const int32 Steps,
-			const double WideFromCm = 0.0,
-			const double WideToCm = -1.0,
-			const double OutwardOffsetCm = 0.0)
-		{
-			const double FromCm = CurrentDistanceCm;
-			for (int32 Index = 1; Index <= Steps; ++Index)
-			{
-				GHudSpecNowSeconds += HudSpecSecondsPerStep;
-				const double Alpha = static_cast<double>(Index) / static_cast<double>(Steps);
-				CurrentDistanceCm = FMath::Lerp(FromCm, ToDistanceCm, Alpha);
-				const bool bWide = (WideToCm > WideFromCm) && (CurrentDistanceCm >= WideFromCm) && (CurrentDistanceCm <= WideToCm);
-				Tracker->Advance(PositionAt(CurrentDistanceCm, bWide ? OutwardOffsetCm : 0.0), CurrentDistanceCm);
-			}
-		}
-
-		bool Gather(FRacingHudRaceInputs& OutInputs, const int32 CompetitorCount = 1) const
-		{
-			return URaceFunctionLibrary::GatherHudRaceInputs(
-				Machine.Get(), Tracker.Get(), Recorder.Get(), CompetitorCount, OutInputs);
-		}
-	};
-
-	/** A vehicle sample stamped at Now, moving at 50 m/s. */
-	FRacingVehicleTelemetrySample HudSpecFreshVehicle(const double NowSeconds)
-	{
-		FRacingVehicleTelemetrySample Vehicle;
-		Vehicle.TimestampSeconds = NowSeconds;
-		Vehicle.ForwardSpeedCms = 5000.0;
-		Vehicle.EngineRPM = 6500.0f;
-		Vehicle.GearIndex = 4;
-		return Vehicle;
-	}
-
-	FRacingHudViewModel HudSpecBuild(const FRacingHudRaceInputs& Inputs, const double NowSeconds = 100.0)
-	{
-		return URacingHudViewModelLibrary::BuildHudViewModel(
-			Inputs, HudSpecFreshVehicle(NowSeconds), NowSeconds, 0.5, ERacingSpeedDisplayUnit::KilometresPerHour);
-	}
-}
 
 // ===========================================================================
 // Builder
@@ -574,8 +394,7 @@ bool FRacingHudViewModelRaceIntegrationTest::RunTest(const FString& Parameters)
 	// -- Countdown -------------------------------------------------------------
 	{
 		const double GridCm = -800.0;
-		Rig.CurrentDistanceCm = GridCm;
-		Rig.Tracker->SeedProgress(Rig.PositionAt(GridCm), GridCm);
+		Rig.Seed(GridCm);
 		Rig.Machine->BeginCountdown();
 
 		// The car on the grid publishes a sample now, on the monotonic clock (as
@@ -583,9 +402,30 @@ bool FRacingHudViewModelRaceIntegrationTest::RunTest(const FString& Parameters)
 		const FRacingVehicleTelemetrySample GridSample = HudSpecFreshVehicle(GHudSpecNowSeconds);
 		GHudSpecNowSeconds += 1.2;
 
+		// UI-001 L7 (closed at UI-002): gathering only PEEKS the countdown clock. Before the
+		// frame's poll, the last reading is the one BeginCountdown took, so the full 3 s
+		// still show -- and gathering, however often, does not move it.
+		TestTrue(TEXT("Countdown L7: gather before the poll succeeds"), Rig.Gather(Inputs));
+		TestNearlyEqual(TEXT("Countdown L7: unpolled, the peek still reads the full countdown"),
+			Inputs.CountdownRemainingSeconds, HudSpecCountdownSeconds, 1.0e-9);
+		Rig.Gather(Inputs);
+		TestEqual(TEXT("Countdown L7: a second gather leaves the countdown clock's high-water mark alone"),
+			Rig.Machine->PeekCountdownRemainingSeconds(), HudSpecCountdownSeconds);
+
+		// The frame's poll samples the clock; the gather after it reads that sample.
+		TestFalse(TEXT("Countdown: 1.2 s in, the poll does not go green"), Rig.Machine->PollAutoTransitions());
+
 		TestTrue(TEXT("Countdown: gather succeeds"), Rig.Gather(Inputs));
 		TestEqual(TEXT("Countdown: state"), Inputs.RaceState, ERaceState::Countdown);
 		TestNearlyEqual(TEXT("Countdown: 1.8 s of 3.0 s remain"), Inputs.CountdownRemainingSeconds, 1.8, 1.0e-6);
+		// The fake clock has not moved since the poll, so a fresh sample taken now must equal
+		// what the peek reads: the poll really did sample the clock at this instant.
+		{
+			const double Peeked = Rig.Machine->PeekCountdownRemainingSeconds();
+			const double Sampled = Rig.Machine->GetCountdownRemainingSeconds();
+			TestEqual(TEXT("Countdown L7: after the poll, the peek equals a fresh sample at the same instant"),
+				Peeked, Sampled);
+		}
 		TestEqual(TEXT("Countdown: the race clock has not started"), Inputs.RaceElapsedSeconds, 0.0);
 
 		const FRacingHudViewModel VM = HudSpecBuild(Inputs, GHudSpecNowSeconds);
@@ -778,6 +618,19 @@ bool FRacingHudViewModelRaceIntegrationTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("Results: gather succeeds"), Rig.Gather(Inputs));
 		TestEqual(TEXT("Results: state"), Inputs.RaceState, ERaceState::Results);
 		TestTrue(TEXT("Results VM: still shown"), HudSpecBuild(Inputs, GHudSpecNowSeconds).bShowResults);
+
+		// L5 precondition: the unregistered tracker was driven in lockstep, so in this session
+		// the gatherer reads the same lap history from it as from the registered one.
+		FRacingHudRaceInputs FromUnregistered;
+		TestTrue(TEXT("Results L5: gather from the unregistered tracker succeeds"),
+			URaceFunctionLibrary::GatherHudRaceInputs(
+				Rig.Machine.Get(), Rig.Unregistered.Get(), Rig.Recorder.Get(), 1, FromUnregistered));
+		TestEqual(TEXT("Results L5: same laps completed"), FromUnregistered.LapsCompleted, Inputs.LapsCompleted);
+		TestTrue(TEXT("Results L5: ...which is more than zero"), FromUnregistered.LapsCompleted > 0);
+		TestEqual(TEXT("Results L5: same last lap presence"), FromUnregistered.bHasLastLap, Inputs.bHasLastLap);
+		TestEqual(TEXT("Results L5: same last lap time"), FromUnregistered.LastLapSeconds, Inputs.LastLapSeconds);
+		TestEqual(TEXT("Results L5: same best lap presence"), FromUnregistered.bHasBestLap, Inputs.bHasBestLap);
+		TestEqual(TEXT("Results L5: same best lap time"), FromUnregistered.BestLapSeconds, Inputs.BestLapSeconds);
 	}
 
 	// -- Restart: nothing from the last session reaches the HUD ---------------
@@ -796,6 +649,30 @@ bool FRacingHudViewModelRaceIntegrationTest::RunTest(const FString& Parameters)
 		const FRacingHudViewModel VM = HudSpecBuild(Inputs, GHudSpecNowSeconds);
 		TestFalse(TEXT("Restart VM: results hidden"), VM.bShowResults);
 		TestFalse(TEXT("Restart VM: best lap hidden"), VM.bHasBestLap);
+
+		// UI-001 L5 (closed at UI-002): a tracker the recorder does not know about is not reset
+		// by Restart, so until its next Advance() it still holds the last session's laps under
+		// the last session's id. The gatherer must not show them in the new session.
+		TestNotEqual(TEXT("Restart L5: precondition -- the unregistered tracker still observes the old session"),
+			Rig.Unregistered->GetObservedSessionId(), Rig.Machine->GetSessionId());
+		TestTrue(TEXT("Restart L5: precondition -- ...and still holds its laps"),
+			Rig.Unregistered->GetLapsCompleted() > 0);
+
+		FRacingHudRaceInputs Stale;
+		TestTrue(TEXT("Restart L5: gather from the unregistered tracker succeeds"),
+			URaceFunctionLibrary::GatherHudRaceInputs(
+				Rig.Machine.Get(), Rig.Unregistered.Get(), Rig.Recorder.Get(), 1, Stale));
+		TestEqual(TEXT("Restart L5: session id is the machine's"), Stale.SessionId, Rig.Machine->GetSessionId());
+		TestEqual(TEXT("Restart L5: no laps completed"), Stale.LapsCompleted, 0);
+		TestEqual(TEXT("Restart L5: lap 0"), Stale.CurrentLapNumber, 0);
+		TestFalse(TEXT("Restart L5: no lap in progress"), Stale.bLapInProgress);
+		TestFalse(TEXT("Restart L5: no last lap"), Stale.bHasLastLap);
+		TestFalse(TEXT("Restart L5: no best lap"), Stale.bHasBestLap);
+
+		const FRacingHudViewModel StaleVM = HudSpecBuild(Stale, GHudSpecNowSeconds);
+		TestEqual(TEXT("Restart L5 VM: no laps"), StaleVM.LapsCompleted, 0);
+		TestFalse(TEXT("Restart L5 VM: no last lap"), StaleVM.bHasLastLap);
+		TestFalse(TEXT("Restart L5 VM: no best lap"), StaleVM.bHasBestLap);
 	}
 
 	return true;

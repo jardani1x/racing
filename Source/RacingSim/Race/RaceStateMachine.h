@@ -365,6 +365,19 @@ public:
 	double GetCountdownRemainingSeconds();
 
 	/**
+	 * GetCountdownRemainingSeconds() computed from the countdown clock's last reading,
+	 * without taking a new one (UI-001 L7). The const read for a HUD: it never advances
+	 * the countdown clock's ratchet.
+	 *
+	 * The last reading is at most one PollAutoTransitions() old -- that call samples the
+	 * countdown clock every time it runs in Countdown -- so a HUD reading this after the
+	 * state machine has been polled this frame is current to the frame. Same 0.0 cases as
+	 * GetCountdownRemainingSeconds().
+	 */
+	UFUNCTION(BlueprintPure, Category = "Race|Timing")
+	double PeekCountdownRemainingSeconds() const;
+
+	/**
 	 * Returns a non-const pointer only because UnrealHeaderTool rejects a
 	 * `const UObject*` UFUNCTION return type. The ruleset is read-only to every
 	 * consumer of this class; nothing here mutates it.

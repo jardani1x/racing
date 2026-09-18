@@ -85,28 +85,28 @@ double URaceFunctionLibrary::GetQueryLateralOffsetCm(const FTrackCenterlineQuery
 
 double URaceFunctionLibrary::GetTrackLengthCm(const ATrackDefinitionActor* Track)
 {
-	return Track != nullptr ? Track->GetTrackLengthCm() : 0.0;
+	return IsValid(Track) ? Track->GetTrackLengthCm() : 0.0;
 }
 
 double URaceFunctionLibrary::GetTrackLengthMetres(const ATrackDefinitionActor* Track)
 {
-	return Track != nullptr ? Track->GetTrackLengthMetres() : 0.0;
+	return IsValid(Track) ? Track->GetTrackLengthMetres() : 0.0;
 }
 
 float URaceFunctionLibrary::GetTrackLapProgressFraction(const ATrackDefinitionActor* Track, const double DistanceCm)
 {
-	return Track != nullptr ? GetCenterlineLapProgressFraction(Track->GetCenterline(), DistanceCm) : 0.0f;
+	return IsValid(Track) ? GetCenterlineLapProgressFraction(Track->GetCenterline(), DistanceCm) : 0.0f;
 }
 
 double URaceFunctionLibrary::WrapTrackDistanceCm(const ATrackDefinitionActor* Track, const double DistanceCm)
 {
-	return Track != nullptr ? Track->GetCenterline().WrapDistanceCm(DistanceCm) : 0.0;
+	return IsValid(Track) ? Track->GetCenterline().WrapDistanceCm(DistanceCm) : 0.0;
 }
 
 double URaceFunctionLibrary::GetTrackSignedDistanceDeltaCm(
 	const ATrackDefinitionActor* Track, const double FromCm, const double ToCm)
 {
-	return Track != nullptr ? Track->GetCenterline().GetSignedDistanceDeltaCm(FromCm, ToCm) : 0.0;
+	return IsValid(Track) ? Track->GetCenterline().GetSignedDistanceDeltaCm(FromCm, ToCm) : 0.0;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +114,7 @@ double URaceFunctionLibrary::GetTrackSignedDistanceDeltaCm(
 // ---------------------------------------------------------------------------
 
 bool URaceFunctionLibrary::GatherHudRaceInputs(
-	URaceStateMachine* StateMachine,
+	const URaceStateMachine* StateMachine,
 	const URaceLapTracker* LapTracker,
 	const URaceResultRecorder* ResultRecorder,
 	const int32 CompetitorCount,
@@ -124,7 +124,7 @@ bool URaceFunctionLibrary::GatherHudRaceInputs(
 	// previous session's numbers through a field this call did not reach.
 	OutInputs = FRacingHudRaceInputs();
 
-	if (StateMachine == nullptr)
+	if (!IsValid(StateMachine))
 	{
 		return false;
 	}
@@ -132,12 +132,14 @@ bool URaceFunctionLibrary::GatherHudRaceInputs(
 	OutInputs.bHasRaceState = true;
 	OutInputs.RaceState = StateMachine->GetRaceState();
 	OutInputs.SessionId = StateMachine->GetSessionId();
-	OutInputs.CountdownRemainingSeconds = StateMachine->GetCountdownRemainingSeconds();
+	// UI-001 L7: peeks only. A HUD read must never advance a race clock.
+	OutInputs.CountdownRemainingSeconds = StateMachine->PeekCountdownRemainingSeconds();
 	OutInputs.RaceElapsedSeconds = StateMachine->PeekRaceElapsedSeconds();
 	OutInputs.bRaceClockFaulted = StateMachine->HasRaceClockFault();
 	OutInputs.CompetitorCount = FMath::Max(0, CompetitorCount);
 
-	if (LapTracker != nullptr)
+	// UI-001 L5: a tracker still holding another session's laps contributes nothing.
+	if (IsValid(LapTracker) && LapTracker->GetObservedSessionId() == OutInputs.SessionId)
 	{
 		// L9: passed through exactly, never re-derived from one another.
 		OutInputs.CurrentLapNumber = LapTracker->GetCurrentLapNumber();
@@ -172,7 +174,7 @@ bool URaceFunctionLibrary::GatherHudRaceInputs(
 		OutInputs.RacePosition = Progress.RacePosition;
 	}
 
-	if (ResultRecorder != nullptr && ResultRecorder->HasFrozenResult())
+	if (IsValid(ResultRecorder) && ResultRecorder->HasFrozenResult())
 	{
 		const FRacingRaceResult& Result = ResultRecorder->GetFrozenResult();
 		OutInputs.bResultAvailable = true;

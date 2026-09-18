@@ -77,7 +77,7 @@ public class RacingSim : ModuleRules
 		// UncookedOnly RacingSimTests module so they cannot ship.
 		//
 		// Dependencies stay minimal deliberately. Add one only when a layer actually
-		// needs it -- ChaosVehicles at VEH-002, UMG at UI-002 (UI-001 is a
+		// needs it -- ChaosVehicles at VEH-002, UMG at UI-002 (UI-001 was a
 		// widget-free data contract), PixelStreaming2 at
 		// STREAM-001 -- so the dependency list stays evidence of what is really used.
 		PublicDependencyModuleNames.AddRange(new string[]
@@ -99,11 +99,22 @@ public class RacingSim : ModuleRules
 			// (UChaosWheeledVehicleMovementComponent, UChaosVehicleWheel). Public
 			// because PrototypeVehicleWheel.h exposes UChaosVehicleWheel to every
 			// dependent, including RacingSimTests.
-			"ChaosVehicles"
+			"ChaosVehicles",
+
+			// UI-002: URacingHudWidget derives from UUserWidget. Public because
+			// UI/RacingHudWidget.h exposes UUserWidget to every dependent, including
+			// RacingSimTests, which creates the widget.
+			"UMG"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			// UI-002: RacingHudWidget.cpp sets FSlateFontInfo, FSlateColor and
+			// ESlateVisibility on the native widget tree. No public header names a
+			// Slate type, so dependents do not inherit these.
+			"Slate",
+			"SlateCore",
+
 			// VEH-006: ARacingVehiclePawn::BeginPlay pins the chassis rigid body to
 			// Chaos::ESleepType::NeverSleep via
 			// FSingleParticlePhysicsProxy::GetGameThreadAPI().SetSleepType. That is

@@ -572,6 +572,17 @@ public:
 	const FRacingLapTiming& PeekBestValidLap() const { return BestValidLap; }
 
 	/**
+	 * The state machine SessionId this tracker's lap state belongs to (UI-001 L5).
+	 *
+	 * Advance() re-seeds on a session change, but a tracker not registered with
+	 * URaceResultRecorder is not reset by Restart itself, so between Restart and its next
+	 * Advance() it still holds the previous session's laps. A reader compares this with
+	 * URaceStateMachine::GetSessionId() and treats a mismatch as "no lap data yet".
+	 */
+	UFUNCTION(BlueprintPure, Category = "Race|Lap")
+	int32 GetObservedSessionId() const { return ObservedSessionId; }
+
+	/**
 	 * The view-model frame a HUD reads: lap, last gate, arc-length distance, fraction.
 	 *
 	 * CORE-002's FRacingProgressSample, filled from this object's own state. Widgets stay
