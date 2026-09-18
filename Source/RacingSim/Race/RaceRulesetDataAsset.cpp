@@ -16,7 +16,10 @@ uint32 URaceRulesetDataAsset::ComputeContentHash() const
 	// competitions on identical geometry, so the flag has to be visible on a result.
 	Hash = HashCombine(Hash, GetTypeHash(bResetInvalidatesLap));
 
-	// Any field added by RACE-003 must be combined in here as well.
+	// RACE-005. Race length is part of the competition.
+	Hash = HashCombine(Hash, GetTypeHash(LapsToFinish));
+
+	// Any field added later must be combined in here as well.
 	return Hash;
 }
 
@@ -54,6 +57,12 @@ bool URaceRulesetDataAsset::Validate(FString& OutReason) const
 	if (CountdownSeconds <= 0.0)
 	{
 		OutReason = TEXT("CountdownSeconds is zero. Valid for automation, but a published run must give the driver a countdown.");
+		return false;
+	}
+
+	if (LapsToFinish < 1)
+	{
+		OutReason = FString::Printf(TEXT("LapsToFinish is %d; a race needs at least one lap."), LapsToFinish);
 		return false;
 	}
 

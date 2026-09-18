@@ -309,6 +309,10 @@ URaceLapTracker* URaceResultRecorder::GetPrimaryLapTracker() const
 void URaceResultRecorder::SetTrack(ATrackDefinitionActor* InTrack)
 {
 	Track = InTrack;
+	// RACE-005 (UI-001 N2): remember that an actor, not a snapshot, is the authority, so
+	// a destroyed actor -- or one GC has since nulled out of the UPROPERTY -- refuses a
+	// session instead of silently handing the decision back to an older snapshot.
+	bTrackActorHeld = (InTrack != nullptr);
 	RefreshTrackSnapshot();
 }
 
@@ -336,8 +340,16 @@ void URaceResultRecorder::SetInputDeviceType(const ERacingInputDeviceType InInpu
 
 void URaceResultRecorder::RefreshTrackSnapshot()
 {
-	if (Track == nullptr)
+	if (!IsValid(Track))
 	{
+		// RACE-005 (UI-001 N2): a held track that has been destroyed (marked garbage, or
+		// already nulled by GC) is not a track this run can claim. The last identity is
+		// kept so the result still names it; its validity is withdrawn.
+		if (bTrackActorHeld)
+		{
+			bTrackValidated = false;
+			TrackValidationReason = TEXT("The track actor was destroyed during the session.");
+		}
 		return;
 	}
 
@@ -417,9 +429,20 @@ bool URaceResultRecorder::CanStartSession(FString& OutReason) const
 	// game-thread-only and not per-frame cheap. The frozen result still records the
 	// snapshot, which is what a submission must describe.
 	// IsValid, not != nullptr: the UPROPERTY keeps a destroyed actor from being collected,
-	// but not from being marked garbage, and its cache is not read then. KNOWN RISK
-	// (UI-001 review N2, not a regression): a track destroyed after SetTrack() falls through
-	// to the older snapshot below rather than refusing.
+	// but not from being marked garbage, and its cache is not read then.
+	//
+	// RACE-005 closes UI-001 review N2: a track destroyed after SetTrack() REFUSES rather
+	// than falling through to the older snapshot. bTrackActorHeld rather than
+	// Track != nullptr, because garbage elimination nulls the UPROPERTY at the next GC and
+	// the refusal must survive that.
+	if (bTrackActorHeld && !IsValid(Track))
+	{
+		OutReason = FString::Printf(
+			TEXT("The track actor this session was set up on ('%s') has been destroyed. Call SetTrack() with a live track."),
+			*TrackVersion.AssetId.ToString());
+		return false;
+	}
+
 	if (IsValid(Track))
 	{
 		FString LiveReason;

@@ -63,9 +63,13 @@ Proposed types:
 - `ARaceDirector`: session orchestration. Owns a `URaceStateMachine` (see below) rather
   than being the state machine itself — RACE-001 split ownership from transition logic
   for testability (a plain `UObject` can be exhaustively tested under `-nullrhi` in a
-  commandlet without a `UWorld`; an `AActor` cannot). Not yet implemented; the property
-  that will hold the `URaceStateMachine` must be a `UPROPERTY` (a `UObject` is not
-  GC-rooted by its outer alone).
+  commandlet without a `UWorld`; an `AActor` cannot). **Shipped at RACE-005**
+  (`Source/RacingSim/Race/RaceDirector.h`): owns the state machine, lap tracker and
+  result recorder as `UPROPERTY`s, follows one generic `APawn` (it never includes
+  `Vehicle/` or `UI/`), projects it onto the centerline in `TG_PostPhysics` with a
+  bounded search window, and ends the race at the ruleset's `LapsToFinish`. Setup runs
+  once and refuses a missing/ambiguous/destroyed track, a non-positive search window and
+  a ruleset below one lap; `RegisterCompetitor` is accepted only in `PreRace`.
 - `URaceStateMachine` (**RACE-001, shipped**): the authoritative transition graph and
   clock owner. `Source/RacingSim/Race/RaceStateMachine.h` carries the full design
   rationale for the split from `ARaceDirector`.
@@ -146,6 +150,30 @@ this as a real but currently-harmless coupling risk (finding M5, RACE-001 review
 the first new edge leaving `Countdown` must remember to stop the countdown clock in
 its own entry action, since nothing will do it on the way out. Revisit if that
 duplication grows past two call sites.
+
+### Game (composition root, RACE-005)
+
+`Source/RacingSim/Game/` wires the layers into one playable session. It may include
+`Core/`, `Vehicle/`, `Race/` and `UI/`; **nothing includes `Game/`**, so the other layers
+stay independent of each other and of the composition.
+
+- `ARacingGameMode`: spawns the `ARaceDirector` in `PreInitializeComponents` (before any
+  login, because `UEngine::LoadMap` logs the local player in before world `BeginPlay`),
+  places the pawn at a track grid slot, supplies graybox car assets when the pawn class
+  has none, publishes the car spec and input device to the result recorder, registers
+  the pawn with the director, and spawns `ARacingGrayboxGround`.
+- `ARacingPlayerController`: creates the HUD widget in `ReceivedPlayer()` (the first
+  point with a real `ULocalPlayer`) and runs gather → build → apply each tick.
+- `ARacingGrayboxGround`: a `BlockAll` slab under the lowest centerline point.
+
+Pre-existing coupling this layer does not remove: `Vehicle/` already reaches into
+`Race/` for the safe-reset track query and the car-spec publish.
+
+**Rule: a map or test world that is not a race session must pin its game mode.**
+`GlobalDefaultGameMode` is `ARacingGameMode`, which logs an error when it finds no
+track. Menu maps, test maps and automation worlds that do not want a session set
+`AWorldSettings::DefaultGameMode` (the vehicle manoeuvre fixture pins `AGameModeBase`).
+The errors are kept, not demoted, so a race map that loses its track fails loudly.
 
 ### UI
 

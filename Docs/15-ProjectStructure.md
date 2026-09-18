@@ -66,9 +66,9 @@ Source/
       RaceClock.*                   <- RACE-001: monotonic timestamp-subtraction clock
       RaceStateMachine.*             <- RACE-001: authored transition graph, track-agnostic
       RaceRulesetDataAsset.*         <- RACE-001: countdown length + other state-machine tunables
-      RaceDirector.*                 <- planned, not yet implemented. Will own a URaceStateMachine
-                                         (Docs/01-Architecture.md's "session orchestration" role);
-                                         RACE-001's header documents the split in detail.
+      RaceDirector.*                 <- RACE-005: ARaceDirector, session orchestration. Owns
+                                        the state machine, lap tracker and result recorder;
+                                        follows one generic APawn; no Vehicle/ or UI/ include.
       TrackCenterline.*              <- TRACK-001: world-free arc-length model, queries
       TrackDefinitionActor.*         <- TRACK-001/TRACK-002: centerline, sectors, grid,
                                         reset samples, baked gate set, content hash
@@ -92,6 +92,12 @@ Source/
                                         Restart, and gates submission on build/track/tune
                                         metadata). Docs/01-Architecture.md records why the
                                         result is a struct and the behaviour is a UObject.
+    Game/                         <- RACE-005: composition root. May include every layer
+                                     above; nothing includes Game/. See
+                                     Docs/01-Architecture.md "Game (composition root)".
+      RacingGameMode.*               <- director spawn, grid placement, car assets, ground
+      RacingPlayerController.*       <- HUD widget creation + per-tick gather/build/apply
+      RacingGrayboxGround.*          <- BlockAll slab under the lowest centerline point
     UI/
       RaceHUDViewModel.*
       RaceHUDController.*
@@ -131,6 +137,16 @@ Source/
                                           full session -> results -> restart -> session
                                           cycle, and the track-validity gate driven
                                           through a real gate-bake failure.
+      RaceDirectorSpec.cpp             <- RACE-005: director lifecycle to Results, track
+                                          count/destroyed-track refusals, invalid
+                                          configuration refusals. ProductFilter.
+    Game/
+      RacingSessionTestTypes.h         <- RACE-005: test game mode + HUD probe widget
+      RacingSessionSpec.cpp            <- RACE-005: composed session with a real
+                                          ULocalPlayer, in both login orders (after
+                                          BeginPlay, and LoadMap's before-BeginPlay order);
+                                          HUD player context; default map/game-mode config.
+                                          ProductFilter.
     Tests/                        <- TEST-001: tests about the test infrastructure
       AutomationTestPlacementSpec.cpp  <- no registered test defined under Source/RacingSim/
       NonShippingArtifactSpec.cpp      <- Game link inputs (.rsp) + DirectoriesToNeverCook

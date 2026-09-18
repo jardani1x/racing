@@ -489,6 +489,12 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Race|Result")
 	void SetInputDeviceType(ERacingInputDeviceType InInputDeviceType);
 
+	/** The car spec version most recently set; unpopulated until the pawn publishes one. */
+	const FRacingContentVersion& GetCarSpecVersion() const { return CarSpecVersion; }
+
+	/** The input device most recently set; Unknown until the composition root sets one. */
+	ERacingInputDeviceType GetInputDeviceType() const { return InputDeviceType; }
+
 	// =======================================================================
 	// Session lifecycle
 	// =======================================================================
@@ -512,8 +518,9 @@ public:
 	 * Cost and threading: with an actor held, the live read re-hashes the track on every
 	 * call and runs a full Validate() on a cache miss (a rebuilt track), and
 	 * GetCachedValidation() check()s IsInGameThread(). Call it from the game thread, and
-	 * not per frame. A held actor that has been destroyed (marked garbage) is ignored and
-	 * the SetTrack() snapshot decides -- a known risk recorded under UI-001.
+	 * not per frame. A held actor that has been destroyed (marked garbage, or since nulled
+	 * by GC) REFUSES the session -- RACE-005, closing UI-001 review N2. SetTrack(nullptr)
+	 * releases the actor and hands the decision back to SetTrackSnapshot().
 	 */
 	bool CanStartSession(FString& OutReason) const;
 
@@ -612,6 +619,14 @@ private:
 	/** Optional. Held as a UPROPERTY so a referenced track cannot be collected mid-session. */
 	UPROPERTY(VisibleAnywhere, Category = "Race|Result")
 	TObjectPtr<ATrackDefinitionActor> Track;
+
+	/**
+	 * True once SetTrack() was given an actor, until SetTrack(nullptr). RACE-005 (UI-001
+	 * N2): Track alone cannot say "an actor was held and is gone", because garbage
+	 * elimination nulls the UPROPERTY at the next GC.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "Race|Result")
+	bool bTrackActorHeld = false;
 
 	/** Track identity as it will be written onto a result. */
 	UPROPERTY(VisibleAnywhere, Category = "Race|Result")

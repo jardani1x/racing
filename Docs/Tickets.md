@@ -3081,7 +3081,9 @@ restores the cycle-2 detector, spec and harness. No binary assets are involved.
 | RACE-002 | Lap/sector/progress/validity logic | race-systems-engineer | TRACK-002, RACE-001, CORE-003 | B | **DONE** 2026-08-21 — `code-reviewer` returned CHANGES REQUESTED against `6b92557` (2 HIGH blocking: `H1` phantom laps from a spin on the start/finish line, `H2` missing spin-on-the-line test); repair cycle 1 (`d4fded6`) closed both, verified by stashing the fix back out and re-running against the pre-fix tree; re-review independently hand-traced the fix and returned APPROVED WITH FOLLOW-UPS, plus three doc-only corrections (`3870be8`). `test-engineer` independently confirmed both targets build clean, Smoke `passedTotal=472, failed=0, notRun=0` (6 lap suites), and all three TRACK-002 placed-level tests still pass 3/0/0. Merged to `main` at `7f82e79` (merge of `3870be8`). Non-blocking findings (`M1`–`M3`, `L1`–`L9`, plus repair-cycle `R2-M1`/`R2-L1`/`R2-L2`) tracked forward into `RACE-003`/`VEH-005`/`UI-001` |
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
-| RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | OPEN — opened 2026-09-18 by UI-002. Nothing in the project yet creates a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
+| RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | **DONE** — closed 2026-09-18. `ARaceDirector` + `Game/` composition root (game mode, player controller, graybox ground); default map and game mode set; session tested in both login orders with a real `ULocalPlayer`. Car not yet drivable (input assets → `TRACK-003`). Opened by UI-002: nothing in the project yet created a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
+| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-006 finding 2 | B | OPEN — opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check |
+| TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN — opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
 valid laps count exactly once; 100 skipped/out-of-order/reverse/double-cross
@@ -5370,6 +5372,223 @@ reversed-order rerun `Saved/Automation/ui002-te-named` 5/5.
   [Templates/SharedPointer.h:1133]`) after all RacingSim Product tests have passed
   (`Saved/Automation/ui002-product-r1/RunFilterProduct-discoverability.log`). The gate is
   the named run of all 16 RacingSim Product tests: `Saved/Automation/ui002-product-named-r2`, 16/16.
+
+---
+
+### RACE-005 — acceptance criteria, opened 2026-09-18
+
+Scope: compose one playable race session on the graybox map. Nothing before this ticket
+creates the race objects for a level, spawns the car, or runs the HUD chain each frame.
+Owner `race-systems-engineer` (implemented directly in the local session). Gate B.
+Depends on UI-002 (merged).
+
+**Who owns what.**
+- `ARaceDirector` lives in `Race/`. It owns the session's `URaceStateMachine`,
+  `URaceLapTracker` and `URaceResultRecorder`. It follows one generic `APawn` and does not
+  include `Vehicle/` or `UI/`.
+- A new `Game/` folder is the composition root. `ARacingGameMode` and
+  `ARacingPlayerController` may include `Core/`, `Vehicle/`, `Race/` and `UI/`.
+- Nothing includes `Game/`. This keeps UI free of Race, Race free of UI, and Vehicle free
+  of both. `Docs/01-Architecture.md` and `Docs/15-ProjectStructure.md` record the new layer.
+
+- [x] **Ruleset lap count.** `URaceRulesetDataAsset::LapsToFinish` (int32, default 3,
+  `ClampMin 1`).
+  - It is combined into `ComputeContentHash()`, and `RulesetSchemaVersion` goes from 2 to 3.
+  - `Validate()` rejects values below 1.
+  - Reason it is not a director property: two races of different length on identical
+    geometry are different competitions, so the lap count must show in the result's
+    ruleset version.
+  - Tested in `RacingSim.Race.Ruleset` (hash changes with the value; validate rejects
+    0).
+- [x] **N2 (from UI-001, via RACE-004).** `URaceResultRecorder::CanStartSession` refuses
+  when a held track has been destroyed (`Track != nullptr && !IsValid(Track)`). It no
+  longer falls through to the older snapshot. The reason names the destroyed track.
+  - The "KNOWN RISK" comment and the header doc are updated.
+  - Test: `RacingSim.Race.Director.DestroyedTrackRefusesSession` (Product). A director
+    session is set up on a live track, the track is destroyed, and then:
+    - `CanStartSession` is false with a non-empty reason;
+    - `StartSession` refuses and leaves the state `PreRace`.
+- [x] **Director.** `ARaceDirector` (`Race/RaceDirector.h`):
+  - **Track resolution.** Uses an explicit `Track` property if set. Otherwise it runs one
+    `TActorIterator` at setup and needs exactly one track. Zero or several is an error
+    naming the count. There is no per-frame search.
+  - **Ruleset.** A null `Ruleset` gets a transient default (`Ruleset.Graybox.Default`) and
+    a warning once.
+  - **Setup.** Setup runs once, lazily, from the first `RegisterCompetitor` or from
+    `BeginPlay`. It calls `ConfigureFromTrack`, `RegisterLapTracker` and `SetTrack`.
+  - **`RegisterCompetitor(APawn*, GridDistanceCm)`** seeds the tracker at the grid
+    distance.
+  - **`StartSession(OutReason)`** is gated on `CanStartSession`. On a refusal it logs the
+    reason once and stays in `PreRace`. With `bAutoStartSession` (default true) the
+    director starts the session once it has begun play and has a competitor.
+  - **Tick runs in `TG_PostPhysics`.** Each tick it:
+    1. calls `PollAutoTransitions`;
+    2. projects the pawn with `FindNearestCenterlinePointNear` around the last distance.
+       The window is `ProgressSearchWindowCm` (default 2000 cm), capped below a quarter
+       lap, so it can never fall back to the global search;
+    3. calls `Advance`;
+    4. when `Racing` and `GetLapsCompleted() >= LapsToFinish`, calls `FinishRace` and then
+       `ShowResults`.
+
+    The tick path makes no allocation, runs no actor search, and loads nothing.
+  - **HUD data.** `GatherHudRaceInputs(FRacingHudRaceInputs&) const` wraps
+    `URaceFunctionLibrary::GatherHudRaceInputs` with competitor count 1.
+  - Tests: `RacingSim.Race.Director.Lifecycle` (Product), with a procedural circle track
+    and a moved stand-in pawn:
+    - setup holds all three race objects;
+    - the state goes `PreRace → Countdown` on start;
+    - it goes `Countdown → Racing` on the tick after a 0 s countdown;
+    - driving the pawn round `LapsToFinish` laps in steps below the window ends in
+      `Results`, with a frozen result and `LapsCompleted == LapsToFinish`;
+    - a second track in the world makes setup refuse, with the count in the reason.
+- [x] **Game mode.** `ARacingGameMode : AGameModeBase` (`Game/RacingGameMode.h`):
+  - Defaults: `DefaultPawnClass = ARacingVehiclePawn`,
+    `PlayerControllerClass = ARacingPlayerController`, `HUDClass` left as the engine
+    default.
+  - **Director.** Spawned in `PreInitializeComponents`, before any login, because
+    `LoadMap` logs the player in before world `BeginPlay`.
+  - **Pawn placement.** `RestartPlayer` places the pawn at grid slot `GridSlotIndex`
+    (default 0), raised by `GridSpawnHeightCm` (default 90). It falls back to the engine's
+    `PlayerStart` path only when there is no track, and logs an error when it does.
+  - **Pawn spawn.** `SpawnDefaultPawnAtTransform` spawns the pawn deferred. Only when the
+    pawn class leaves them null, it fills in `ChassisAsset`/`TuneAsset` from the game
+    mode's properties. When those are null too, it creates transient assets with C++
+    defaults and warns once. That is a graybox decision made at the composition root
+    until a car-content ticket authors `.uasset`s. The pawn itself still refuses a null
+    chassis.
+  - **After possession.** The game mode publishes the car spec and input device to the
+    recorder, then registers the pawn with the director.
+  - **Ground.** With `bSpawnGrayboxGround` (default true), it spawns an
+    `ARacingGrayboxGround`: a `BlockAll` box whose top face sits at the lowest centerline
+    sample Z, covering the centerline bounds plus a 50 m margin, with an engine cube mesh
+    for visibility.
+- [x] **Player controller and HUD.** `ARacingPlayerController`:
+  - It creates its `HudWidgetClass` (default `URacingHudWidget`) in `ReceivedPlayer()`.
+    That is the first point where a `ULocalPlayer` exists, so the widget gets a real player
+    context and `NativeOnInitialized` runs.
+  - It calls `AddToViewport` only when a game viewport exists.
+  - Each tick it runs director gather → `BuildHudViewModelInto` into a member view model,
+    with `NowSeconds = FPlatformTime::Seconds()`, the telemetry stale time from settings
+    and the settings speed unit → `ApplyViewModel`. The tick path allocates nothing.
+  - The HUD may lag the director by one frame, because the controller ticks before
+    physics. That is accepted and documented, because moving the controller after physics
+    would delay input by a frame.
+- [x] **UI-002 M2 residuals.**
+  - `RacingSim.Game.Session.HudPlayerContext` (Product) creates a test-only
+    `URacingHudWidget` subclass with the controller as owner. The subclass records its
+    bindings inside `NativeOnInitialized`. The test asserts that `NativeOnInitialized` ran,
+    that every text binding was non-null there, and that the widget's owning player is the
+    real `ULocalPlayer`.
+  - `RacingSim.Game.Session.BlueprintEmptyTreeFallback` (Product, editor only) compiles a
+    transient Widget Blueprint subclass with an empty tree. It creates the widget with a
+    player context, then asserts the default tree was built after initialisation (non-null
+    root and `SpeedText`).
+- [x] **End-to-end composition.** `RacingSim.Game.Session.Composition` (Product) sets up a
+  test world:
+  - world-settings game mode `ARacingGameMode`, a built procedural track, a
+    zero-second-countdown ruleset, and a real `ULocalPlayer` through `SpawnPlayActor`.
+
+  It asserts:
+  - exactly one director, holding all three race objects;
+  - the ground is `BlockAll` with its top face at the centerline Z to within 1 cm;
+  - the pawn is an `ARacingVehiclePawn` with the chassis applied, possessed by the
+    controller whose `Player` is the local player, and within 1 cm (XY) of the grid slot
+    pose;
+  - the HUD widget exists and is owned by that player;
+  - the session goes `Countdown → Racing` after a director tick;
+  - one controller tick applies the HUD (the widget's text update count rises);
+  - the recorder holds the pawn's input device (not `Unknown`) and a populated car-spec
+    version (review cycle 1, M6);
+  - the test track undulates ±400 cm in Z, so "lowest centerline Z" is distinguishable
+    from the line's average (review cycle 1, L).
+- [x] **LoadMap login order** (review cycle 1, H1). `RacingSim.Game.Session.LoadMapOrder`
+  (Product) builds the world in `UEngine::LoadMap`'s order: `SetGameMode`,
+  `InitializeActorsForPlay`, local-player login, then world `BeginPlay`. It asserts:
+  - after login, before `BeginPlay`: setup succeeded inside `RestartPlayer`, the director
+    follows the pawn, the state is still `PreRace`, the input device is set, and the car
+    spec is **not** yet published (pending branch);
+  - after `BeginPlay`: the pawn has begun play with its chassis applied, the director's
+    `BeginPlay` auto-started the session (`Countdown`), `StartPlay` published the pending
+    car spec and spawned the ground;
+  - after one tick: `Racing`.
+- [x] **Director configuration refusals** (review cycle 1, M3/M4).
+  - Setup refuses `LapsToFinish < 1` and a `ProgressSearchWindowCm` that is zero,
+    negative or NaN, naming the field. `RacingSim.Race.Director.RefusesInvalidConfiguration`
+    (Product) covers all five cases and asserts no state machine is created.
+  - `RegisterCompetitor` is accepted only in `PreRace`, because `SeedProgress` bypasses
+    the teleport guard. `RacingSim.Race.Director.Lifecycle` asserts a mid-countdown
+    registration is refused with the state named and the tracked distance unchanged.
+- [x] **Config.** `Config/DefaultEngine.ini` `[/Script/EngineSettings.GameMapsSettings]`:
+  `GameDefaultMap` and `EditorStartupMap` are
+  `/Game/Tracks/Prototype/Maps/L_Meridian_Graybox`, and `GlobalDefaultGameMode` is
+  `/Script/RacingSim.RacingGameMode`.
+  - `RacingSim.Game.Session.DefaultConfig` (Product) asserts all three through
+    `UGameMapsSettings`.
+  - It also loads the graybox map and asserts its `AWorldSettings::DefaultGameMode` does
+    not override the global game mode.
+- [x] Both targets build with 0 warnings. Smoke has no regression from 528 passed (the 2
+  pre-existing bake warnings are expected). The named Product set (the earlier 16 plus
+  this ticket's) passes.
+
+**Deliberately excluded (recorded forward):**
+- **Reset input.** Wiring `bResetRequested` to `ExecuteSafeReset` goes to `RACE-006`. It
+  needs VEH-006 finding 2 (spec `S-M1`) fixed first; see the VEH-006 caller check.
+- **Restart input and car reposition on restart** go to `UI-003`, with the results
+  button.
+- **Enhanced Input assets.** A null `InputConfigAsset` binds no keys, so the car cannot be
+  driven yet. The assets are `.uasset`s and Unreal MCP is unavailable, so this goes to a
+  content ticket before `STREAM-001` browser QA.
+- **Lighting and graybox visuals.** The map has no lights, so a packaged run renders dark.
+  This goes to `TRACK-003`/rendering. The engine cube's cook inclusion is unverified until
+  packaging.
+- **HUD screenshots** go to `UI-004`.
+- **Delta source, several competitors and networked authority.** The controller reads
+  the director through the authority game mode, which is valid for one standalone process
+  per stream session.
+- **A competitor pawn destroyed mid-race** leaves the session in `Racing` with no
+  competitor and no log. Respawn/retire policy belongs with reset in `RACE-006`.
+- **Transient Blueprint class in `BlueprintEmptyTreeFallback`** is marked as garbage but
+  not collected inside the test (the test does not force a GC); harmless to later tests,
+  which do not iterate `URacingHudWidget` subclasses.
+- **Packaged run and the `AddToViewport` path** need a game viewport; covered by
+  `STREAM-001`'s packaged launch.
+
+**RACE-005 review and repair record.**
+
+Cycle 1 (`code-reviewer`), findings and repairs:
+
+| ID | Finding | Resolution |
+|---|---|---|
+| H1 | Tests only logged the player in after world `BeginPlay`; `LoadMap`'s order (login before `BeginPlay`, car spec via `StartPlay`) was untested | **Fixed.** `ESessionLogin::BeforeBeginPlay` in the session fixture + `RacingSim.Game.Session.LoadMapOrder` |
+| M2 | `Docs/01-Architecture.md` / `Docs/15-ProjectStructure.md` did not record the `Game/` layer; RaceDirector still "planned" | **Fixed.** Game section + test-map game-mode rule in 01; Game/ and test files in 15 |
+| M3 | `LapsToFinish < 1` (settable from C++) freezes a zero-lap result on the first Racing tick | **Fixed.** Setup refuses it; test |
+| M4 | A zero/negative/NaN `ProgressSearchWindowCm` silently falls back to the global search | **Fixed.** Setup refuses it; test |
+| M5 | Maps without a track log errors under the global `ARacingGameMode` | **Kept by decision.** Errors stay loud; rule documented: non-race maps and test worlds pin their game mode |
+| M6 | Composition did not assert the recorder received the car spec and input device | **Fixed.** Asserts added (both login orders) |
+| L | Spawned pawn not transient; class comment overstated layer independence; ruleset schema version unpinned; N2 test only checked a non-empty reason; flat test track | **Fixed.** `RF_Transient` spawn; comment corrected; schema-3 pin in `RaceStateMachineSpec`; reason must name "destroyed"; undulating track |
+| — | Mid-countdown `RegisterCompetitor` reseeded progress without the teleport guard | **Fixed.** PreRace-only; Lifecycle asserts the refusal |
+
+Cycle 1 repair evidence: `Scripts/Test/build-race005-e4.log` (Editor, 0 warnings),
+`Scripts/Test/build-race005-g2.log` (Game, 0 warnings);
+`Saved/Automation/race005-c1-new` 9/9, `race005-c1-smoke` 528/528 (526 + 2 pre-existing
+bake warnings), `race005-c1-product` 25/25.
+
+Cycle 2 (`code-reviewer` re-review): **PASS**, every cycle-1 finding verified fixed, no
+new finding at MEDIUM or above. Remaining LOWs, recorded forward:
+- `LoadMapOrder` builds its track in full before login, so the cooked-build load-time
+  bake path is proven only by the first packaged run (`STREAM-001`/`TRACK-003`).
+- A pawn destroyed mid-race leaves the session in `Racing` (respawn is refused with an
+  Error, which is safe); `RACE-006`/`UI-003`.
+- `BlueprintEmptyTreeFallback` marks its transient class as garbage without collecting it.
+- `RaceDirectorSpec` uses `std::numeric_limits<double>::quiet_NaN()`, because
+  `TNumericLimits` has no NaN.
+
+Validation (`test-engineer`, independent runs): **PASS**. Editor and Game builds
+`Result: Succeeded`, 0 warnings (`Scripts/Test/build-race005-te-editor.log`,
+`build-race005-te-game.log`); Smoke 528/528 (526 + the 2 pre-existing bake warnings,
+`Saved/Automation/race005-te-smoke`); named Product 25/25 (`race005-te-product`);
+`RacingSim.Race.Ruleset` 1/1 (`race005-te-ruleset`). Every acceptance criterion mapped
+to an executed test.
 
 ---
 

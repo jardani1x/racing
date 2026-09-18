@@ -1139,6 +1139,17 @@ bool FRaceRulesetTest::RunTest(const FString& Parameters)
 
 		Ruleset->CountdownSeconds = 3.0;
 		TestTrue(TEXT("Restoring a sane countdown validates again"), Ruleset->Validate(Reason));
+
+		// RACE-005: LapsToFinish below 1 is rejected, not clamped; ClampMin guards the editor only.
+		TestEqual(TEXT("A ruleset defaults to a three-lap race"), Ruleset->LapsToFinish, 3);
+		Ruleset->LapsToFinish = 0;
+		Reason.Reset();
+		TestFalse(TEXT("A zero-lap race is rejected"), Ruleset->Validate(Reason));
+		TestTrue(TEXT("The zero-lap rejection names the field"), Reason.Contains(TEXT("LapsToFinish")));
+
+		Ruleset->LapsToFinish = 1;
+		TestTrue(TEXT("A one-lap race validates"), Ruleset->Validate(Reason));
+		Ruleset->LapsToFinish = 3;
 	}
 
 	// -- Version stamp --------------------------------------------------------
@@ -1151,6 +1162,9 @@ bool FRaceRulesetTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("The version carries the ruleset id"), Version.AssetId, FName(TEXT("Ruleset.Test.Default")));
 		TestEqual(TEXT("The schema version is the C++ layout version"),
 			Version.SchemaVersion, URaceRulesetDataAsset::RulesetSchemaVersion);
+		// Pinned literally too, so a field added without a bump (or a bump without a field)
+		// shows up here as a deliberate edit. 3 = RACE-005's LapsToFinish.
+		TestEqual(TEXT("The ruleset schema is version 3"), URaceRulesetDataAsset::RulesetSchemaVersion, 3);
 		TestTrue(TEXT("A named, versioned ruleset counts as populated"), Version.IsPopulated());
 
 		const uint32 BaselineHash = Ruleset->ComputeContentHash();
@@ -1161,6 +1175,13 @@ bool FRaceRulesetTest::RunTest(const FString& Parameters)
 
 		Ruleset->CountdownSeconds = 3.0;
 		TestEqual(TEXT("Restoring the value restores the hash"), Ruleset->ComputeContentHash(), BaselineHash);
+
+		// RACE-005: race length is part of the ruleset identity.
+		Ruleset->LapsToFinish = 5;
+		TestTrue(TEXT("Changing the race length changes the content hash"), Ruleset->ComputeContentHash() != BaselineHash);
+
+		Ruleset->LapsToFinish = 3;
+		TestEqual(TEXT("Restoring the race length restores the hash"), Ruleset->ComputeContentHash(), BaselineHash);
 
 		Ruleset->RulesetId = TEXT("Ruleset.Test.Other");
 		TestTrue(TEXT("Renaming the ruleset changes the content hash"), Ruleset->ComputeContentHash() != BaselineHash);
