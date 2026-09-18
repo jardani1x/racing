@@ -66,11 +66,13 @@ namespace
 	 * zero for ever and the time bound never fires, which is precisely the unbounded
 	 * suppression this whole section exists to prevent.
 	 *
-	 * Measured in evaluations, so its duration depends on the capture rate: 4 s at the
-	 * pawn's 60 Hz default (eight times the 0.5 s time budget), 8 s at the 30 Hz
-	 * URacingSimSettings default, 1 s at the 240 Hz range maximum. At every rate in range
-	 * it stays above the default budget, so with a healthy clock the budget fires first
-	 * and this only fires when the clock has stopped telling the truth.
+	 * Measured in evaluations, so its duration depends on the capture rate. The detector
+	 * runs once per capture, at ARacingVehiclePawn::TelemetrySampleRateHz (default 60 Hz,
+	 * range [0, 1000], in practice capped by the tick rate), so the ceiling lasts
+	 * 240 / rate seconds: 4 s at the default, eight times the 0.5 s time budget. Above
+	 * 480 Hz it lasts less than that budget and fires first even on a healthy clock;
+	 * that is still safe, because 240 is far above the floor of 3, but at such rates it
+	 * stops being purely the stopped-clock backstop.
 	 *
 	 * Compared against FVehicleFailureDetectorState::PreDiscontinuityEvaluations, the
 	 * CARRIED count, so re-announcing a discontinuity cannot rewind it.
@@ -211,8 +213,20 @@ namespace RacingSim::Vehicle
 			if (bPastEvaluationCeiling)
 			{
 				// The ceiling ignores the floor deliberately: it is the bound of last resort,
-				// and it is set far enough above the tail that reaching it always means
-				// something other than a normal reset is happening.
+				// and it is set far enough above the tail that reaching it means something
+				// other than a single normal reset is happening -- a stopped clock, or a
+				// storm of re-announcements each arriving before the time budget could
+				// expire the basis it re-armed.
+				//
+				// ACCEPTED COST of ignoring the floor (VEH-007, the near-ceiling half of spec
+				// S-M1): a genuine teleport announced when the carried count is already
+				// within two evaluations of the ceiling has its basis dropped inside its own
+				// stale tail and raises one false InvalidContact. Gating the ceiling on the
+				// floor would close that and reopen CASE 8 -- a caller re-announcing every
+				// third evaluation would then never be bounded. With a healthy clock the
+				// count only gets that high if announcements keep arriving faster than
+				// MaxContactSuppressionSeconds, so a reset caller with a cooldown longer
+				// than that budget cannot reach it (RACE-006 requirement).
 				//
 				// It is also tested BEFORE the non-finite branch below, which costs that
 				// branch its guarantee on exactly one evaluation. If the clock is non-finite

@@ -241,9 +241,11 @@ struct FVehicleFailureThresholds
 	 * Both constants live in VehicleFailureDetection.cpp and are structural rather than
 	 * tunable. Raising this value past the ceiling's worth of simulated time makes it inert,
 	 * and nothing warns when it does. That duration depends on the capture rate, because the
-	 * ceiling is 240 EVALUATIONS: 4 s at the pawn's 60 Hz default, 8 s at the 30 Hz
-	 * URacingSimSettings default, 1 s at the 240 Hz range maximum. The DataAsset accepts up
-	 * to 60 s, so every value above that duration is accepted and has no effect.
+	 * ceiling is 240 EVALUATIONS and the detector runs once per telemetry capture, at
+	 * ARacingVehiclePawn::TelemetrySampleRateHz (default 60 Hz, range [0, 1000], and in
+	 * practice capped by the tick rate): 4 s at the default, 240 / rate seconds in general.
+	 * The DataAsset accepts up to 60 s, so every value above that duration is accepted and
+	 * has no effect.
 	 */
 	float MaxContactSuppressionSeconds = 0.5f;
 };
@@ -367,8 +369,8 @@ struct FVehicleFailureDetectorState
 	 * ceiling; the floor reads PreDiscontinuityArmEvaluations below.
 	 *
 	 * Why a count is needed at all: the time budget alone is not a safe bound, because
-	 * the two quantities it relates are measured in different things. The stale-contact tail this suppression exists
-	 * to cover is measured in CAPTURES (two of them, see PreDiscontinuityLocationCm),
+	 * the two quantities it relates are measured in different things. The stale-contact
+	 * tail this suppression exists to cover is measured in CAPTURES (two of them, see PreDiscontinuityLocationCm),
 	 * while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
 	 * can be arbitrarily long. A teleport followed by a streaming hitch produces a
 	 * single frame longer than the whole budget, which would expire the basis on the

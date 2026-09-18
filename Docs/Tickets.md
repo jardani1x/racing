@@ -3104,8 +3104,16 @@ and raises a false Error-level `InvalidContact` on a stationary car.
 - [ ] Finding 4: the `GVehicleFailureMinContactSuppressionEvaluations` comment derives
       "three is the tail exactly" from the per-arm counter, which starts at zero again.
 - [ ] Finding 5: "two orders of magnitude" short of `MAX_int32` corrected.
-- [ ] Finding 6: the ceiling's duration stated per capture rate (60 Hz pawn default 4 s,
-      30 Hz settings default 8 s, 240 Hz range maximum 1 s).
+- [ ] Finding 6: the ceiling's duration stated per capture rate. The detector runs once per
+      capture at `ARacingVehiclePawn::TelemetrySampleRateHz` (default 60 Hz, range
+      [0, 1000], in practice capped by the tick rate), so the ceiling lasts 240 / rate
+      seconds: 4 s at the default. Above 480 Hz it is shorter than the 0.5 s default budget
+      and fires first; the docs say so rather than claiming it always outlasts the budget.
+- [ ] Near-ceiling residual of `S-M1` documented as an accepted trade-off at the ceiling
+      check: a teleport announced within two evaluations of the ceiling is dropped inside
+      its stale tail. Gating the ceiling on the floor would reopen `CASE 8`. With a healthy
+      clock the count only gets that high through re-announcements arriving faster than
+      `MaxContactSuppressionSeconds`, so `RACE-006` carries the requirement below.
 - [ ] Finding 7: `MaxContactSuppressionSeconds` docs (struct and DataAsset) state that
       values above the ceiling's duration at the active capture rate are inert.
 - [ ] Finding 8: `DropContactSuppressionBasis` is hoisted so the fresh-contact exit calls it
@@ -3115,6 +3123,36 @@ and raises a false Error-level `InvalidContact` on a stationary car.
 
 **Deliberately excluded.** Wiring `ExecuteSafeReset` to the driver reset request
 (`RACE-006`); spec `S-L2`..`S-L4`; harness `H-M1`..`H-L6`; soak memory slope (test M-1/M-2).
+
+**Requirement routed to `RACE-006`.** The director must rate-limit driver resets with a
+cooldown longer than `MaxContactSuppressionSeconds` plus the floor's evaluations at the
+active capture rate, so each armed basis expires by the time budget (zeroing both
+counters) before the next announcement. The ceiling is then unreachable with a healthy
+clock and the near-ceiling residual cannot occur. A test must pin the cooldown.
+
+#### VEH-007 review and repair record
+
+**Implementation** `3d55a33`. Editor `Scripts/Test/build-veh007-e1.log`,
+`build-veh007-e2.log`, Game `build-veh007-g1.log`: `Result: Succeeded`, 0 warning/error
+matches. Smoke `Saved/Automation/veh007-smoke`: succeeded=526, succeededWithWarnings=2
+(pre-existing), failed=0, notRun=0.
+
+**Revert proof.** With the floor pointed back at the carried counter
+(`build-veh007-revert.log`, report `Saved/Automation/veh007-bound-revert`),
+`FailureDetectionSuppressionBound` failed on "A re-announced basis is not expired by a
+long frame on stale capture 0" and "... capture 1". Restored, it passes
+(`Saved/Automation/veh007-bound-fixed`, `veh007-bound-fixed2`). Build logs are untracked
+local evidence, per project practice.
+
+**Review 1** (`code-reviewer`, `3d55a33`): CHANGES REQUESTED. Logic and CASE 9 confirmed.
+MEDIUM-1 rate claims wrong (detector runs at the pawn rate, [0, 1000]; above 480 Hz the
+ceiling is shorter than the budget); MEDIUM-2 near-ceiling `S-M1` residual; LOW-1 no
+evidence/rollback record; LOW-2 overlong doc line. Repair cycle 1 fixed MEDIUM-1 and
+LOW-1/LOW-2 and documented MEDIUM-2 as the accepted trade-off above with the `RACE-006`
+requirement.
+
+**Rollback.** The ticket lands as one merge commit on `main`; `git revert -m 1 <merge>`
+restores the single-counter detector. No binary assets are involved.
 
 
 | ID | Title | Owner | Depends on | Gate | Status |
@@ -3126,7 +3164,7 @@ and raises a false Error-level `InvalidContact` on a stationary car.
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 | RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | **DONE** — closed 2026-09-18. `ARaceDirector` + `Game/` composition root (game mode, player controller, graybox ground); default map and game mode set; session tested in both login orders with a real `ULocalPlayer`. Car not yet drivable (input assets → `TRACK-003`). Opened by UI-002: nothing in the project yet created a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
-| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | OPEN — opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check |
+| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | OPEN — opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check. Inherits the VEH-007 reset-cooldown requirement (cooldown longer than `MaxContactSuppressionSeconds` plus the floor, pinned by a test) |
 | TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN — opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
