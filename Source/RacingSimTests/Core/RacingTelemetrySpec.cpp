@@ -4,6 +4,8 @@
 #include "Core/RacingTelemetry.h"
 #include "Misc/AutomationTest.h"
 
+#include <limits>
+
 /**
  * CORE-002: telemetry contracts.
  *
@@ -219,6 +221,21 @@ bool FRacingTelemetryContractTest::RunTest(const FString& Parameters)
 		// ...but a future frame is still stale even with the check disabled: that
 		// is a restart, not a staleness policy question.
 		TestTrue(TEXT("A future frame is stale even when the check is disabled"), Frame.IsStaleAt(0.0, 0.0));
+
+		// UI-001: fail closed on non-finite input. Every comparison is false for NaN, so
+		// without the guard each of these would read "fresh".
+		const double StaleNaN = std::numeric_limits<double>::quiet_NaN();
+		const double StaleInf = std::numeric_limits<double>::infinity();
+		TestTrue(TEXT("A NaN clock is stale"), Frame.IsStaleAt(StaleNaN, 0.5));
+		TestTrue(TEXT("A NaN max age is stale, not 'check disabled'"), Frame.IsStaleAt(100.0, StaleNaN));
+		TestTrue(TEXT("An infinite max age is stale"), Frame.IsStaleAt(100.0, StaleInf));
+		TestTrue(TEXT("A NaN clock is stale even with the check disabled"), Frame.IsStaleAt(StaleNaN, 0.0));
+
+		FRacingTelemetryFrame NaNStamped;
+		NaNStamped.TimestampSeconds = StaleNaN;
+		TestTrue(TEXT("A NaN timestamp is stale"), NaNStamped.IsStaleAt(100.0, 0.5));
+		TestTrue(TEXT("...and an infinite one"),
+			FRacingTelemetryFrame::IsTimestampStaleAt(StaleInf, 100.0, 0.5));
 	}
 
 	return true;

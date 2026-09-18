@@ -1188,6 +1188,17 @@ bool FRaceResultTrackGateTest::RunTest(const FString& Parameters)
 		TestTrue(FString::Printf(TEXT("...naming the gate bake, not a downstream symptom: %s"), *CacheReason),
 			CacheReason.Contains(TEXT("Checkpoint gates failed to bake")));
 
+		// RACE-003 M1, CLOSED AT UI-001: CanStartSession() reads the held track's cached
+		// validity LIVE. The recorder was handed this track while it was healthy and no
+		// SetTrack() has happened since the bake broke; the refusal must not wait for one.
+		{
+			FString LiveReason;
+			TestFalse(TEXT("M1: the session is refused BEFORE any re-SetTrack(), off the live cache"),
+				Rig.Recorder->CanStartSession(LiveReason));
+			TestTrue(FString::Printf(TEXT("M1: ...quoting the live reason: %s"), *LiveReason),
+				LiveReason.Contains(TEXT("Checkpoint gates failed to bake")));
+		}
+
 		// AND THE RECORDER REFUSES TO START THE SESSION on it, cheaply -- without a live
 		// Validate() call, which is the point of the cache.
 		Rig.Recorder->SetTrack(Track);
@@ -1227,10 +1238,17 @@ bool FRaceResultTrackGateTest::RunTest(const FString& Parameters)
 			Track->GetCachedValidation(RepairedReason));
 		TestTrue(TEXT("...with no reason recorded"), RepairedReason.IsEmpty());
 
+		// M1, the other direction: the repair is seen without re-handing the track over.
+		// Call first, then format: the reason argument is evaluated before the call fills it.
+		FString LiveReason;
+		const bool bLiveCanStart = Rig.Recorder->CanStartSession(LiveReason);
+		TestTrue(FString::Printf(TEXT("M1: the repair is seen BEFORE any re-SetTrack(): %s"), *LiveReason), bLiveCanStart);
+		TestTrue(TEXT("...with no reason recorded"), LiveReason.IsEmpty());
+
 		Rig.Recorder->SetTrack(Track);
 		FString StartReason;
-		TestTrue(FString::Printf(TEXT("...and a session may start again: %s"), *StartReason),
-			Rig.Recorder->CanStartSession(StartReason));
+		const bool bCanStartAgain = Rig.Recorder->CanStartSession(StartReason);
+		TestTrue(FString::Printf(TEXT("...and a session may start again: %s"), *StartReason), bCanStartAgain);
 	}
 
 	return true;

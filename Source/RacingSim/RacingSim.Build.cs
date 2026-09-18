@@ -77,7 +77,8 @@ public class RacingSim : ModuleRules
 		// UncookedOnly RacingSimTests module so they cannot ship.
 		//
 		// Dependencies stay minimal deliberately. Add one only when a layer actually
-		// needs it -- ChaosVehicles at VEH-002, UMG at UI-001, PixelStreaming2 at
+		// needs it -- ChaosVehicles at VEH-002, UMG at UI-002 (UI-001 is a
+		// widget-free data contract), PixelStreaming2 at
 		// STREAM-001 -- so the dependency list stays evidence of what is really used.
 		PublicDependencyModuleNames.AddRange(new string[]
 		{

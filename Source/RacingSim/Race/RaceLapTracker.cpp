@@ -1121,6 +1121,18 @@ bool URaceLapTracker::IsGateSatisfied(const int32 GateIndex) const
 	return GateSatisfied.IsValidIndex(GateIndex) && GateSatisfied[GateIndex];
 }
 
+double URaceLapTracker::GetCurrentLapElapsedSeconds() const
+{
+	if (!bLapInProgress || StateMachine == nullptr)
+	{
+		return 0.0;
+	}
+
+	// Peek, not Sample: a HUD repaint must not advance the authoritative clock's
+	// monotonic ratchet. RACE-001 exposed both for exactly this split.
+	return FMath::Max(0.0, StateMachine->PeekRaceElapsedSeconds() - LapOpenTimeSeconds);
+}
+
 FRacingLapTiming URaceLapTracker::GetCurrentLapTiming() const
 {
 	FRacingLapTiming Timing;
@@ -1132,9 +1144,8 @@ FRacingLapTiming URaceLapTracker::GetCurrentLapTiming() const
 
 	Timing.LapNumber = CurrentLapNumber;
 
-	// Peek, not Sample: a HUD repaint must not advance the authoritative clock's
-	// monotonic ratchet. RACE-001 exposed both for exactly this split.
-	Timing.LapDurationSeconds = FMath::Max(0.0, StateMachine->PeekRaceElapsedSeconds() - LapOpenTimeSeconds);
+	// One definition of the running lap time, shared with the non-allocating read.
+	Timing.LapDurationSeconds = GetCurrentLapElapsedSeconds();
 
 	// Splits closed so far, which is shorter than the sector count while the lap runs --
 	// FRacingLapTiming::SectorDurationsSeconds documents that a consumer must not assume

@@ -58,6 +58,20 @@ bool FRacingLapTiming::AreSectorsConsistent(const double ToleranceSeconds, const
 
 bool FRacingTelemetryFrame::IsStaleAt(const double NowSeconds, const double MaxAgeSeconds) const
 {
+	return IsTimestampStaleAt(TimestampSeconds, NowSeconds, MaxAgeSeconds);
+}
+
+bool FRacingTelemetryFrame::IsTimestampStaleAt(
+	const double TimestampSeconds, const double NowSeconds, const double MaxAgeSeconds)
+{
+	// Fail closed. Every comparison below is false for NaN, so without this guard a NaN
+	// clock, stamp or limit would fall through to "not stale" and a widget calling this
+	// directly (UI-001 made it Blueprint-reachable) would show frozen numbers as live.
+	if (!FMath::IsFinite(TimestampSeconds) || !FMath::IsFinite(NowSeconds) || !FMath::IsFinite(MaxAgeSeconds))
+	{
+		return true;
+	}
+
 	// Age on the race clock. Negative age means the frame is stamped in the
 	// future, which happens when the clock is restarted underneath a consumer --
 	// treated as stale so a restart blanks the HUD instead of leaving the

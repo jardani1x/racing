@@ -312,6 +312,14 @@ struct RACINGSIM_API FRacingStreamingTelemetrySample
  * Assembled by Race/ (which owns the clock and the truth) from the samples
  * above. One struct, one timestamp, so the HUD can never show a lap counter from
  * one instant next to a speed from another.
+ *
+ * PASS BY const&, NEVER COPY PER TICK (CORE-002 finding M-4, closed at UI-001).
+ * CurrentLap and BestLap each carry a TArray of sector splits, so copying this
+ * struct heap-allocates twice, and CLAUDE.md forbids per-frame allocation. Hold
+ * one instance, refresh it in place, and hand it out by const reference. The
+ * same applies to FRacingLapTiming on its own. The HUD path does not copy this
+ * struct at all: it reads FRacingHudRaceInputs and FRacingHudViewModel, whose
+ * static_asserts refuse to compile if an allocating member is ever added.
  */
 USTRUCT(BlueprintType)
 struct RACINGSIM_API FRacingTelemetryFrame
@@ -361,4 +369,12 @@ struct RACINGSIM_API FRacingTelemetryFrame
 	 * on the HUD, and a negative age is exactly that situation.
 	 */
 	bool IsStaleAt(double NowSeconds, double MaxAgeSeconds) const;
+
+	/**
+	 * The staleness rule IsStaleAt applies, for any timestamp on the race clock --
+	 * a vehicle sample's, for instance. Future-stamped is stale; MaxAgeSeconds <= 0
+	 * disables the age check; any non-finite argument is stale (fail closed, UI-001).
+	 * One definition, so the HUD and the frame cannot disagree about what "stale" means.
+	 */
+	static bool IsTimestampStaleAt(double TimestampSeconds, double NowSeconds, double MaxAgeSeconds);
 };

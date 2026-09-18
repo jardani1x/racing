@@ -406,10 +406,31 @@ bool URaceResultRecorder::CanStartSession(FString& OutReason) const
 		return false;
 	}
 
-	// THE CHEAP REFUSAL TRACK-001 M7 ASKED FOR. Note this reads the snapshot, which
-	// SetTrack() filled from the cache -- it does not call Validate() and does not even
-	// re-hash unless the caller re-sets the track.
-	if (!bTrackValidated)
+	// THE CHEAP REFUSAL TRACK-001 M7 ASKED FOR -- cheap on the common path, not free.
+	//
+	// With a live track held, read ITS cached validity, not the snapshot SetTrack() took
+	// (RACE-003 finding M1, closed at UI-001): a track rebuilt after SetTrack() -- a gate
+	// bake that broke, or a repair -- is seen here without the caller re-handing it over.
+	// GetCachedValidation() re-hashes the track on every call (ComputeContentHash()) and
+	// runs a full Validate() on a cache miss -- which is exactly the rebuilt-track case --
+	// and it check()s IsInGameThread(). So with a track held, CanStartSession() is
+	// game-thread-only and not per-frame cheap. The frozen result still records the
+	// snapshot, which is what a submission must describe.
+	// IsValid, not != nullptr: the UPROPERTY keeps a destroyed actor from being collected,
+	// but not from being marked garbage, and its cache is not read then. KNOWN RISK
+	// (UI-001 review N2, not a regression): a track destroyed after SetTrack() falls through
+	// to the older snapshot below rather than refusing.
+	if (IsValid(Track))
+	{
+		FString LiveReason;
+		if (!Track->GetCachedValidation(LiveReason))
+		{
+			OutReason = FString::Printf(TEXT("The track is not valid for racing: %s"), *LiveReason);
+			return false;
+		}
+	}
+	// Without one (SetTrackSnapshot() callers: tests, replays) the snapshot is all there is.
+	else if (!bTrackValidated)
 	{
 		OutReason = TrackValidationReason.IsEmpty()
 			? TEXT("The track has not been validated for racing. Call SetTrack() or SetTrackSnapshot() first.")
