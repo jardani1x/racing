@@ -370,8 +370,8 @@ struct FVehicleFailureDetectorState
 	 *
 	 * Why a count is needed at all: the time budget alone is not a safe bound, because
 	 * the two quantities it relates are measured in different things. The stale-contact
-	 * tail this suppression exists to cover is measured in CAPTURES (two of them, see PreDiscontinuityLocationCm),
-	 * while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
+	 * tail this suppression exists to cover is measured in CAPTURES (two of them, see
+	 * PreDiscontinuityLocationCm), while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
 	 * can be arbitrarily long. A teleport followed by a streaming hitch produces a
 	 * single frame longer than the whole budget, which would expire the basis on the
 	 * very evaluation that still needs it and raise the false InvalidContact this

@@ -220,13 +220,15 @@ namespace RacingSim::Vehicle
 				//
 				// ACCEPTED COST of ignoring the floor (VEH-007, the near-ceiling half of spec
 				// S-M1): a genuine teleport announced when the carried count is already
-				// within two evaluations of the ceiling has its basis dropped inside its own
-				// stale tail and raises one false InvalidContact. Gating the ceiling on the
-				// floor would close that and reopen CASE 8 -- a caller re-announcing every
-				// third evaluation would then never be bounded. With a healthy clock the
-				// count only gets that high if announcements keep arriving faster than
-				// MaxContactSuppressionSeconds, so a reset caller with a cooldown longer
-				// than that budget cannot reach it (RACE-006 requirement).
+				// within three evaluations of the ceiling (237..239) has its basis dropped
+				// inside its own stale tail and raises a false InvalidContact on one or both
+				// tail captures. Gating the ceiling on the floor would close that and reopen
+				// CASE 8 -- a caller re-announcing every third evaluation would then never be
+				// bounded. With a healthy clock the count only gets that high if
+				// announcements keep arriving before the previous basis expired, so a reset
+				// caller whose cooldown exceeds MaxContactSuppressionSeconds plus the floor's
+				// evaluations at the active capture rate cannot reach it (RACE-006
+				// requirement).
 				//
 				// It is also tested BEFORE the non-finite branch below, which costs that
 				// branch its guarantee on exactly one evaluation. If the clock is non-finite

@@ -3110,10 +3110,11 @@ and raises a false Error-level `InvalidContact` on a stationary car.
       seconds: 4 s at the default. Above 480 Hz it is shorter than the 0.5 s default budget
       and fires first; the docs say so rather than claiming it always outlasts the budget.
 - [ ] Near-ceiling residual of `S-M1` documented as an accepted trade-off at the ceiling
-      check: a teleport announced within two evaluations of the ceiling is dropped inside
-      its stale tail. Gating the ceiling on the floor would reopen `CASE 8`. With a healthy
-      clock the count only gets that high through re-announcements arriving faster than
-      `MaxContactSuppressionSeconds`, so `RACE-006` carries the requirement below.
+      check: a teleport announced within three evaluations of the ceiling (carried count
+      237..239) is dropped inside its stale tail, raising a false `InvalidContact` on one
+      or both tail captures. Gating the ceiling on the floor would reopen `CASE 8`. With a
+      healthy clock the count only gets that high through re-announcements arriving before
+      the previous basis expired, so `RACE-006` carries the requirement below.
 - [ ] Finding 7: `MaxContactSuppressionSeconds` docs (struct and DataAsset) state that
       values above the ceiling's duration at the active capture rate are inert.
 - [ ] Finding 8: `DropContactSuppressionBasis` is hoisted so the fresh-contact exit calls it
@@ -3135,14 +3136,22 @@ clock and the near-ceiling residual cannot occur. A test must pin the cooldown.
 **Implementation** `3d55a33`. Editor `Scripts/Test/build-veh007-e1.log`,
 `build-veh007-e2.log`, Game `build-veh007-g1.log`: `Result: Succeeded`, 0 warning/error
 matches. Smoke `Saved/Automation/veh007-smoke`: succeeded=526, succeededWithWarnings=2
-(pre-existing), failed=0, notRun=0.
+(pre-existing), failed=0, notRun=0. The build-log figures come from the wrapper's console
+markers (`BUILD_EXITCODE=0`, `WARNING_ERROR_MATCHES=0`), which the wrapper does not write
+into the `-OutFile` log; the reviewer re-confirmed 0 warning/error lines by grepping the logs.
 
 **Revert proof.** With the floor pointed back at the carried counter
 (`build-veh007-revert.log`, report `Saved/Automation/veh007-bound-revert`),
 `FailureDetectionSuppressionBound` failed on "A re-announced basis is not expired by a
 long frame on stale capture 0" and "... capture 1". Restored, it passes
-(`Saved/Automation/veh007-bound-fixed`, `veh007-bound-fixed2`). Build logs are untracked
-local evidence, per project practice.
+(`Saved/Automation/veh007-bound-fixed`, `veh007-bound-fixed2`). These build logs are left
+untracked by the owner's instruction, unlike VEH-005's committed logs (VEH-006 `S-L5`);
+they are local evidence only.
+
+**Review 2** (`code-reviewer`, `a0b355a`): APPROVED WITH FOLLOW-UPS; comment-only diff
+confirmed. Four LOW items (residual understated as "two evaluations, one report"; the
+re-wrap moved rather than removed the overlong line; the untracked-log note contradicted
+`S-L5`; the build-log marker citation) were fixed in the following commit.
 
 **Review 1** (`code-reviewer`, `3d55a33`): CHANGES REQUESTED. Logic and CASE 9 confirmed.
 MEDIUM-1 rate claims wrong (detector runs at the pawn rate, [0, 1000]; above 480 Hz the
