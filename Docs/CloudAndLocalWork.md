@@ -50,8 +50,7 @@ run, and never merge to `main`.
 
 | Work | What the cloud does | What local still owes |
 |---|---|---|
-| **Ticket writing** for `UI-001`..`UI-004`, `STREAM-001`..`003` | Full ticket from `Docs/12-TicketTemplate.md` with measurable acceptance criteria, scope boundaries, test names | Nothing beyond normal review |
-| **`UI-001` HUD view model and data contract** (C++) | Plain C++ view-model types, data contract, automation spec source, following existing `Source/RacingSim` and `Source/RacingSimTests` patterns | Build, fix compile errors, run the new specs and Smoke, `code-reviewer` on the compiled diff, `test-engineer`, merge |
+| **Ticket writing** for `UI-002`..`UI-004`, `STREAM-001`..`003` | Full ticket from `Docs/12-TicketTemplate.md` with measurable acceptance criteria, scope boundaries, test names | Nothing beyond normal review |
 | **`UI-002`..`UI-003` C++ side** | Formatting/logic helpers (speed, RPM, gear, lap, delta, countdown), restart-flow state logic, their specs | Same as above, **plus all UMG widget `.uasset` work** (local only) |
 | **`STREAM-002` browser frontend shell** | TypeScript frontend and versioned custom-message schema inside a fresh clone of the pinned Pixel Streaming Infrastructure; `npm` install, build, lint and unit tests *can* run in the container | Wire into Unreal, run against a packaged build (`STREAM-001`), browser QA |
 | **VEH-006 follow-ups, code only** | Production finding 2 (split carried ceiling counter from per-arm floor counter) with CASE 9; findings 3–8 comment/doc fixes; spec S-L2..S-L4 | Build, CASE 9 revert proof, full manoeuvre set, Smoke |
@@ -85,9 +84,9 @@ decision.
 ## Current queue, in order
 
 1. ~~**Local** — close `VEH-006` (gates, commit, merge).~~ Done 2026-09-15.
-2. **Cloud** — write tickets `UI-001`..`UI-004` with acceptance criteria.
-3. **Cloud** — implement `UI-001` C++ view model and specs on a branch.
-4. **Local** — build, test, gate and merge `UI-001`.
+2. ~~**Cloud/Local** — write `UI-001`, implement it, gate and merge.~~ Done locally 2026-09-18.
+3. **Cloud** — write tickets `UI-002`..`UI-004` with acceptance criteria; carry `UI-001`'s forwarded risks (L5, L7, N3, telemetry timestamp doc) into `UI-002`.
+4. **Local** — `UI-002` UMG widgets bound to `FRacingHudViewModel`.
 5. **Cloud** — VEH-006 production finding 2 + CASE 9, and harness `H-*` edits, on a branch.
 6. **Local** — verify and merge those.
 7. **Cloud** — `STREAM-002` frontend groundwork in the pinned Pixel Streaming clone (can run in parallel with 3–6).

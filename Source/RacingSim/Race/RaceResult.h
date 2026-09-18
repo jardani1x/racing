@@ -504,6 +504,16 @@ public:
 	 * Uses the track's CACHED validity, so this is a hash comparison rather than a full
 	 * Validate() -- which is what TRACK-001 M7 asked for: "a race director can cheaply
 	 * refuse to start a session on an invalid track".
+	 *
+	 * With an actor held (SetTrack()), that cache is read LIVE on every call, so a rebuild
+	 * after SetTrack() is honoured without re-setting the track (RACE-003 M1, closed at
+	 * UI-001). Without one, the SetTrackSnapshot() snapshot decides.
+	 *
+	 * Cost and threading: with an actor held, the live read re-hashes the track on every
+	 * call and runs a full Validate() on a cache miss (a rebuilt track), and
+	 * GetCachedValidation() check()s IsInGameThread(). Call it from the game thread, and
+	 * not per frame. A held actor that has been destroyed (marked garbage) is ignored and
+	 * the SetTrack() snapshot decides -- a known risk recorded under UI-001.
 	 */
 	bool CanStartSession(FString& OutReason) const;
 

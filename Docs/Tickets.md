@@ -5038,7 +5038,7 @@ routed here. Read before writing `UI-001`'s acceptance criteria.
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
-| UI-001 | HUD view model and data contract | race-systems-engineer | RACE-003 | B | OPEN |
+| UI-001 | HUD view model and data contract | race-systems-engineer | RACE-003 | B | DONE 2026-09-18 |
 | UI-002 | Speed/RPM/gear/lap/time/delta/countdown/results | race-systems-engineer | UI-001 | B | OPEN |
 | UI-003 | Input prompts, settings, restart flow, accessibility baseline | race-systems-engineer | UI-002 | B | OPEN |
 | UI-004 | HUD functional and screenshot tests | test-engineer + implementer | UI-003 | B, D | OPEN |
@@ -5058,6 +5058,163 @@ criteria:
 | --- | --- | --- |
 | M-3 (pass 1) | `RacingTelemetry.h`/`RacingSimUnits.h` structs are `USTRUCT(BlueprintType)` but their member functions (`GetForwardSpeedKph/Mph/MetresPerSecond`, `IsStaleAt`, `AreSectorsConsistent`, `IsComplete`, `IsPopulated`, `ToString`, unit conversions) are plain C++ — a `USTRUCT` member function cannot be a `UFUNCTION`, so none of this is reachable from Blueprint/UMG despite the HUD being UMG per `CLAUDE.md` | Add a `URacingTelemetryFunctionLibrary` with `BlueprintPure` wrappers. Keep it in `Source/RacingSim/Core/` even though this ticket owns the work — it wraps *Core* contracts (unit conversions, staleness), and putting it in `UI/` would give CORE-002's unit-conversion policy a second home |
 | M-4 (pass 1) | `FRacingTelemetryFrame` (`RacingTelemetry.h`) embeds two `FRacingLapTiming`, each carrying a `TArray<double> SectorDurationsSeconds` — copying "the single frame the HUD is allowed to read" heap-allocates twice per copy, and `CLAUDE.md` forbids per-frame allocation | Either document that frames are passed by `const&` and never copied per tick, or replace the `TArray` with a `TArray<double, TInlineAllocator<N>>` sized to the real sector count once track data exists |
+
+### UI-001 — acceptance criteria, opened 2026-09-15
+
+Scope: the HUD's data contract, built and tested entirely in C++ so UI-002's UMG widgets
+have nothing left to decide. Owner `race-systems-engineer` (implemented directly in the
+local session; no implementation subagent, per the worktree-corruption workaround).
+Gate B. Depends on RACE-003 (merged). Read the three inherited-findings tables above
+first — every criterion below names the finding it closes.
+
+**Deliberately a data contract, not a widget.** No `.uasset`, no UMG dependency, no
+`UUserWidget`. The contract is three layers, each one-directional:
+`Race/` gathers authoritative scalars into a `Core/` input struct; `UI/` turns that
+input struct plus a vehicle telemetry sample into a display-ready view model with a pure
+function. `UI/` includes no `Race/` header (the `ERaceState` layering rule in
+`RacingSimTypes.h`).
+
+- [x] **CORE-002 M-3.** `URacingTelemetryFunctionLibrary` (`Source/RacingSim/Core/`) exposes
+  as `BlueprintPure`: forward speed in km/h, mph and m/s, and in a caller-chosen
+  `ERacingSpeedDisplayUnit`; the `RacingSim::Units` conversions the HUD needs; frame
+  staleness and the project's `TelemetryStaleAfterSeconds`; lap `IsComplete`,
+  `GetSectorTotalSeconds` and `AreSectorsConsistent`; content-version `IsPopulated` and
+  `ToString`; version-stamp `ToString`. `RacingSim.Core.TelemetryFunctionLibrary` asserts
+  each wrapper returns exactly what the wrapped C++ member returns, and that each is a
+  `UFUNCTION` flagged `FUNC_BlueprintPure` found by name on the class.
+- [x] **CORE-002 M-4.** Documented on `FRacingTelemetryFrame`: frames and lap timings travel
+  by `const&` and are never copied per tick. Enforced for the HUD path by construction:
+  `FRacingHudViewModel` and `FRacingHudRaceInputs` hold scalars only and a
+  `static_assert(std::is_trivially_copyable_v<...>)` fails the build if an allocating
+  member is added. `URaceLapTracker` gains non-allocating reads —
+  `GetCurrentLapElapsedSeconds()` and `const&` `PeekLastCompletedLap()`/`PeekBestValidLap()`
+  — and the gatherer uses only those, never `GetCurrentLapTiming()` (which builds a
+  split array).
+- [x] **TRACK-001 L3.** `URaceFunctionLibrary` (`Source/RacingSim/Race/`) exposes as
+  `BlueprintPure` the centerline surface the HUD needs that is not already reachable:
+  track length, lap-progress fraction at a distance, wrapped distance, signed distance
+  delta, and a lateral-offset read that returns its validity rather than a silent 0.
+  Every track-taking wrapper returns a safe default for a null track. Spec proves the
+  actor wrappers agree with the baked centerline and the struct wrappers with
+  `FTrackCenterline`'s own members.
+- [x] **RACE-003 M2.** The same library exposes `FRacingRaceResult`'s read surface:
+  `GetValidity`, `HasValidLap`, `IsSubmittable` (with reason), `MakeSubmissionQueryString`
+  and `ToString`. Spec proves wrapper-equals-member on a frozen publishable result and on
+  a refused one, and Blueprint reachability by name and flag.
+- [x] **RACE-003 M1.** `URaceResultRecorder::CanStartSession()` reads
+  `Track->GetCachedValidation()` live whenever a track actor is held and uses the stored
+  snapshot only on the actor-free path. `RacingSim.Race.ResultTrackGate` asserts that
+  breaking the gate bake flips `CanStartSession()` to false, and repairing it flips it
+  back to true, **before** any re-`SetTrack()` call. Revert-provable: those two
+  assertions fail against the pre-fix code.
+- [x] **RACE-003 M3.** Every `AreSectorsConsistent` call added by this ticket passes an
+  explicit `ExpectedSectorCount` (grep-verifiable: no one-argument or zero-argument call in
+  the new files), and the Blueprint wrapper has no default for it. Spec proves a complete
+  lap with withheld splits reads consistent without the count and **inconsistent** with
+  the track's real count of 3.
+- [x] **RACE-003 L7.** No new code treats `FRacingContentVersion::IsPopulated()` as
+  "safe to race"; track fitness comes from `GetCachedValidation()` only
+  (grep-verifiable). The library's `IsPopulated` wrapper says so in its tooltip.
+- [x] **RACE-002 L1 / L9.** No new code calls `FindFirstGateCrossing` (grep-verifiable).
+  The view model publishes laps with the L9 convention unchanged — current lap number,
+  laps completed and valid laps completed are passed through, never re-derived — and
+  best lap never falls back to last lap.
+- [x] **HUD view model.** `FRacingHudViewModel` (`Source/RacingSim/UI/`) built by a pure
+  `BuildHudViewModel(Inputs, VehicleSample, NowSeconds, StaleAfterSeconds, SpeedUnit)`.
+  `RacingSim.UI.HudViewModel.Builder` proves: stale or future-stamped vehicle data blanks
+  speed, RPM and gear; fresh data converts speed into the chosen unit; the countdown shows
+  only in `Countdown` as whole seconds rounded up; position shows only with more than one
+  competitor **and** a classified position; sector number is 1-based and 0 with no lap;
+  current-lap elapsed and invalidity read 0/false with no lap in progress; results show
+  only with a frozen result in `Finished`/`Results`; non-finite inputs never reach the
+  view model.
+- [x] **Gatherer against the real race stack.** `URaceFunctionLibrary::GatherHudRaceInputs`
+  reads state machine, lap tracker and result recorder. `RacingSim.UI.HudViewModel.RaceIntegration`
+  drives a procedural circuit through PreRace, Countdown, Racing, one lap close, Finished,
+  Results and Restart, and at each stage asserts the view model equals the authoritative
+  getters (`GetCurrentLapNumber`, `GetLapsCompleted`, `GetValidLapsCompleted`,
+  `GetCurrentLapTiming().LapDurationSeconds`, `GetLastCompletedLap()`, `GetBestValidLap()`,
+  `GetProgressSample()`, `GetFrozenResult()`), and that Restart clears laps, best lap and
+  the result.
+- [x] `UI/` includes no `Race/` header (grep-verifiable).
+- [x] The new specs pass; Smoke passes with `failed=0 notRun=0` and no fewer tests than
+  before plus the ones added here.
+- [x] Editor **and** Game targets build with zero new warnings.
+
+**Deliberately excluded from this ticket's scope:** UMG widgets and the UMG module
+dependency (UI-002 — the `RacingSim.Build.cs` comment is updated to say so); a
+view-model `UObject` with a `BlueprintAssignable` state-change event (UI-002, which has a
+widget to bind it to); delta-to-best (no delta source exists; the view model carries
+`bHasDelta=false` until one does); total lap count (the ruleset has no lap-count field;
+RACE-004 or UI-002 adds one); race position computation (no opponents; the tracker
+always reports 0 and the view model hides it); runtime allocation counting (the
+no-allocation contract is proved structurally by the `static_assert` and the `const&`
+reads, and by review).
+
+### UI-001 — review and repair record
+
+**Pass 1 (code-reviewer): FAIL.** One failing test plus findings H1, H2, M1–M4, L1–L8.
+Test run 1 had 65 succeeded, 3 succeeded with warnings, and 1 failed:
+`RacingSim.UI.HudViewModel.Builder` expected a 3600 s cap for +Inf, which contradicts the
+header's "non-finite reads 0" contract.
+
+**Repair cycle 1:**
+
+| ID | Finding | Disposition |
+|---|---|---|
+| Builder | +Inf countdown test contradicted the header contract | **Fixed.** The test expects 0 (`RacingHudViewModelSpec.cpp`). The finite 3600 s cap is still tested. |
+| H1 | No publishable-result coverage of the result wrappers. A wrapper that always refused would pass. | **Fixed.** `RaceFunctionLibrarySpec.cpp` builds a fully publishable frozen result (precondition: the member accepts it). It asserts the `IsSubmittable` wrapper returns true and clears a stale reason, and that the query string equals the member's and is non-empty. |
+| H2 | Best lap could silently fall back to last lap | **Fixed.** `RaceIntegration` drives lap 2 wide round a gate, so it is invalid (`InvalidShortcut`) and faster than clean lap 1. It asserts best stays equal to the clean lap, last is the invalid lap, and VM best != VM last. |
+| M1 | Track-actor agreement assertions were vacuous on a degenerate CDO track | **Fixed.** `FRaceLibSpecTrackFixture` authors a 12-point, 100 m-radius closed circle on the CDO and restores it (RAII). Preconditions assert non-zero length, non-trivial wrap and delta, interior progress, and the seam wrap. |
+| M2 | `IsTimestampStaleAt` could call a NaN/Inf frame fresh | **Fixed.** Fails closed on any non-finite argument (`RacingTelemetry.cpp`). NaN/Inf tests are in both telemetry specs; the library spec adds an independent "non-finite is stale" check, not just wrapper==member. |
+| M3 | HUD `NowSeconds` clock was undocumented | **Fixed.** Documented on `BuildHudViewModel`: pass `FPlatformTime::Seconds()`, not the race clock. `RaceIntegration` asserts an old sample and the wrong clock both read not-fresh. |
+| M4 | RACE-003 M1 revert proof | **Revert-proven by trace, not by execution.** The reviewer traced the pre-fix `CanStartSession` against `RaceResultSpec.cpp`: the break assertion (~:1196) and the repair assertion (~:1245) both fail on pre-fix code. **No revert build was run.** |
+| L1 | M3-precondition call undocumented | **Fixed.** A comment states it documents the vacuous-true default. |
+| L2 | Running-lap time was only checked for equivalence | **Fixed.** Independent check: about 4 steps since the line. |
+| L3 | `RaceResultSpec` formatted before evaluating `CanStartSession` | **Fixed.** |
+| L4 | `bShowCountdown` with `CountdownWholeSeconds == 0` undocumented | **Fixed.** Header doc: widgets show "GO"/nothing, not "0". |
+| L5 | The gatherer does not check the tracker's observed session against `SessionId`. A tracker not registered with the recorder shows the previous session's laps after Restart until its next `Advance()`. Only the registered case is tested. | **Known risk, batched forward to `UI-002`/`RACE-004`.** Every production tracker is registered with the recorder. |
+| L6 | `CanStartSession` tested `Track != nullptr` | **Fixed.** Now `IsValid(Track)`. |
+| L7 | The gatherer takes a non-const `URaceStateMachine*` because `GetCountdownRemainingSeconds()` samples `CountdownClock`, so a HUD read advances the countdown clock | **Known risk, batched forward to `UI-002`.** The API is pre-existing and probably harmless. Add a `Peek` variant, as the race clock already has. |
+| L8 | Stray build logs could be committed | **Fixed at commit.** `Scripts/Test/build-ui001*.log` and the unrelated `Docs/.obsidian/*.json` are excluded. |
+
+**Pass 2 (code-reviewer, re-review of cycle 1): PASS.** No BLOCKER, HIGH or MEDIUM
+findings. New LOW findings:
+
+| ID | Finding | Disposition |
+|---|---|---|
+| N1 | The `CanStartSession` comment claimed no re-hash and no `Validate()`. In fact `GetCachedValidation()` re-hashes on every call, runs `Validate()` on a cache miss, and `check()`s the game thread. | **Fixed (comments only)** in `RaceResult.cpp`/`RaceResult.h`. No code change, so no re-review needed per the reviewer. |
+| N2 | A held track that is destroyed (marked garbage) falls through to the older `SetTrack()` snapshot rather than refusing | **Known risk, not a regression** (pre-fix behaved the same). Recorded in the code comment. Batched forward to `RACE-004`: refuse when `Track` is set but invalid. |
+| N3 | `URaceFunctionLibrary` track-actor wrappers check `!= nullptr`, not `IsValid` | **Known risk, batched forward to `UI-002`.** A Blueprint holding a destroyed track reads a garbage actor's data rather than the safe default. |
+
+**Also a known risk, not changed here:** `RacingTelemetry.h` describes a vehicle sample's
+`TimestampSeconds` as race-clock time, but `ARacingVehiclePawn` stamps
+`FPlatformTime::Seconds()`. Documented at `BuildHudViewModel` (M3); the Core doc
+correction is batched forward to `UI-002`.
+
+**Evidence for cycle 1 (run and inspected):**
+- **Editor build:** `Scripts/Test/build-ui001-r2.log`: `Result: Succeeded`, 0 warning/error matches. The earlier `-r1` attempt died from memory exhaustion (UBA 9666, then `-1073741502` DLL init failure), not a compile error.
+- **Game build:** `Scripts/Test/build-game-ui001.log`: `Result: Succeeded`, 0 matches.
+- **Automation Core/Race/UI/Tests:** `Saved/Automation/ui001-run2/index.json`: 69 tests, 66 succeeded, 3 succeeded with warnings, 0 failed, 0 not run. The warnings are pre-existing: two deliberate failed-bake tests, and engine MetaSound noise in `AutomationTestPlacement`. The script's exit 1 is its name-presence gate being given prefixes, not a test result.
+- **Smoke:** `Saved/Automation/ui001-smoke`: 527 passed (525 + 2 with warnings), 0 failed, 0 not run. `GATE_PASSED`.
+
+**Test gate (test-engineer, after the N1 comment fix): PASS.** Run and inspected:
+- **Editor rebuild:** `Scripts/Test/build-ui001-te-editor.log`: `Result: Succeeded`, 0 warning/error matches. A real incremental rebuild that picked up the N1 comment edits.
+- **Game rebuild:** `Scripts/Test/build-ui001-te-game.log`: `Result: Succeeded`, 0 matches.
+- **Exact-name run:** `Saved/Automation/ui001-te-names/index.json`: 10/10 passed, 0 failed, 0 not run. `GATE_PASSED requiredNamesChecked=10`. Tests:
+  - `RacingSim.Core.Telemetry`, `RacingSim.Core.TelemetryFunctionLibrary`
+  - `RacingSim.Race.FunctionLibrary`, `RacingSim.Race.ResultTrackGate`, `RacingSim.Race.ResultSubmission`, `RacingSim.Race.ResultFreeze`, `RacingSim.Race.ResultRestartCycle`
+  - `RacingSim.UI.HudViewModel.Builder`, `RacingSim.UI.HudViewModel.RaceIntegration`
+  - `RacingSim.Tests.AutomationTestPlacement` (its one warning is engine MetaSound tag registration, not project code)
+- **Smoke:** `Saved/Automation/ui001-te-smoke/index.json`: 527 passed (525 + 2 with warnings), 0 failed, 0 not run. The VEH-006 closure baseline was 523, and UI-001 adds exactly 4 new suites: `Core.TelemetryFunctionLibrary`, `Race.FunctionLibrary`, `UI.HudViewModel.Builder` and `UI.HudViewModel.RaceIntegration`. 523 + 4 = 527.
+- **Grep criteria all hold:**
+  - no `Race/` include under `UI/`;
+  - no new `FindFirstGateCrossing`;
+  - every production `AreSectorsConsistent` call passes an explicit count;
+  - both `static_assert(std::is_trivially_copyable_v<...>)` are present.
+- **Wording note for the next edit of the RACE-003 M3 criterion:** the one zero-argument `AreSectorsConsistent()` call is in a test (`RacingTelemetryFunctionLibrarySpec.cpp`). It is the deliberate, commented precondition that the criterion's own narrative requires ("reads consistent without the count"). The criterion's grep clause and its narrative clause conflict on literal wording; the implementation follows the narrative.
+
+**Closed 2026-09-18.** Both gates passed in repair cycle 1 of 3. One criterion is met by trace rather than execution: RACE-003 M1 "revert-provable" (see M4 above). Known risks carried forward: L5, L7, N2, N3, and the Core telemetry timestamp doc.
 
 ---
 

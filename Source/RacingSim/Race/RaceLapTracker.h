@@ -542,6 +542,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	FRacingLapTiming GetCurrentLapTiming() const;
 
+	/**
+	 * Running time of the lap in progress, SECONDS; 0 with no lap in progress.
+	 *
+	 * The non-allocating half of GetCurrentLapTiming(), which builds a split array on
+	 * every call (CORE-002 finding M-4). A per-frame reader wants this. Peeks the clock,
+	 * so a HUD repaint cannot advance race time.
+	 */
+	UFUNCTION(BlueprintPure, Category = "Race|Lap")
+	double GetCurrentLapElapsedSeconds() const;
+
 	/** The most recently closed lap, valid or not. LapNumber == 0 when none has closed. */
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	FRacingLapTiming GetLastCompletedLap() const { return LastCompletedLap; }
@@ -549,6 +559,17 @@ public:
 	/** The fastest VALID lap this session. LapNumber == 0 when there is none. */
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	FRacingLapTiming GetBestValidLap() const { return BestValidLap; }
+
+	/**
+	 * GetLastCompletedLap() without the copy. The by-value getters exist for Blueprint;
+	 * a C++ per-frame reader uses these, because FRacingLapTiming carries a TArray and
+	 * copying it allocates (CORE-002 finding M-4). The reference is valid until the next
+	 * lap close or restart; do not hold it across frames.
+	 */
+	const FRacingLapTiming& PeekLastCompletedLap() const { return LastCompletedLap; }
+
+	/** GetBestValidLap() without the copy. Same lifetime rule as PeekLastCompletedLap(). */
+	const FRacingLapTiming& PeekBestValidLap() const { return BestValidLap; }
 
 	/**
 	 * The view-model frame a HUD reads: lap, last gate, arc-length distance, fraction.
