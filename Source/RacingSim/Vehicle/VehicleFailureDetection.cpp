@@ -602,4 +602,9 @@ namespace RacingSim::Vehicle
 
 		return Report;
 	}
+
+	int32 GetMinContactSuppressionEvaluations()
+	{
+		return GVehicleFailureMinContactSuppressionEvaluations;
+	}
 }

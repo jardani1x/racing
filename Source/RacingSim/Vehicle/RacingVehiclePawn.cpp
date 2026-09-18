@@ -904,7 +904,7 @@ bool ARacingVehiclePawn::PublishCarSpecVersionTo(URaceResultRecorder* Recorder)
 	return true;
 }
 
-void ARacingVehiclePawn::ExecuteSafeReset(
+bool ARacingVehiclePawn::ExecuteSafeReset(
 	const ATrackDefinitionActor* Track, URaceLapTracker* LapTracker, const double LastValidProgressDistanceCm)
 {
 	if (!IsValid(Track))
@@ -917,7 +917,7 @@ void ARacingVehiclePawn::ExecuteSafeReset(
 		UE_LOG(LogRacingVehicle, Warning,
 			TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset called with a null/invalid Track; no-op."),
 			*GetNameSafe(this));
-		return;
+		return false;
 	}
 
 	// DELIBERATE SUBSTITUTION, DISCLOSED: the ticket text names
@@ -943,7 +943,7 @@ void ARacingVehiclePawn::ExecuteSafeReset(
 			TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset's track has no valid reset sample (unbuilt or empty ")
 			TEXT("centerline); no-op rather than teleporting to a guessed pose."),
 			*GetNameSafe(this));
-		return;
+		return false;
 	}
 
 	// RACE-002 M3 precondition, CHECKED rather than assumed. GetResetPoseAtOrBeforeDistanceCm
@@ -1053,9 +1053,74 @@ void ARacingVehiclePawn::ExecuteSafeReset(
 		LapTracker->NotifyVehicleReset(ResetLocation, ResetSampleDistanceCm);
 	}
 
+	// RACE-006: stamp the cooldown on the same simulated clock the detector's
+	// suppression budget runs on, and drop any request latched before this reset so it
+	// cannot fire a second one the moment the cooldown ends.
+	bHasExecutedReset = true;
+	LastResetSimulationTimeSeconds = SimulationTimeSeconds;
+	bResetRequestPending = false;
+
 	UE_LOG(LogRacingVehicle, Log,
 		TEXT("ARacingVehiclePawn '%s': ExecuteSafeReset placed the car at distance %f cm (requested %f cm)."),
 		*GetNameSafe(this), ResetSampleDistanceCm, LastValidProgressDistanceCm);
+	return true;
+}
+
+bool ARacingVehiclePawn::ConsumeResetRequest()
+{
+	const bool bWasPending = bResetRequestPending;
+	bResetRequestPending = false;
+	return bWasPending;
+}
+
+double ARacingVehiclePawn::GetEffectiveResetCooldownSeconds() const
+{
+	const FVehicleFailureThresholds Thresholds = ResolveFailureThresholds();
+	const double MinimumSeconds = RacingSim::Vehicle::ComputeMinimumResetCooldownSeconds(
+		Thresholds.MaxContactSuppressionSeconds, TelemetrySampleRateHz);
+
+	if (!bWarnedResetCooldownBelowMinimum
+		&& (!FMath::IsFinite(ResetCooldownSeconds) || static_cast<double>(ResetCooldownSeconds) < MinimumSeconds))
+	{
+		// Raised, not refused: the minimum is the one value that keeps the detector's
+		// ceiling out of reach, and refusing every reset would strand the driver.
+		// Warned once per pawn so a reset-heavy session cannot fill the log.
+		bWarnedResetCooldownBelowMinimum = true;
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s': ResetCooldownSeconds %f is below the minimum %f s the failure detector ")
+			TEXT("needs at MaxContactSuppressionSeconds %f and TelemetrySampleRateHz %f; enforcing the minimum."),
+			*GetNameSafe(this), ResetCooldownSeconds, MinimumSeconds,
+			Thresholds.MaxContactSuppressionSeconds, TelemetrySampleRateHz);
+	}
+
+	return RacingSim::Vehicle::ResolveEffectiveResetCooldownSeconds(
+		ResetCooldownSeconds, Thresholds.MaxContactSuppressionSeconds, TelemetrySampleRateHz);
+}
+
+bool ARacingVehiclePawn::CanAcceptResetRequest(FString& OutReason) const
+{
+	RacingSim::Vehicle::FVehicleResetGateInput GateInput;
+	GateInput.bHasPreviousReset = bHasExecutedReset;
+	GateInput.SimulationTimeSeconds = SimulationTimeSeconds;
+	GateInput.LastResetSimulationTimeSeconds = LastResetSimulationTimeSeconds;
+	GateInput.CooldownSeconds = GetEffectiveResetCooldownSeconds();
+	GateInput.bCaptureEnabled = TelemetrySampleRateHz > 0.0f && FMath::IsFinite(TelemetrySampleRateHz);
+	GateInput.bContactSuppressionArmed = FailureState.bHasPreDiscontinuityLocation;
+
+	const RacingSim::Vehicle::EVehicleResetGateResult Result = RacingSim::Vehicle::EvaluateResetGate(GateInput);
+	if (Result == RacingSim::Vehicle::EVehicleResetGateResult::Accepted)
+	{
+		OutReason.Reset();
+		return true;
+	}
+
+	OutReason = FString::Printf(
+		TEXT("vehicle reset gate refused: %s (simulated %.3f s since last reset, cooldown %.3f s, suppression %s)"),
+		RacingSim::Vehicle::LexResetGateResult(Result),
+		bHasExecutedReset ? SimulationTimeSeconds - LastResetSimulationTimeSeconds : -1.0,
+		GateInput.CooldownSeconds,
+		GateInput.bContactSuppressionArmed ? TEXT("armed") : TEXT("expired"));
+	return false;
 }
 
 void ARacingVehiclePawn::Tick(const float DeltaSeconds)
@@ -1117,6 +1182,11 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	const FVehicleInputCommand& Command,
 	const float DeltaSeconds)
 {
+	// RACE-006: the simulated clock advances whether or not capture is enabled -- the
+	// reset cooldown runs on it, and a pawn with capture disabled must still be able to
+	// finish a cooldown. Only the snapshot and the evaluation below are gated.
+	SimulationTimeSeconds += static_cast<double>(DeltaSeconds);
+
 	if (!(TelemetrySampleRateHz > 0.0f) || !FMath::IsFinite(TelemetrySampleRateHz))
 	{
 		// 0 (or a corrupt value) disables capture. Explicitly, and without arming
@@ -1138,10 +1208,10 @@ void ARacingVehiclePawn::CaptureAndEvaluateTelemetry(
 	// wall clock doing both jobs, which is invisible in a real-time session and wrong
 	// everywhere else -- see FVehicleTelemetrySnapshot::SimulationTimeSeconds.
 	//
-	// Accumulated BEFORE the rate gate below, so decimating capture never loses time:
-	// the clock counts every frame, capture reads it every Nth.
+	// Accumulated BEFORE the rate gate below (at the top of this function), so
+	// decimating capture never loses time: the clock counts every frame, capture reads
+	// it every Nth.
 	const double NowSeconds = FPlatformTime::Seconds();
-	SimulationTimeSeconds += static_cast<double>(DeltaSeconds);
 
 	// Paced on SIMULATED time, so the sample rate means the same thing in a fixed-step
 	// test as it does at runtime -- a 60 Hz rate is one sample per simulated 1/60 s
@@ -1232,15 +1302,15 @@ FVehicleChaosInput ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputComm
 	VehicleMovementComponent->SetChangeUpInput(ChaosInput.bChangeUp);
 	VehicleMovementComponent->SetChangeDownInput(ChaosInput.bChangeDown);
 
-	// Reset is VEH-005's scope (the reset POSE), delivered as the public
-	// ExecuteSafeReset(Track, LapTracker, LastValidProgressDistanceCm) below -- but this
-	// pawn still deliberately does not act on Command.bResetRequested itself. Wiring the
-	// one-shot flag to a call needs a Track and a race-progress distance neither this
-	// pawn nor VehicleInputComp owns; a future GameMode/RaceDirector ticket is the
-	// intended caller, per VEH-005's own acceptance criteria. VEH-001's input-side reset
-	// (NotifyVehicleReset) only clears input smoothing state and is called from
-	// UnPossessed today; ExecuteSafeReset calls it too, alongside
-	// NotifyTelemetryDiscontinuity(), so both halves of a wired reset are already
-	// covered once that future caller exists.
+	// RACE-006: the one-shot reset request is LATCHED here, not acted on. Executing it
+	// needs a Track and a race-progress distance neither this pawn nor VehicleInputComp
+	// owns; RacingSim::Game::ServiceDriverResetRequest consumes the latch, asks the race
+	// director and CanAcceptResetRequest, and only then calls ExecuteSafeReset. A latch
+	// rather than a direct read keeps the request alive across the pawn/controller tick
+	// order, and ORing keeps a second raise before servicing from being lost or doubled.
+	if (Command.bResetRequested)
+	{
+		bResetRequestPending = true;
+	}
 	return ChaosInput;
 }

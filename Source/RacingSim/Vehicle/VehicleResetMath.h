@@ -103,4 +103,88 @@ namespace RacingSim::Vehicle
 		int32 SampleIndex,
 		double SampleDistanceCm,
 		double InvalidDistanceCm);
+
+	/**
+	 * RACE-006 / VEH-007 routed requirement: the shortest reset cooldown, in the pawn's
+	 * SIMULATED seconds, that lets a previous reset's contact-suppression basis expire
+	 * before the next reset re-arms it under steady capture.
+	 *
+	 * Why this number. After a reset the detector's basis expires, at the latest, once
+	 * both the per-arm evaluation floor has passed (Floor + 1 evaluations) and
+	 * MaxContactSuppressionSeconds of simulated time has elapsed since the first
+	 * evaluation after the arm. With a steady capture interval I = 1 / rate, the first
+	 * evaluation lands within I of the reset, so expiry is within
+	 * I + max(Floor * I, Budget + I) <= Budget + (Floor + 1) * I of it.
+	 *
+	 * A time bound alone is not exact: an irregular long frame right after a reset
+	 * starts the budget late. The exact invariant -- "never re-arm while armed" -- is
+	 * EvaluateResetGate's SuppressionArmed check; this cooldown is the authored,
+	 * testable floor that keeps a well-behaved reset storm from hitting that gate.
+	 *
+	 * @param MaxContactSuppressionSeconds  FVehicleFailureThresholds' budget, SECONDS.
+	 * @param TelemetrySampleRateHz         the pawn's capture rate, HERTZ. Zero, negative
+	 *                                      or non-finite means capture is disabled, the
+	 *                                      detector never arms, and the budget alone is
+	 *                                      returned.
+	 * @return never negative, never NaN. A non-finite or negative budget reads as 0.
+	 */
+	RACINGSIM_API double ComputeMinimumResetCooldownSeconds(
+		float MaxContactSuppressionSeconds,
+		float TelemetrySampleRateHz);
+
+	/**
+	 * The cooldown the pawn actually enforces: max(Authored, minimum). An authored value
+	 * below the minimum, or a non-finite one, is raised to the minimum -- the minimum is
+	 * the one safe value, and refusing every reset would strand the driver.
+	 */
+	RACINGSIM_API double ResolveEffectiveResetCooldownSeconds(
+		float AuthoredCooldownSeconds,
+		float MaxContactSuppressionSeconds,
+		float TelemetrySampleRateHz);
+
+	/** RACE-006: why the vehicle-side reset gate admitted or refused a request. */
+	enum class EVehicleResetGateResult : uint8
+	{
+		Accepted,
+		/** Less than the effective cooldown of simulated time since the last executed reset. */
+		CoolingDown,
+		/** The previous reset's contact-suppression basis is still armed (capture enabled only). */
+		SuppressionArmed,
+		/** The pawn's simulated clock, or the cooldown, is not finite. */
+		ClockUnusable,
+	};
+
+	/** RACE-006: everything EvaluateResetGate needs, so it stays a pure function. */
+	struct FVehicleResetGateInput
+	{
+		/** False until the pawn has executed its first reset; the cooldown does not apply before it. */
+		bool bHasPreviousReset = false;
+
+		/** The pawn's simulated clock now, SECONDS. */
+		double SimulationTimeSeconds = 0.0;
+
+		/** The pawn's simulated clock at the last executed reset, SECONDS. */
+		double LastResetSimulationTimeSeconds = 0.0;
+
+		/** The effective cooldown (ResolveEffectiveResetCooldownSeconds), SECONDS. */
+		double CooldownSeconds = 0.0;
+
+		/** Telemetry capture is running, so the failure detector is live. */
+		bool bCaptureEnabled = true;
+
+		/** FVehicleFailureDetectorState::bHasPreDiscontinuityLocation. */
+		bool bContactSuppressionArmed = false;
+	};
+
+	/**
+	 * RACE-006: the vehicle-side reset gate. Checks, in order: ClockUnusable,
+	 * CoolingDown, SuppressionArmed.
+	 *
+	 * SuppressionArmed applies only while capture is enabled: with capture disabled
+	 * the detector is not evaluated, so its state is stale and cannot mean anything.
+	 */
+	RACINGSIM_API EVehicleResetGateResult EvaluateResetGate(const FVehicleResetGateInput& Input);
+
+	/** Stable name for a log line or a test message. */
+	RACINGSIM_API const TCHAR* LexResetGateResult(EVehicleResetGateResult Result);
 }

@@ -311,3 +311,62 @@ bool ARaceDirector::GatherHudRaceInputs(FRacingHudRaceInputs& OutInputs) const
 
 	return URaceFunctionLibrary::GatherHudRaceInputs(StateMachine, LapTracker, ResultRecorder, /*CompetitorCount*/ 1, OutInputs);
 }
+
+bool ARaceDirector::CanResetCompetitor(const APawn* Pawn, double& OutLastValidProgressDistanceCm, FString& OutReason) const
+{
+	if (!bSetupSucceeded || StateMachine == nullptr || LapTracker == nullptr)
+	{
+		OutReason = TEXT("race session is not set up");
+		return false;
+	}
+
+	if (Pawn == nullptr || Pawn != Competitor.Get())
+	{
+		OutReason = FString::Printf(TEXT("pawn '%s' is not this session's competitor"), *GetNameSafe(Pawn));
+		return false;
+	}
+
+	// Racing only. In PreRace and Countdown the car sits on its grid slot and the reset
+	// pose would move it off it; after Finished the result is frozen and a reset could
+	// only disturb what the HUD is presenting.
+	const ERaceState State = StateMachine->GetRaceState();
+	if (State != ERaceState::Racing)
+	{
+		OutReason = FString::Printf(TEXT("resets are only accepted while Racing; the session is in %s"),
+			*UEnum::GetValueAsString(State));
+		return false;
+	}
+
+	if (!IsValid(Track))
+	{
+		OutReason = TEXT("no live track to reset onto");
+		return false;
+	}
+
+	const double ProgressCm = LapTracker->GetProgressDistanceCm();
+	if (!FMath::IsFinite(ProgressCm) || ProgressCm < 0.0)
+	{
+		OutReason = FString::Printf(TEXT("lap tracker has no valid progress (%f cm) to reset back to"), ProgressCm);
+		return false;
+	}
+
+	OutReason.Reset();
+	OutLastValidProgressDistanceCm = ProgressCm;
+	return true;
+}
+
+void ARaceDirector::NotifyCompetitorReset(const APawn* Pawn)
+{
+	if (!bSetupSucceeded || LapTracker == nullptr || Pawn == nullptr || Pawn != Competitor.Get())
+	{
+		return;
+	}
+
+	// The tracker re-seeded itself in URaceLapTracker::NotifyVehicleReset; follow it, so
+	// the windowed search does not look for the car around the place it was reset from.
+	const double ProgressCm = LapTracker->GetProgressDistanceCm();
+	if (FMath::IsFinite(ProgressCm) && ProgressCm >= 0.0)
+	{
+		LastDistanceCm = ProgressCm;
+	}
+}

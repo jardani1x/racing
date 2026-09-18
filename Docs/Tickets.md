@@ -3182,7 +3182,7 @@ restores the single-counter detector. No binary assets are involved.
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 | RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | **DONE** — closed 2026-09-18. `ARaceDirector` + `Game/` composition root (game mode, player controller, graybox ground); default map and game mode set; session tested in both login orders with a real `ULocalPlayer`. Car not yet drivable (input assets → `TRACK-003`). Opened by UI-002: nothing in the project yet created a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
-| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | OPEN — opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check. Inherits the VEH-007 reset-cooldown requirement (cooldown longer than `MaxContactSuppressionSeconds` plus the floor, pinned by a test) |
+| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | IN PROGRESS 2026-09-18 (branch `race-006-driver-reset`); criteria under "### RACE-006 — acceptance criteria". Opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check. Inherits the VEH-007 reset-cooldown requirement (cooldown longer than `MaxContactSuppressionSeconds` plus the floor, pinned by a test) |
 | TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN — opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
@@ -5691,6 +5691,115 @@ Validation (`test-engineer`, independent runs): **PASS**. Editor and Game builds
 to an executed test.
 
 ---
+
+### RACE-006 — acceptance criteria, opened 2026-09-18
+
+Scope: a held driver reset reaches `ARacingVehiclePawn::ExecuteSafeReset` through the race
+session, with the VEH-007 cooldown requirement enforced and pinned. Owner
+`race-systems-engineer` (implemented directly in the local session). Gate B. Depends on
+`RACE-005` and `VEH-007` (both DONE).
+
+**Who decides what.**
+- The **pawn** (`Vehicle/`) latches `FVehicleInputCommand::bResetRequested` and owns the
+  vehicle-side gate: its own simulated clock, its failure detector's suppression basis
+  and the cooldown. The cooldown is about the detector, so it lives with the detector.
+- The **director** (`Race/`) owns the race-side gate: which pawn is the competitor, which
+  race state allows a reset, and the last valid progress distance. It still includes
+  neither `Vehicle/` nor `UI/`.
+- **`Game/`** is the only code that sees both. One function services a latched request:
+  consume, ask the director, ask the pawn, execute, then tell the director.
+
+- [ ] **Latch.** `ApplyInputCommand` latches `Command.bResetRequested` into a pending
+  request. `ConsumeResetRequest()` returns it and clears it. A successful
+  `ExecuteSafeReset` also clears it, so a request queued before a reset cannot fire a
+  second one.
+- [ ] **Cooldown property.** `ARacingVehiclePawn::ResetCooldownSeconds`: float, default
+  1.0 s, `ClampMin 0`, `ClampMax 60`, measured on the pawn's own simulated clock (the
+  clock the detector's time budget uses).
+- [ ] **Minimum cooldown.** Pure function
+  `RacingSim::Vehicle::ComputeMinimumResetCooldownSeconds(MaxContactSuppressionSeconds,
+  TelemetrySampleRateHz)` returns `MaxContactSuppressionSeconds + (floor + 1) / rate`,
+  where floor is the detector's evaluation floor (3).
+  - The floor is now read through a public accessor rather than duplicated.
+  - With capture disabled (rate 0 or not finite) it returns the budget alone.
+  - At the defaults it is `0.5 + 4/60` s.
+- [ ] **Effective cooldown.** It is `max(ResetCooldownSeconds, minimum)`. A value below
+  the minimum, or a non-finite value, is raised to the minimum and warned once, not
+  refused: the minimum is the one safe value, and a driver with no reset is worse.
+- [ ] **Vehicle gate.** Pure `RacingSim::Vehicle::EvaluateResetGate` refuses in three
+  cases:
+  - `CoolingDown`: less than the effective cooldown of simulated time has passed since
+    the last executed reset.
+  - `SuppressionArmed`: capture is enabled and the previous reset's contact-suppression
+    basis is still armed. This is the exact invariant behind the VEH-007 requirement.
+    The time cooldown alone cannot guarantee it: after a hitch, the first capture after
+    a reset starts the budget late.
+  - `ClockUnusable`: the simulated clock is not finite.
+
+  `ARacingVehiclePawn::CanAcceptResetRequest(OutReason)` wraps the pure function with the
+  pawn's state.
+- [ ] **`ExecuteSafeReset` result.** It returns `bool`: true only when the car was
+  actually placed. On success it stamps the reset time. Its documented no-ops return
+  false.
+- [ ] **Director gate.** `ARaceDirector::CanResetCompetitor(Pawn, OutLastValidProgressCm,
+  OutReason)` refuses:
+  - before setup;
+  - for a pawn that is not the competitor;
+  - outside `Racing`, which covers PreRace, Countdown, Finished and Results;
+  - with an invalid track;
+  - with no lap-tracker progress.
+
+  On approval it returns `URaceLapTracker::GetProgressDistanceCm()`.
+  `NotifyCompetitorReset(Pawn)` resyncs the director's windowed-search hint to the
+  tracker's post-reset distance.
+- [ ] **Composition.** `RacingSim::Game::ServiceDriverResetRequest(Director, Vehicle,
+  OutReason)` returns an outcome enum: `NoRequest`, `RefusedByRace`, `RefusedByVehicle`,
+  `NotPlaced` or `Executed`. `ARacingPlayerController::Tick` calls it for its possessed
+  pawn. A refusal logs once per request, not per frame.
+- [ ] **Test `RacingSim.Vehicle.ResetGate`** (Smoke). It checks:
+  - the gate's truth table;
+  - the minimum formula at 60, 120 and 0 Hz;
+  - effective cooldown clamping, including non-finite input;
+  - that the pawn CDO's `ResetCooldownSeconds` is at or above the minimum at the default
+    thresholds and rate.
+- [ ] **Test `RacingSim.Vehicle.ResetStormCannotReachCeiling`** (Smoke, pure detector).
+  - A stalled car's driver requests a reset on every capture for 30 simulated seconds.
+    The gate admits them, and each admitted reset announces a short-reset discontinuity.
+  - At 60 Hz steady, 120 Hz steady and 60 Hz with hitches (including a long first frame
+    after each reset), the carried ceiling count never reaches 240, and no evaluation
+    raises `InvalidContact`.
+  - Control: re-announcing on a fixed period shorter than the budget, with no gate, does
+    reach the ceiling. This proves the test can fail.
+- [ ] **Test `RacingSim.Race.Director.CompetitorResetApproval`** (Product). It covers:
+  - refusal in PreRace, Countdown and Results;
+  - refusal for a stranger pawn;
+  - approval in Racing, returning the tracker's progress;
+  - the resync after `NotifyCompetitorReset`.
+- [ ] **Test `RacingSim.Game.DriverReset`** (Product, real Chaos car, real track and
+  director).
+  - With no request, the outcome is `NoRequest`.
+  - A reset held through the real input path during PreRace gives `RefusedByRace`.
+  - In Racing, the outcome is `Executed`:
+    - the car is placed at the track's reset pose;
+    - the tracker's completed laps do not increase, and its progress does not move
+      forward;
+    - the director's hint equals the tracker's progress;
+    - the detector stays silent.
+  - An immediate second request gives `RefusedByVehicle`.
+  - After driving past the effective cooldown with the basis expired, a request is
+    `Executed` again.
+- [ ] Editor and Game targets build with 0 warnings. Smoke has no new failures or
+  warnings. The named Product tests above pass, alongside `RacingSim.Race.Director.*`,
+  `RacingSim.Game.*`, `RacingSim.Vehicle.Manoeuvre.SafeResetUnderLoad` and
+  `RacingSim.Vehicle.FailureDetectionSuppressionBound`.
+
+**Deliberately excluded.**
+- Resets during Countdown (for a car flipped on the grid). Refused for now.
+- A ruleset-level reset limit or time penalty.
+- HUD reset-hold progress and refusal prompts (`UI-003`).
+- Input assets that let a person hold the reset key (`TRACK-003`).
+- Networked authority.
+- An automatic recover-when-stuck path.
 
 ## Epic 5 — Pixel Streaming
 
