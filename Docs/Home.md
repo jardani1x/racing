@@ -102,7 +102,7 @@ blocked on hardware.
 | Environment and governance (`ENV`, `LEGAL`, `ARCH`) | Complete | |
 | Core (`CORE`, `TEST`) | Complete | |
 | Track and race (`TRACK`, `RACE`) | Complete | |
-| Vehicle (`VEH`) | Complete | `VEH-006` closed 2026-09-15; follow-ups tracked in [[Tickets]] |
+| Vehicle (`VEH`) | Complete | `VEH-006` closed 2026-09-15; `VEH-007` (VEH-006 finding 2, suppression counter split) closed 2026-09-18; remaining follow-ups tracked in [[Tickets]] |
 | UI (`UI-001`..`UI-004`) | In progress | `UI-001` HUD data contract and `UI-002` native HUD widget closed 2026-09-18; `RACE-005` race session composition closed 2026-09-18. Next: `TRACK-003` input/lighting content (needs an editor session), then `STREAM-001` |
 | Streaming (`STREAM-001`..`003`) | Not started | |
 | Streaming infrastructure (`STREAM-004`..`006`), operations | Blocked | `BLOCKER-001`: no reference GPU worker |

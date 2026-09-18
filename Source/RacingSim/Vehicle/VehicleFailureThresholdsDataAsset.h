@@ -145,6 +145,11 @@ public:
 	 * See FVehicleFailureThresholds::MaxContactSuppressionSeconds for the reasoning and
 	 * for the two cases -- no contact ever, and a reset shorter than MaxContactDistanceCm
 	 * -- that it is the only bound for.
+	 *
+	 * The upper clamp of 60 s is wider than the value can matter: a 240-evaluation
+	 * ceiling expires the basis first, which lasts 240 / ARacingVehiclePawn::
+	 * TelemetrySampleRateHz seconds -- 4 s at its 60 Hz default. Anything above that
+	 * duration at the active capture rate is accepted and has no effect.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Wheel state", meta = (ClampMin = "0.05", ClampMax = "60.0"))
 	float MaxContactSuppressionSeconds = 0.5f;

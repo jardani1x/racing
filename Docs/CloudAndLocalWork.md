@@ -53,7 +53,7 @@ run, and never merge to `main`.
 | **Ticket writing** for `UI-002`..`UI-004`, `STREAM-001`..`003` | Full ticket from `Docs/12-TicketTemplate.md` with measurable acceptance criteria, scope boundaries, test names | Nothing beyond normal review |
 | **`UI-002`..`UI-003` C++ side** | Formatting/logic helpers (speed, RPM, gear, lap, delta, countdown), restart-flow state logic, their specs | Same as above, **plus all UMG widget `.uasset` work** (local only) |
 | **`STREAM-002` browser frontend shell** | TypeScript frontend and versioned custom-message schema inside a fresh clone of the pinned Pixel Streaming Infrastructure; `npm` install, build, lint and unit tests *can* run in the container | Wire into Unreal, run against a packaged build (`STREAM-001`), browser QA |
-| **VEH-006 follow-ups, code only** | Production finding 2 (split carried ceiling counter from per-arm floor counter) with CASE 9; findings 3–8 comment/doc fixes; spec S-L2..S-L4 | Build, CASE 9 revert proof, full manoeuvre set, Smoke |
+| **VEH-006 follow-ups, code only** | ~~Production finding 2 (split carried ceiling counter from per-arm floor counter) with CASE 9; findings 3–8 comment/doc fixes~~ done locally as `VEH-007` 2026-09-18; spec S-L2..S-L4 remain | Build, CASE 9 revert proof, full manoeuvre set, Smoke |
 | **VEH-006 harness follow-ups** (`H-M1`..`H-L6`) | Edit `Scripts/Test/*.ps1` | Must be *exercised* on Windows PowerShell 5.1 with failing-case logs (junction and `Remove-Item` behaviour differs from `pwsh` on Linux) |
 | **Static code review** | `code-reviewer` over a pushed diff, for findings only | A review of uncompiled code is advisory; re-review is required after local build fixes change the diff |
 | **Docs and vault** | [[Home]], ADRs, [[Tickets]] prose, the roadmap, research notes | — |
@@ -87,7 +87,7 @@ decision.
 2. ~~**Cloud/Local** — write `UI-001`, implement it, gate and merge.~~ Done locally 2026-09-18.
 3. ~~**Cloud** — write ticket `UI-002`; carry `UI-001`'s forwarded risks (L5, L7, N3, telemetry timestamp doc) into it.~~ Done 2026-09-18.
 4. ~~**Local** — `UI-002` UMG widgets bound to `FRacingHudViewModel`.~~ Done locally 2026-09-18 (native C++ tree; no `.uasset`). `RACE-005` race session composition done locally 2026-09-18. Next: `TRACK-003` input assets and lighting (editor/`.uasset` work), which `STREAM-001` browser QA needs to drive the car.
-5. **Cloud** — VEH-006 production finding 2 + CASE 9, and harness `H-*` edits, on a branch.
+5. **Cloud** — ~~VEH-006 production finding 2 + CASE 9~~ (done locally as `VEH-007`, 2026-09-18), and harness `H-*` edits, on a branch.
 6. **Local** — verify and merge those.
 7. **Cloud** — `STREAM-002` frontend groundwork in the pinned Pixel Streaming clone (can run in parallel with 3–6).
 8. **Local** — `UI-002`/`UI-003` widgets, `UI-004`, `STREAM-001`, `STREAM-003`.

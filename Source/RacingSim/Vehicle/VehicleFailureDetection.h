@@ -239,7 +239,13 @@ struct FVehicleFailureThresholds
 	 *     being re-based backwards every frame.
 	 *
 	 * Both constants live in VehicleFailureDetection.cpp and are structural rather than
-	 * tunable. Raising this value past the ceiling's worth of simulated time makes it inert.
+	 * tunable. Raising this value past the ceiling's worth of simulated time makes it inert,
+	 * and nothing warns when it does. That duration depends on the capture rate, because the
+	 * ceiling is 240 EVALUATIONS and the detector runs once per telemetry capture, at
+	 * ARacingVehiclePawn::TelemetrySampleRateHz (default 60 Hz, range [0, 1000], and in
+	 * practice capped by the tick rate): 4 s at the default, 240 / rate seconds in general.
+	 * The DataAsset accepts up to 60 s, so every value above that duration is accepted and
+	 * has no effect.
 	 */
 	float MaxContactSuppressionSeconds = 0.5f;
 };
@@ -351,13 +357,21 @@ struct FVehicleFailureDetectorState
 	bool bHasPreDiscontinuityArmTime = false;
 
 	/**
-	 * How many evaluations have seen the current basis, INCLUDING the one that stamped
-	 * PreDiscontinuityArmSimSeconds. Zero while no basis is armed.
+	 * The evaluation CEILING counter: how many evaluations have seen a contact basis since
+	 * it was last dropped, summed across every re-announcement of it.
 	 *
-	 * The time budget alone is not a safe bound, because the two quantities it relates
-	 * are measured in different things. The stale-contact tail this suppression exists
-	 * to cover is measured in CAPTURES (two of them, see PreDiscontinuityLocationCm),
-	 * while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
+	 * CARRIED across NotifyDiscontinuity(), deliberately -- see the comment there -- so it
+	 * is NOT necessarily zero while no basis is armed: an announcement that arms no basis
+	 * (the no-argument overload, or a non-finite PreviousLocationCm) keeps whatever count
+	 * it inherited, and the next evaluation that does see a basis continues from it. It is
+	 * zeroed only by Reset() from outside NotifyDiscontinuity(), by the ceiling itself, by
+	 * the time budget expiring the basis, and by the fresh-contact exit. It bounds only the
+	 * ceiling; the floor reads PreDiscontinuityArmEvaluations below.
+	 *
+	 * Why a count is needed at all: the time budget alone is not a safe bound, because
+	 * the two quantities it relates are measured in different things. The stale-contact
+	 * tail this suppression exists to cover is measured in CAPTURES (two of them, see
+	 * PreDiscontinuityLocationCm), while MaxContactSuppressionSeconds is measured in SIMULATED TIME -- and one frame
 	 * can be arbitrarily long. A teleport followed by a streaming hitch produces a
 	 * single frame longer than the whole budget, which would expire the basis on the
 	 * very evaluation that still needs it and raise the false InvalidContact this
@@ -366,6 +380,21 @@ struct FVehicleFailureDetectorState
 	 * VehicleFailureDetection.cpp for how the two bounds combine.
 	 */
 	int32 PreDiscontinuityEvaluations = 0;
+
+	/**
+	 * The evaluation FLOOR counter: how many evaluations have seen the basis since the
+	 * MOST RECENT announcement, INCLUDING the one that stamped PreDiscontinuityArmSimSeconds.
+	 * Zero while no basis is armed, and zeroed by every NotifyDiscontinuity().
+	 *
+	 * Separate from PreDiscontinuityEvaluations because the two bounds need opposite
+	 * behaviour on a re-announcement (VEH-007, spec S-M1). The ceiling must NOT rewind, or
+	 * repeated announcements buy unbounded suppression. The floor MUST rewind: it exists
+	 * to cover the two-capture stale tail that follows a teleport, and every announcement
+	 * is a new teleport with a new tail. A single carried counter was already past the
+	 * floor after a re-announcement, so one long frame inside the new tail expired the
+	 * basis and raised a false Error-level InvalidContact on a stationary car.
+	 */
+	int32 PreDiscontinuityArmEvaluations = 0;
 
 	/** Drop all accumulated history. Call on teleport, respawn or session restart. */
 	void Reset()
@@ -388,6 +417,7 @@ struct FVehicleFailureDetectorState
 		PreDiscontinuityArmSimSeconds = 0.0;
 		bHasPreDiscontinuityArmTime = false;
 		PreDiscontinuityEvaluations = 0;
+		PreDiscontinuityArmEvaluations = 0;
 	}
 
 	/**
@@ -415,11 +445,16 @@ struct FVehicleFailureDetectorState
 		// as one announcement followed by M evaluations would be: the detector cannot be
 		// made deaf by being told the same thing over and over.
 		//
-		// Only the COUNT is carried. The arm time is not: the fresh announcement genuinely
-		// re-bases the pose being suppressed, so the time budget should measure from now,
-		// while the count answers a different question -- how many chances the detector has
-		// already had to see contact from somewhere else -- and that history is not undone
-		// by announcing the same discontinuity again.
+		// Only the CEILING count is carried. The arm time is not: the fresh announcement
+		// genuinely re-bases the pose being suppressed, so the time budget should measure
+		// from now, while the ceiling count answers a different question -- how many
+		// chances the detector has already had to see contact from somewhere else -- and
+		// that history is not undone by announcing the same discontinuity again.
+		//
+		// The FLOOR count (PreDiscontinuityArmEvaluations) is not carried either, for the
+		// same reason as the arm time: a new announcement is a new teleport with its own
+		// two-capture stale tail, and the floor has to cover that tail from its start.
+		// Reset() below leaves it at zero.
 		const int32 CarriedEvaluations = PreDiscontinuityEvaluations;
 
 		Reset();

@@ -42,6 +42,11 @@ namespace
 	 * FVehicleFailureDetectorState::PreDiscontinuityLocationCm), so any bound that can
 	 * fire before the third evaluation cannot do the job at all.
 	 *
+	 * Compared against FVehicleFailureDetectorState::PreDiscontinuityArmEvaluations, the
+	 * PER-ARM count, which every NotifyDiscontinuity() restarts at zero. The derivation
+	 * below counts from that zero; it did not hold while the floor read the carried
+	 * ceiling count, which a re-announcement leaves wherever it was (VEH-007, spec S-M1).
+	 *
 	 * Three is the tail exactly, and NOT the tail plus a margin -- an earlier version of
 	 * this comment claimed a margin it does not have. Evaluation 1 is always the straddling
 	 * evaluation, already suppressed by bDiscontinuityPending, which is consumed on the
@@ -59,9 +64,18 @@ namespace
 	 * Covers the one case the time budget cannot: a simulated clock that stops
 	 * advancing while evaluations keep arriving. SuppressedForSeconds then stays at
 	 * zero for ever and the time bound never fires, which is precisely the unbounded
-	 * suppression this whole section exists to prevent. Four seconds at the default
-	 * capture rate -- eight times the time budget, so it can only ever be the bound
-	 * that fires when the clock has stopped telling the truth.
+	 * suppression this whole section exists to prevent.
+	 *
+	 * Measured in evaluations, so its duration depends on the capture rate. The detector
+	 * runs once per capture, at ARacingVehiclePawn::TelemetrySampleRateHz (default 60 Hz,
+	 * range [0, 1000], in practice capped by the tick rate), so the ceiling lasts
+	 * 240 / rate seconds: 4 s at the default, eight times the 0.5 s time budget. Above
+	 * 480 Hz it lasts less than that budget and fires first even on a healthy clock;
+	 * that is still safe, because 240 is far above the floor of 3, but at such rates it
+	 * stops being purely the stopped-clock backstop.
+	 *
+	 * Compared against FVehicleFailureDetectorState::PreDiscontinuityEvaluations, the
+	 * CARRIED count, so re-announcing a discontinuity cannot rewind it.
 	 */
 	constexpr int32 GVehicleFailureMaxContactSuppressionEvaluations = 240;
 
@@ -134,6 +148,19 @@ namespace RacingSim::Vehicle
 		const bool bStraddlesDiscontinuity = State.bDiscontinuityPending;
 		State.bDiscontinuityPending = false;
 
+		// The one way the contact-suppression basis ends. Shared by the three exits that
+		// drop it -- the ceiling and the time budget in section 0, fresh contact after the
+		// wheel loop -- so they cannot drift apart on which fields they clear.
+		auto DropContactSuppressionBasis = [&State]()
+		{
+			State.bHasPreDiscontinuityLocation = false;
+			State.PreDiscontinuityLocationCm = FVector::ZeroVector;
+			State.bHasPreDiscontinuityArmTime = false;
+			State.PreDiscontinuityArmSimSeconds = 0.0;
+			State.PreDiscontinuityEvaluations = 0;
+			State.PreDiscontinuityArmEvaluations = 0;
+		};
+
 		// -- 0. Bound the contact-suppression basis ------------------------------
 		//
 		// Runs BEFORE the wheel loop reads the basis, so the budget expires on the
@@ -161,33 +188,47 @@ namespace RacingSim::Vehicle
 		// can end that.
 		if (State.bHasPreDiscontinuityLocation)
 		{
-			auto DropContactSuppressionBasis = [&State]()
-			{
-				State.bHasPreDiscontinuityLocation = false;
-				State.PreDiscontinuityLocationCm = FVector::ZeroVector;
-				State.bHasPreDiscontinuityArmTime = false;
-				State.PreDiscontinuityArmSimSeconds = 0.0;
-				State.PreDiscontinuityEvaluations = 0;
-			};
-
-			// Plain increment. This used to be clamped against MAX_int32, which read as an
-			// overflow guard and was not one: the ceiling below drops the basis two orders
-			// of magnitude short of that, so the clamp was unreachable, and had it ever been
-			// reachable the signed addition would already have been undefined behaviour
-			// before FMath::Min saw the result. The real bound on this counter is the
-			// ceiling, and pretending otherwise only hid where the bound actually lives.
+			// Plain increments. The ceiling counter used to be clamped against MAX_int32,
+			// which read as an overflow guard and was not one: the ceiling below drops the
+			// basis at 240, about seven orders of magnitude short of MAX_int32, so the clamp
+			// was unreachable, and had it ever been reachable the signed addition would
+			// already have been undefined behaviour before FMath::Min saw the result. The
+			// real bound on both counters is the ceiling, which zeroes them together; the
+			// floor counter never exceeds the ceiling counter because every path that
+			// zeroes the ceiling counter zeroes it too, and NotifyDiscontinuity() zeroes it
+			// on its own.
 			++State.PreDiscontinuityEvaluations;
+			++State.PreDiscontinuityArmEvaluations;
 
+			// The floor reads the PER-ARM count and the ceiling reads the CARRIED count
+			// (VEH-007, spec S-M1). A re-announcement starts a new stale tail, so the floor
+			// must restart with it; reading the carried count here let a re-announced basis
+			// start already past the floor, and a long frame inside the new tail then
+			// expired it and raised a false InvalidContact on a stationary car.
 			const bool bPastEvaluationFloor =
-				State.PreDiscontinuityEvaluations > GVehicleFailureMinContactSuppressionEvaluations;
+				State.PreDiscontinuityArmEvaluations > GVehicleFailureMinContactSuppressionEvaluations;
 			const bool bPastEvaluationCeiling =
 				State.PreDiscontinuityEvaluations >= GVehicleFailureMaxContactSuppressionEvaluations;
 
 			if (bPastEvaluationCeiling)
 			{
 				// The ceiling ignores the floor deliberately: it is the bound of last resort,
-				// and it is set far enough above the tail that reaching it always means
-				// something other than a normal reset is happening.
+				// and it is set far enough above the tail that reaching it means something
+				// other than a single normal reset is happening -- a stopped clock, or a
+				// storm of re-announcements each arriving before the time budget could
+				// expire the basis it re-armed.
+				//
+				// ACCEPTED COST of ignoring the floor (VEH-007, the near-ceiling half of spec
+				// S-M1): a genuine teleport announced when the carried count is already
+				// within three evaluations of the ceiling (237..239) has its basis dropped
+				// inside its own stale tail and raises a false InvalidContact on one or both
+				// tail captures. Gating the ceiling on the floor would close that and reopen
+				// CASE 8 -- a caller re-announcing every third evaluation would then never be
+				// bounded. With a healthy clock the count only gets that high if
+				// announcements keep arriving before the previous basis expired, so a reset
+				// caller whose cooldown exceeds MaxContactSuppressionSeconds plus the floor's
+				// evaluations at the active capture rate cannot reach it (RACE-006
+				// requirement).
 				//
 				// It is also tested BEFORE the non-finite branch below, which costs that
 				// branch its guarantee on exactly one evaluation. If the clock is non-finite
@@ -513,11 +554,7 @@ namespace RacingSim::Vehicle
 		// fresh contact evidence never arrives at all.
 		if (bAnyWheelReportsFreshContact)
 		{
-			State.bHasPreDiscontinuityLocation = false;
-			State.PreDiscontinuityLocationCm = FVector::ZeroVector;
-			State.bHasPreDiscontinuityArmTime = false;
-			State.PreDiscontinuityArmSimSeconds = 0.0;
-			State.PreDiscontinuityEvaluations = 0;
+			DropContactSuppressionBasis();
 		}
 
 		// Wheels beyond NumWheels never accumulate, but a vehicle that loses wheels

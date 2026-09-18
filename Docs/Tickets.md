@@ -1088,6 +1088,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-004 | Telemetry and failure detection | vehicle-physics-engineer | VEH-002, VEH-003 | C | **DONE** 2026-08-27 — `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: a stale-input detector that cried wolf on ordinary idle coasting; a refused tune write that could still stamp a race result with a car-spec version — plus 5 MEDIUM, 4 LOW); repair cycle 1 closed both HIGH and 3 MEDIUM; re-review returned APPROVED WITH FOLLOW-UPS with 5 doc/comment corrections applied in a follow-up pass (no logic change) rather than a second repair cycle. Both targets build clean (0 warnings, `-NoUBA`) and Smoke `succeeded=515, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, 10 new `RacingSim.Vehicle.*` tests `Success`. Merged to `main`. Two items routed forward to `VEH-005` (a `NotifyTelemetryDiscontinuity()` call obligation, and a reset-accumulation-during-stale-gap trade to resolve); the standing pawn-adapter test-coverage gap (shared with VEH-002/VEH-003) is acknowledged, not solved |
 | VEH-005 | Camera and safe reset | vehicle-physics-engineer | VEH-002 | B, C | **DONE** 2026-09-15 — deferred Gate B/C manoeuvre proof closed by `VEH-006` (`RacingSim.Vehicle.Manoeuvre.SafeResetUnderLoad` and `SafeResetWithoutTrackIsANoOp` `Success` in `Scripts/Test/te-man-veh006-close.log`); code merged 2026-09-01. Original record: `code-reviewer` returned CHANGES REQUESTED against the first pass (2 HIGH: an unguarded invalid/sentinel reset pose; a camera range table with no `EnforceRanges` pin against its own `UPROPERTY` metadata — plus 5 MEDIUM, 5 LOW); repair cycle 1 closed both HIGH and all MEDIUM/LOW. Re-review (pass 2) opened 4 new MEDIUM against repair cycle 1's own fixes (an unenforced camera-FOV runtime ceiling; a reset-flag preservation fix that was correct for in-possession resets but wrong for unpossession; a missing findings-disposition table; stale build-evidence citations); repair cycle 2 closed all four. A third diff-only re-review (pass 3) surfaced one more MEDIUM (a second, still-unclamped FOV apply site the pass-2 fix missed) and 4 LOW (doc/citation nits); repair cycle 3 closed all five and was independently re-verified by the reviewer against actual UE 5.8 engine source, direct log/`index.json` inspection, and log diffing — final verdict **APPROVED**. `test-engineer` independently forced a from-scratch recompile of both targets (deleted the `Intermediate/` build cache first, since the ticket's own logs already post-dated every source edit) — both `Result: Succeeded`, zero warnings — and Smoke `succeeded=519, succeededWithWarnings=2 (pre-existing TRACK-001/002 tests, unrelated), failed=0, notRun=0`, with `RacingSim.Vehicle.CameraMath`/`CameraDataAsset`/`ResetMath` all `Success`; independently read all three new spec files and traced `ExecuteSafeReset` against every acceptance-criteria bullet. Deviation from bare `DONE`: this ticket's own Gate B/C manoeuvre proof needs a live actor/world that `SmokeFilter` cannot construct, so the status here reads "merged, gates deferred to VEH-006" rather than `DONE` — see the deviation record (owner, trigger, and permanence) in the VEH-005 orchestrator note. Non-blocking findings and the deferred manoeuvre test routed forward to `VEH-006` |
 | VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | **DONE** 2026-09-15 — three repair cycles; all three cycle-3 review halves (production, spec, harness) APPROVED WITH FOLLOW-UPS, no BLOCKER/HIGH open; `test-engineer` PASS on independent reruns: editor build clean, game target build clean (`Scripts/Test/build-game-veh006-close.log`), 9 named manoeuvre/detector tests 9/0/0 (`te-man-veh006-close.log`), Smoke 521+2/0/0 across 523 (`te-smoke-veh006-close.log`), soak 108,000 steps = 1800.0 s simulated `Success` (`te-soak-veh006-close.log`). One acceptance-criterion deviation, recorded in the closure section: the `ProductFilter` collection run is a harness failure on this machine, so discoverability rests on `Automation List`. Follow-ups tracked in the cycle-3 review tables. History: implementation complete 2026-09-03. Editor build clean (`_build_editor_veh006_gate2.log`, WARNING_ERROR_MATCHES=0); 14/14 manoeuvre and failure-detection suites green (`ReportVEH006Gate2`); Smoke unchanged at 520+2/0/0 across 522 (`ReportVEH006Smoke4`); soak 108,000 steps = 1800.0 s simulated in 36.2 s wall clock, 180 inspections, max distance 919.7 cm of 8000.0 cm, resident delta +18.9 MiB against a 64.0 MiB ceiling (`ReportVEH006Soak4`). The Product filter cannot run on this machine and is reported as a harness failure, not a pass; discoverability proved by `Automation List` instead. Fixed along the way: VEH-005 `NotifyTelemetryDiscontinuity` no-op, track spawn ordering, reset clearance derived from the chassis rather than the track, wheel-telemetry latency suppression, and a stale `AddExpectedError` in `ManoeuvreWorldProbe` that depended on the VEH-004 wall-clock bug. Awaiting `code-reviewer` and `test-engineer` gates. **Repair cycle 1 of 3 (2026-09-08).** Both review gates returned CHANGES REQUESTED, and the two reviewers converged independently on the same defect from opposite ends: production found the cause (a slept Chaos chassis latches its last physics output and `EvaluateVehicleFailures` raises nothing for it -- zero velocity, finite, wheels in contact, not airborne), tests found the symptom (no soak assertion was sensitive to a frozen car: `bIsValid` latches true and is never cleared, `IsFinite` passes on a constant, the position bound only fires on being too FAR, and `MaxDistanceCm` was reported but never asserted). Closed this cycle -- production HIGH-1 (`PreDiscontinuityLocationCm` could stay armed for the rest of the session whenever fresh contact never arrived, silently suppressing genuine `InvalidContact` near the reset pose; now bounded by a new `MaxContactSuppressionSeconds = 0.5 s` simulated-time budget, mirrored into `UVehicleFailureThresholdsDataAsset` and pinned by `RacingSim.Vehicle.FailureDetectionSuppressionBound`), production HIGH-2 (the `NeverSleep` pin now reports every path it fails to take, and the soak has a liveness floor), production M-1/M-2/M-3/M-6/M-7 (reset-clearance tune dependency documented and its null-asset path warned once; `Reset()` now clears `bDiscontinuityPending`; SI spring rates recorded as 25.0/28.2 kN/m per corner with `SpringPreload` documented INERT -- `FSimpleSuspensionSim::Simulate` never reads it and the constraint path has it commented out; the null-tune log line corrected to say mechanical simulation stays latched off, so the pawn has no drivetrain at all rather than Chaos defaults), test HIGH-1 (soak now asserts `CaptureIndex` advance and a 50 cm/s cruise floor at each of its 180 inspections, plus a 200 cm minimum total travel), test HIGH-2 (`Drive` returns `TickTestWorld`'s result and the soak counts ticked steps rather than loop iterations), test HIGH-3 (positive coverage of the acceleration branch of the runaway envelope, from both clock directions), test M-3 (the null-track no-op tolerance tightened from 100 cm to `KINDA_SMALL_NUMBER` -- no tick happens -- and the settling bound from 100 cm to a derived 30 cm plus a 5 cm horizontal-drift assertion), test M-5 (`Run-Soak.ps1` now refuses to delete a `-ReportDir` that is neither empty nor an existing report, tees editor stdout to a log so `NO_INDEX_JSON` carries evidence, and folds `PROCESS_EXITCODE` into the exit decision), test M-6 (guarded `Cast<APawn>` in the diagnostic dump). Deferred with reasons rather than fixed: test M-1 (memory-slope assertion over the last third of the soak), test M-2 (first-5-min vs last-5-min drift comparison), production M-4/M-5 and the LOW items. Evidence: `build-veh006-repair1.log` (`Result: Succeeded`, `WARNING_ERROR_MATCHES=0`); Smoke `ReportVEH006Repair1Smoke` `succeeded=521, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0` across 523; manoeuvres `ReportVEH006Repair1Man` 9/9 `Success`. |
+| VEH-007 | Split the contact-suppression evaluation counter (VEH-006 finding 2 / spec `S-M1`) and close VEH-006 production findings 3–8 | vehicle-physics-engineer | VEH-006 | C | **DONE** 2026-09-18 — split the carried ceiling counter from a per-arm floor counter; `CASE 9` pins it (revert proof recorded). `code-reviewer` CHANGES REQUESTED on `3d55a33` (2 MEDIUM rate/residual findings), repair cycle 1, then APPROVED WITH FOLLOW-UPS; four LOW follow-ups fixed. `test-engineer` PASS: both targets clean, Smoke 526/2/0/0, 12/12 named failure-detection and manoeuvre tests. Near-ceiling `S-M1` residual accepted; reset-cooldown requirement routed to `RACE-006`. Criteria under "### VEH-007 — acceptance criteria" |
 
 Chaos Vehicles is mandatory (hard constraint #2). No Unity-style WheelCollider
 architecture. Tunables live in typed DataAssets, never as magic numbers in `Tick`.
@@ -3072,6 +3073,105 @@ drift (test M-1/M-2); `Build-Target.ps1` writing its markers into `-OutFile`.
 **Rollback.** The ticket lands as one merge commit on `main`; `git revert -m 1 <merge>`
 restores the cycle-2 detector, spec and harness. No binary assets are involved.
 
+### VEH-007 — acceptance criteria, opened 2026-09-18
+
+Scope: VEH-006 cycle-3 production findings 2–8 (finding 2 = spec `S-M1`). Owner
+`vehicle-physics-engineer`. Gate C. Depends on `VEH-006` (DONE). Blocks `RACE-006`, whose
+director is the first production caller of `ExecuteSafeReset` and therefore the first
+caller able to re-announce a discontinuity while a carried count is already high.
+
+**The defect.** `FVehicleFailureDetectorState::PreDiscontinuityEvaluations` does two jobs:
+it is the evaluation CEILING (carried across re-announcement so repeated announcements
+cannot buy unbounded suppression, VEH-006 CASE 8) and the evaluation FLOOR (the time
+budget may not expire the basis until the two-capture stale tail has passed). Carrying is
+right for the ceiling and wrong for the floor: after a re-announcement the carried count
+is already past the floor, so a long frame inside the new stale tail expires the basis
+and raises a false Error-level `InvalidContact` on a stationary car.
+
+- [x] Split the counter: `PreDiscontinuityEvaluations` stays the carried ceiling counter;
+      a new `PreDiscontinuityArmEvaluations` is the per-arm floor counter, zeroed by every
+      `NotifyDiscontinuity()` and by `Reset()`. The floor test reads only the per-arm counter.
+- [x] New `CASE 9` in `RacingSim.Vehicle.FailureDetectionSuppressionBound`: a basis
+      re-announced after its carried count has passed the floor, followed by two stale-tail
+      captures each longer than the whole time budget, raises no `InvalidContact`; the
+      next long capture (past the per-arm floor) does raise it. The case also asserts the
+      carried count really was past the floor before the re-announcement.
+- [x] Revert proof: `CASE 9` fails against the pre-fix floor test (floor reads the carried
+      counter) and passes with the fix. Log recorded.
+- [x] `CASE 8` (ceiling carry) still passes unchanged.
+- [x] Finding 3: field docs state each counter's real invariant (the ceiling counter may be
+      non-zero with no basis armed; the floor counter is zero while no basis is armed).
+- [x] Finding 4: the `GVehicleFailureMinContactSuppressionEvaluations` comment derives
+      "three is the tail exactly" from the per-arm counter, which starts at zero again.
+- [x] Finding 5: "two orders of magnitude" short of `MAX_int32` corrected.
+- [x] Finding 6: the ceiling's duration stated per capture rate. The detector runs once per
+      capture at `ARacingVehiclePawn::TelemetrySampleRateHz` (default 60 Hz, range
+      [0, 1000], in practice capped by the tick rate), so the ceiling lasts 240 / rate
+      seconds: 4 s at the default. Above 480 Hz it is shorter than the 0.5 s default budget
+      and fires first; the docs say so rather than claiming it always outlasts the budget.
+- [x] Near-ceiling residual of `S-M1` documented as an accepted trade-off at the ceiling
+      check: a teleport announced within three evaluations of the ceiling (carried count
+      237..239) is dropped inside its stale tail, raising a false `InvalidContact` on one
+      or both tail captures. Gating the ceiling on the floor would reopen `CASE 8`. With a
+      healthy clock the count only gets that high through re-announcements arriving before
+      the previous basis expired, so `RACE-006` carries the requirement below.
+- [x] Finding 7: `MaxContactSuppressionSeconds` docs (struct and DataAsset) state that
+      values above the ceiling's duration at the active capture rate are inert.
+- [x] Finding 8: `DropContactSuppressionBasis` is hoisted so the fresh-contact exit calls it
+      instead of repeating its assignments.
+- [x] Editor and Game targets build with 0 warnings; Smoke passes with no new failures or
+      warnings.
+
+**Deliberately excluded.** Wiring `ExecuteSafeReset` to the driver reset request
+(`RACE-006`); spec `S-L2`..`S-L4`; harness `H-M1`..`H-L6`; soak memory slope (test M-1/M-2).
+
+**Requirement routed to `RACE-006`.** The director must rate-limit driver resets with a
+cooldown longer than `MaxContactSuppressionSeconds` plus the floor's evaluations at the
+active capture rate, so each armed basis expires by the time budget (zeroing both
+counters) before the next announcement. The ceiling is then unreachable with a healthy
+clock and the near-ceiling residual cannot occur. A test must pin the cooldown.
+
+#### VEH-007 review and repair record
+
+**Implementation** `3d55a33`. Editor `Scripts/Test/build-veh007-e1.log`,
+`build-veh007-e2.log`, Game `build-veh007-g1.log`: `Result: Succeeded`, 0 warning/error
+matches. Smoke `Saved/Automation/veh007-smoke`: succeeded=526, succeededWithWarnings=2
+(pre-existing), failed=0, notRun=0. The build-log figures come from the wrapper's console
+markers (`BUILD_EXITCODE=0`, `WARNING_ERROR_MATCHES=0`), which the wrapper does not write
+into the `-OutFile` log; the reviewer re-confirmed 0 warning/error lines by grepping the logs.
+
+**Revert proof.** With the floor pointed back at the carried counter
+(`build-veh007-revert.log`, report `Saved/Automation/veh007-bound-revert`),
+`FailureDetectionSuppressionBound` failed on "A re-announced basis is not expired by a
+long frame on stale capture 0" and "... capture 1". Restored, it passes
+(`Saved/Automation/veh007-bound-fixed`, `veh007-bound-fixed2`). These build logs are left
+untracked by the owner's instruction, unlike VEH-005's committed logs (VEH-006 `S-L5`);
+they are local evidence only.
+
+**Review 2** (`code-reviewer`, `a0b355a`): APPROVED WITH FOLLOW-UPS; comment-only diff
+confirmed. Four LOW items (residual understated as "two evaluations, one report"; the
+re-wrap moved rather than removed the overlong line; the untracked-log note contradicted
+`S-L5`; the build-log marker citation) were fixed in the following commit.
+
+**Review 1** (`code-reviewer`, `3d55a33`): CHANGES REQUESTED. Logic and CASE 9 confirmed.
+MEDIUM-1 rate claims wrong (detector runs at the pawn rate, [0, 1000]; above 480 Hz the
+ceiling is shorter than the budget); MEDIUM-2 near-ceiling `S-M1` residual; LOW-1 no
+evidence/rollback record; LOW-2 overlong doc line. Repair cycle 1 fixed MEDIUM-1 and
+LOW-1/LOW-2 and documented MEDIUM-2 as the accepted trade-off above with the `RACE-006`
+requirement.
+
+**Validation** (`test-engineer`, `f81510d`): PASS. Editor `Scripts/Test/build-veh007-te-editor.log`
+and Game `build-veh007-te-game.log`: `Result: Succeeded`, `WARNING_ERROR_MATCHES=0`. Smoke
+`Saved/Automation/veh007-te-smoke`: succeeded=526, succeededWithWarnings=2 (pre-existing),
+failed=0, notRun=0. Named run `Saved/Automation/veh007-te-vehicle`: 12/12 Success
+(`FailureDetection*` suites, `FailureThresholds*`, and the VEH-006 manoeuvre and
+safe-reset tests). `CASE 8` confirmed unchanged against `main`. The revert proof was not
+re-run by the validator (it requires un-fixing source); the implementer's record above
+stands.
+
+**Rollback.** The ticket lands as one merge commit on `main`; `git revert -m 1 <merge>`
+restores the single-counter detector. No binary assets are involved.
+
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
@@ -3082,7 +3182,7 @@ restores the cycle-2 detector, spec and harness. No binary assets are involved.
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 | RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | **DONE** — closed 2026-09-18. `ARaceDirector` + `Game/` composition root (game mode, player controller, graybox ground); default map and game mode set; session tested in both login orders with a real `ULocalPlayer`. Car not yet drivable (input assets → `TRACK-003`). Opened by UI-002: nothing in the project yet created a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
-| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-006 finding 2 | B | OPEN — opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check |
+| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | OPEN — opened 2026-09-18 by RACE-005. The director is the intended caller of `ARacingVehiclePawn::ExecuteSafeReset` on `Command.bResetRequested`, but VEH-006 finding 2 (spec `S-M1`, the carried-count/stale-tail false `InvalidContact`) must be fixed first, per VEH-006's caller check. Inherits the VEH-007 reset-cooldown requirement (cooldown longer than `MaxContactSuppressionSeconds` plus the floor, pinned by a test) |
 | TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN — opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
