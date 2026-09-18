@@ -26,8 +26,9 @@ class URaceStateMachine;
  *   RACE-003 M2  -- FRacingRaceResult's read surface is plain C++.
  *
  * Every wrapper forwards to the member it names; RacingSim.Race.FunctionLibrary asserts
- * they agree. Track-taking wrappers return a safe default (0) for a null track, because a
- * widget bound before the level finishes loading will ask.
+ * they agree. Track-taking wrappers return a safe default (0) for a null or garbage
+ * track, because a widget bound before the level finishes loading, or after the track is
+ * destroyed, will ask.
  *
  * The HUD gatherer lives here, not in UI/, because it has to include Race/ headers and
  * UI/ may not. It writes FRacingHudRaceInputs, a Core/ struct; UI/ builds the view model
@@ -97,7 +98,7 @@ public:
 	static double GetQueryLateralOffsetCm(const FTrackCenterlineQuery& Query, bool& bOutValid);
 
 	// =======================================================================
-	// Track actor (TRACK-001 L3). Null track: 0.
+	// Track actor (TRACK-001 L3). Null or garbage track: 0 (IsValid, UI-001 N3).
 	// =======================================================================
 
 	UFUNCTION(BlueprintPure, Category = "Race|Track")
@@ -130,17 +131,25 @@ public:
 	 * const& Peek reads, never GetCurrentLapTiming() or the by-value lap getters, which
 	 * copy split arrays. The output is trivially copyable.
 	 *
-	 * BlueprintCallable, not Pure: GetCountdownRemainingSeconds() samples the countdown
-	 * clock, and a Pure node would re-run that once per connected output pin.
+	 * READS ONLY (UI-001 L7, closed at UI-002): the countdown comes from
+	 * PeekCountdownRemainingSeconds() and race time from PeekRaceElapsedSeconds(), so
+	 * gathering never advances a clock. That is what lets this be Pure and take a const
+	 * state machine. Poll the state machine before gathering in a frame, or the countdown
+	 * is one poll old.
 	 *
-	 * @param StateMachine    Required. Null resets OutInputs and returns false.
-	 * @param LapTracker      Optional. Null leaves the lap fields at their defaults.
-	 * @param ResultRecorder  Optional. Null leaves the result fields at their defaults.
+	 * SESSION CHECK (UI-001 L5, closed at UI-002): lap fields are filled only when the
+	 * tracker's GetObservedSessionId() equals the state machine's SessionId. Between a
+	 * Restart and the next Advance() of a tracker the recorder does not reset, the tracker
+	 * still holds the previous session's laps; they read as "no lap data" instead.
+	 *
+	 * @param StateMachine    Required. Null or garbage resets OutInputs and returns false.
+	 * @param LapTracker      Optional. Null, garbage, or from another session: lap fields stay default.
+	 * @param ResultRecorder  Optional. Null or garbage: result fields stay default.
 	 * @param CompetitorCount Cars in the session including this one; negative reads as 0.
 	 */
-	UFUNCTION(BlueprintCallable, Category = "Race|HUD")
+	UFUNCTION(BlueprintPure, Category = "Race|HUD")
 	static bool GatherHudRaceInputs(
-		URaceStateMachine* StateMachine,
+		const URaceStateMachine* StateMachine,
 		const URaceLapTracker* LapTracker,
 		const URaceResultRecorder* ResultRecorder,
 		int32 CompetitorCount,

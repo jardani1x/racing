@@ -496,3 +496,13 @@ double URaceStateMachine::GetCountdownRemainingSeconds()
 
 	return FMath::Max(0.0, Ruleset->CountdownSeconds - CountdownClock.Sample(Now()));
 }
+
+double URaceStateMachine::PeekCountdownRemainingSeconds() const
+{
+	if (CurrentState != ERaceState::Countdown || Ruleset == nullptr)
+	{
+		return 0.0;
+	}
+
+	return FMath::Max(0.0, Ruleset->CountdownSeconds - CountdownClock.Peek());
+}

@@ -66,7 +66,12 @@ public class RacingSimTests : ModuleRules
 		{
 			"RacingSim",
 			"ChaosVehicles",
-			"AIModule"
+			"AIModule",
+
+			// UI-002: the HUD widget specs read UTextBlock/UWidget state.
+			"UMG",
+			"Slate",
+			"SlateCore"
 		});
 	}
 }

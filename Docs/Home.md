@@ -94,7 +94,7 @@ signalling, session lifecycle, WebRTC telemetry. No race truth lives here.
 
 ## Where the project stands
 
-Epics 0 through 3 (environment, core, vehicle, track/race) are complete; UI is in progress (`UI-001` done), streaming has not started; the operations epic is
+Epics 0 through 3 (environment, core, vehicle, track/race) are complete; UI is in progress (`UI-001` and `UI-002` done), streaming has not started; the operations epic is
 blocked on hardware.
 
 | Epic | State | Note |
@@ -103,7 +103,7 @@ blocked on hardware.
 | Core (`CORE`, `TEST`) | Complete | |
 | Track and race (`TRACK`, `RACE`) | Complete | |
 | Vehicle (`VEH`) | Complete | `VEH-006` closed 2026-09-15; follow-ups tracked in [[Tickets]] |
-| UI (`UI-001`..`UI-004`) | In progress | `UI-001` HUD data contract closed 2026-09-18; `UI-002` widgets next |
+| UI (`UI-001`..`UI-004`) | In progress | `UI-001` HUD data contract and `UI-002` native HUD widget closed 2026-09-18; `RACE-005` (race session wiring) next on the critical path |
 | Streaming (`STREAM-001`..`003`) | Not started | |
 | Streaming infrastructure (`STREAM-004`..`006`), operations | Blocked | `BLOCKER-001`: no reference GPU worker |
 

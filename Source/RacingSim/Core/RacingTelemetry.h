@@ -50,7 +50,14 @@ struct RACINGSIM_API FRacingVehicleTelemetrySample
 {
 	GENERATED_BODY()
 
-	/** Race-clock time this sample was taken, in SECONDS. */
+	/**
+	 * When this sample was taken, in SECONDS, on FPlatformTime::Seconds() -- NOT the race
+	 * clock. The one exception to rule 2 above: ARacingVehiclePawn stamps its samples with
+	 * FPlatformTime::Seconds() (RacingVehiclePawn.cpp), and it samples before the green
+	 * flag and after the finish, when the race clock reads 0 or is frozen. Staleness checks
+	 * must pass FPlatformTime::Seconds() as "now" for this field. (UI-001 found the old
+	 * "race-clock time" wording wrong; corrected at UI-002.)
+	 */
 	UPROPERTY(BlueprintReadOnly, Category = "Racing|Telemetry")
 	double TimestampSeconds = 0.0;
 
@@ -371,8 +378,9 @@ struct RACINGSIM_API FRacingTelemetryFrame
 	bool IsStaleAt(double NowSeconds, double MaxAgeSeconds) const;
 
 	/**
-	 * The staleness rule IsStaleAt applies, for any timestamp on the race clock --
-	 * a vehicle sample's, for instance. Future-stamped is stale; MaxAgeSeconds <= 0
+	 * The staleness rule IsStaleAt applies, for any timestamp -- a vehicle sample's, for
+	 * instance. TimestampSeconds and NowSeconds must be on the same clock (a vehicle
+	 * sample's is FPlatformTime::Seconds(), not the race clock). Future-stamped is stale; MaxAgeSeconds <= 0
 	 * disables the age check; any non-finite argument is stale (fail closed, UI-001).
 	 * One definition, so the HUD and the frame cannot disagree about what "stale" means.
 	 */
