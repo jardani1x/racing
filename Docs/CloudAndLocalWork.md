@@ -37,7 +37,7 @@ run, and never merge to `main`.
 
 | # | Prerequisite | Current state (2026-09-15) | Who |
 |---|---|---|---|
-| 1 | The branch the cloud works from exists on `origin` | 2026-09-18: local `main` is **7 commits ahead** of `origin/main` (VEH-007 merge `aa8f125` not pushed). Cloud sessions must base on `main` only after that push, or they miss VEH-007 | Owner must explicitly ask for a push; sessions do not push unasked |
+| 1 | The branch the cloud works from exists on `origin` | **Met 2026-09-23.** `origin/main` is at `ddb462c` (`01ba753..ddb462c`, 12 commits pushed on owner request), which carries the VEH-007, RACE-005 and RACE-006 merges. Cloud sessions may base on `main` | Owner must explicitly ask for each push; sessions do not push unasked |
 | 2 | The cloud session's GitHub access to `jardani1x/racing` | Not verified | Owner |
 | 3 | `Web/PixelStreamingInfrastructure` | **Gitignored, not on `origin`.** A cloud session must clone `EpicGamesExt/PixelStreamingInfrastructure` at commit `48bff3b751f91f735b50c90b2a7fec5ceb2a440f` (branch `UE5.8`) itself — see [[Environment]] | Cloud session, per task |
 | 4 | Binary content | `Content/` is 93 KB and no `.uasset`/`.umap` is tracked yet, so nothing is lost today. Once assets exist, the cloud must not touch them (no LFS server, locks are local-only — BLOCKER-002) | — |
@@ -90,8 +90,8 @@ decision.
 5. ~~**Cloud** — VEH-006 production finding 2 + CASE 9~~ done locally as `VEH-007`, 2026-09-18.
    Harness `H-*` edits moved to cloud task C1 below.
 6. ~~**Local** — `RACE-006` driver reset through the director, with the VEH-007 reset
-   cooldown and its test.~~ Done locally 2026-09-23, merged to local `main`, **not pushed**.
-   It also fixed `VEH-010` (a parked Chaos chassis could never be woken) and opened two
+   cooldown and its test.~~ Done 2026-09-23, merged to `main` (`ddb462c`) and **pushed to
+   `origin/main`** the same day on owner request. It also fixed `VEH-010` (a parked Chaos chassis could never be woken) and opened two
    local follow-ups: `VEH-011` (re-apply the `NeverSleep` pin after `ResetVehicle()`) and
    `VEH-012` (drift guard for `ChassisWakeInputTolerance`, plus the storm case above the
    ceiling duration). Both touch `Source/RacingSim/Vehicle/` and the soak, so both are
@@ -100,8 +100,9 @@ decision.
    or `Source/RacingSim/Game/`, so none collides with `RACE-006`.
 8. **Local** — verify and merge each `cloud/*` branch; then `TRACK-003` (editor session),
    `UI-003` widgets, `UI-004`, `STREAM-001`, `STREAM-003`.
-9. **Cloud, after `RACE-006` merges and is pushed** — task C4 (`UI-003` C++ logic), which
-   touches the restart flow the director owns.
+9. ~~**Cloud, after `RACE-006` merges and is pushed**~~ — task C4 (`UI-003` C++ logic),
+   which touches the restart flow the director owns. **Unblocked 2026-09-23**: `RACE-006`
+   is on `origin/main` at `ddb462c`.
 
 ---
 
@@ -148,8 +149,8 @@ lint and unit tests can really run in the container, and may be cited as run.
 > tracked folder and document how it builds against the pinned clone. Run npm build, lint
 > and tests and cite their real output. Nothing Unreal-side: no race truth in Streaming.
 
-**C4 — `UI-003` C++ logic** (only after `RACE-006` is on `origin/main`; it is on local
-`main` as of 2026-09-23 but **no push has been requested**, so this task is still blocked).
+**C4 — `UI-003` C++ logic** (**ready to run as of 2026-09-23**: `RACE-006` is on
+`origin/main` at `ddb462c`, so the restart flow this task touches is the merged one).
 
 > Work on UI-003 in jardani1x/racing from branch main. Cloud rules in
 > Docs/CloudAndLocalWork.md; commit to branch cloud/ui-003 and push it. Write the UI-003
