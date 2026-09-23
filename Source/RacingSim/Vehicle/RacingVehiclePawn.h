@@ -319,6 +319,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Vehicle")
 	bool ExecuteSafeReset(const ATrackDefinitionActor* Track, URaceLapTracker* LapTracker, double LastValidProgressDistanceCm);
 
+	/**
+	 * VEH-011: does the chassis currently carry the Chaos::ESleepType::NeverSleep pin?
+	 *
+	 * The pin is what keeps the solver from parking this car; a parked chassis stops the
+	 * entire physics-thread vehicle tick and latches its last telemetry, so "pinned" is a
+	 * state worth being able to assert rather than infer from behaviour. Reads the handle's
+	 * own sleep type: FRigidBodyHandle_External (SingleParticlePhysicsProxy.h:1167) inherits
+	 * SleepType() at SingleParticlePhysicsProxy.h:1098, which reads
+	 * TPBDRigidParticle::SleepType at ParticleHandle.h:3783.
+	 *
+	 * Returns false, rather than asserting, when any link in the chain is missing: no
+	 * chassis component, no body instance, or no physics actor. "Not pinned" and "cannot
+	 * tell" are the same answer for every caller that matters, because both mean the car
+	 * can be parked.
+	 */
+	bool IsChassisSleepPinned() const;
+
 	// =======================================================================
 	// RACE-006 -- driver reset request, latched here, serviced by Game/
 	// =======================================================================
@@ -452,17 +469,47 @@ private:
 	 * genuinely at rest, and from that moment full throttle moves nothing: the input
 	 * reaches Chaos, the wheels keep their last forces, and the car is stranded for good.
 	 *
-	 * That state is not hypothetical -- ExecuteSafeReset produces it by construction,
-	 * because it zeroes both velocities, so a car reset onto the track and left alone for
-	 * a second can never be driven away again. It is reachable at all only because the
-	 * same call destroys the ESleepType::NeverSleep pin BeginPlay applies: see the KNOWN
-	 * GAP note beside that pin, and VEH-011.
+	 * That state was not hypothetical: before VEH-011, ExecuteSafeReset produced it by
+	 * construction, because ResetVehicle() destroyed the ESleepType::NeverSleep pin
+	 * BeginPlay applies and the call then zeroes both velocities, so a car reset onto the
+	 * track and left alone for about a second could not be driven away again. VEH-011
+	 * closed that path: ExecuteSafeReset now re-applies the pin (see ApplyChassisSleepPin,
+	 * and the standing rule in the pin comment in BeginPlay).
+	 *
+	 * This function is still load-bearing, for two cases the pin does not cover. A body
+	 * that has ALREADY parked -- because it was reset by something other than
+	 * ExecuteSafeReset, or because a future RecreatePhysicsState() call site dropped the
+	 * pin -- is woken here on the next input. And if ApplyChassisSleepPin ever fails (it
+	 * logs, it does not abort), this is the only remaining way the car moves again.
 	 *
 	 * Called once per ApplyInputCommand, after the axes are pushed. Costs one
 	 * IsAnyRigidBodyAwake() per frame and does nothing at all while the car is awake,
 	 * which is every frame of a normal lap.
 	 */
 	void WakeChassisForInput(const FVehicleChaosInput& ChaosInput);
+
+	/**
+	 * VEH-011: apply Chaos::ESleepType::NeverSleep to the chassis, and report it when it
+	 * cannot be applied.
+	 *
+	 * Two callers, and they are not interchangeable. BeginPlay applies the pin once on the
+	 * body Chaos created with the component. ExecuteSafeReset applies it again because
+	 * UChaosVehicleMovementComponent::ResetVehicle() destroys and recreates that body
+	 * (ChaosVehicleMovementComponent.cpp:904, :1922), so the pin the first caller set is
+	 * gone and the handle it set it on is stale. The re-apply must therefore fetch the
+	 * handle again, which is why this is a helper and not a cached handle.
+	 *
+	 * Every failure path logs a Warning naming ContextLabel, because the failure this pin
+	 * prevents is silent by construction: a parked chassis keeps reporting the speed it had
+	 * when it went to sleep, and no FVehicleFailureThresholds check can see that. The log
+	 * line is the only warning anyone gets, and the context is what separates "never
+	 * pinned at all" from "lost it at the first reset".
+	 *
+	 * @param ContextLabel  where the call came from, in log-sentence form, e.g.
+	 *                      TEXT("at BeginPlay"). Never null.
+	 * @return true when the pin was applied.
+	 */
+	bool ApplyChassisSleepPin(const TCHAR* ContextLabel);
 
 	/**
 	 * How much of an axis counts as "the driver is asking for motion", matching

@@ -64,6 +64,21 @@ bool FVehicleSleepWakeTest::RunTest(const FString& Parameters)
 	// OnCreatePhysicsState, and the destroy half recreates the chassis body), which is the
 	// call ARacingVehiclePawn::ExecuteSafeReset makes on every driver reset. So this test
 	// makes the same call, on the movement component, with no track and no race involved.
+	//
+	// VEH-011, and this is load-bearing rather than incidental: ExecuteSafeReset now
+	// RE-APPLIES the NeverSleep pin after ResetVehicle(), so a car reset through the pawn
+	// no longer parks at all -- RacingSim.Vehicle.ResetRestoresSleepPin asserts exactly
+	// that. Going through the movement component directly is what still leaves this car
+	// parkable.
+	//
+	// That re-apply is confined to the pawn's reset path because ExecuteSafeReset is the
+	// only production caller of ResetVehicle(), and because a per-tick or per-callback
+	// re-assert would be per-frame physics-scene work during a race for a value that
+	// changes only when the body is rebuilt. This test staying able to park a car is a
+	// CONSEQUENCE of that, not the reason for it -- but it is a consequence worth keeping,
+	// so do NOT "simplify" this to Pawn->ExecuteSafeReset: the car would never park, the
+	// TestFalse below would fail, and if the assertion were relaxed instead this test would
+	// silently stop proving that WakeChassisForInput does anything.
 	UChaosWheeledVehicleMovementComponent* Movement = Fixture.GetMovement();
 	if (!TestNotNull(TEXT("The fixture exposes a movement component"), Movement))
 	{

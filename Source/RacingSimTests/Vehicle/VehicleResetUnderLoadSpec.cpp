@@ -527,3 +527,129 @@ bool FVehicleSafeResetWithoutTrackTest::RunTest(const FString& Parameters)
 
 	return true;
 }
+
+/**
+ * VEH-011: a reset must leave the chassis pinned against sleep, not just placed.
+ *
+ * ARacingVehiclePawn::BeginPlay applies Chaos::ESleepType::NeverSleep once. ExecuteSafeReset
+ * calls UChaosVehicleMovementComponent::ResetVehicle(), which reaches ResetVehicleState() ->
+ * OnDestroyPhysicsState() -> RecreatePhysicsState() (ChaosVehicleMovementComponent.cpp:904,
+ * :1922) and destroys the particle that carried the pin. Before VEH-011 the car came back
+ * from a reset unpinned, and a car the solver then parks is not idle: the physics-thread
+ * vehicle tick stops entirely and telemetry latches its last output.
+ *
+ * Two assertions, because either alone is weak. The sleep type says the pin is on the
+ * handle; the idle run says the solver actually honours it on the body the reset created.
+ *
+ * Deliberately NOT a duplicate of RacingSim.Vehicle.WakesFromSleepOnThrottle. That test
+ * calls Movement->ResetVehicle() DIRECTLY, bypassing this pawn, precisely so the car does
+ * park and the wake path can be proved. This one goes through ExecuteSafeReset, which is the
+ * only production path, and proves the opposite: it never parks. The two are the two sides
+ * of the same engine gap and must both keep passing.
+ *
+ * ProductFilter: real world, real physics (Docs/Environment.md).
+ */
+namespace VehicleResetSleepPinPrivate
+{
+	/**
+	 * Neutral steps after the reset, at StepSeconds. 600 steps is 10 s.
+	 *
+	 * Sized against a MEASUREMENT, not against another test's tolerance. VEH-011's bypass
+	 * proof commented the re-apply out of ExecuteSafeReset and re-ran this test: the solver
+	 * parked the car 53 idle steps (0.88 s at 60 Hz) after the reset. 600 is an ~11x margin
+	 * over that.
+	 *
+	 * Keep the 53 in mind if this is ever retuned. It is the number that makes this test
+	 * mean something: if a future engine change pushed park latency past 600 steps, this
+	 * test would go green while proving nothing, and the way to find out is to re-run the
+	 * bypass, not to compare against WakesFromSleepOnThrottle -- that test's own 600 is a
+	 * maximum it tolerates, not a latency it measured.
+	 */
+	constexpr int32 IdleStepsAfterReset = 600;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FVehicleResetRestoresSleepPinTest,
+	"RacingSim.Vehicle.ResetRestoresSleepPin",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::ProductFilter)
+
+bool FVehicleResetRestoresSleepPinTest::RunTest(const FString& Parameters)
+{
+	using namespace VehicleResetUnderLoadPrivate;
+	using namespace VehicleResetSleepPinPrivate;
+
+	// Telemetry off, unlike SafeResetUnderLoad above. This test asserts a physics-state
+	// property directly through IsChassisSleepPinned and the fixture's own awake check, and
+	// the VEH-004 detector has nothing to add to either. Consequence worth stating: the 10 s
+	// post-reset idle window below is NOT watched by the detector, so this test would not
+	// notice a discontinuity raised during it. SafeResetUnderLoad is the test that covers
+	// the detector's view of a reset, and it enables telemetry precisely for that.
+	FVehicleManoeuvreFixture Fixture;
+	if (!Fixture.Setup(*this, /*bEnableTelemetry*/ false))
+	{
+		return false;
+	}
+
+	ARacingVehiclePawn* Pawn = Fixture.GetPawn();
+	ATrackDefinitionActor* Track = SpawnBuiltTrack(*this, Fixture.GetWorld());
+	if (Pawn == nullptr || Track == nullptr)
+	{
+		return false;
+	}
+
+	// The precondition. If BeginPlay's pin were not there, "pinned after a reset" would
+	// prove nothing about the reset -- the car would simply have never been unpinned.
+	if (!TestTrue(TEXT("BeginPlay pinned the chassis against sleep"), Pawn->IsChassisSleepPinned()))
+	{
+		return false;
+	}
+
+	// Drive first, so the reset is the one the product performs: a moving car, placed.
+	// Bail on a tick failure rather than resetting a world that has stopped stepping: every
+	// assertion below would fail as a consequence and none of them would name the cause.
+	if (!Fixture.Drive(FVehicleManoeuvreFixture::ThrottleSample(1.0, 0.0), LoadSteps, StepSeconds))
+	{
+		Fixture.ReportTickFailure(*this);
+		return false;
+	}
+
+	if (!TestTrue(TEXT("ExecuteSafeReset placed the car"),
+			Pawn->ExecuteSafeReset(Track, /*LapTracker*/ nullptr, RequestedProgressCm)))
+	{
+		return false;
+	}
+
+	// Assertion 1: the pin is on the handle the reset created. This is the one that fails
+	// when the re-apply call is removed.
+	TestTrue(TEXT("The chassis is still sleep-pinned immediately after ExecuteSafeReset"),
+		Pawn->IsChassisSleepPinned());
+
+	// Assertion 2: the solver honours it. A reset zeroes both velocities, so this is a
+	// resting car with neutral input -- the exact state that parks an unpinned chassis.
+	int32 IdleSteps = 0;
+	while (IdleSteps < IdleStepsAfterReset && Fixture.IsChassisAwake())
+	{
+		if (!Fixture.Drive(FVehicleInputRawSample(), 1, StepSeconds))
+		{
+			Fixture.ReportTickFailure(*this);
+			return false;
+		}
+		++IdleSteps;
+	}
+
+	if (!TestTrue(FString::Printf(
+			TEXT("The chassis stayed awake for %d idle steps after the reset (parked after %d)"),
+			IdleStepsAfterReset, IdleSteps), Fixture.IsChassisAwake()))
+	{
+		Fixture.LogDrivetrain(TEXT("parked after a reset"));
+	}
+
+	TestTrue(TEXT("The chassis is still sleep-pinned after the idle run"), Pawn->IsChassisSleepPinned());
+	// ReportTickFailure, not a bare TestFalse: it forwards the world wrapper's own engine-side
+	// message plus TickFailureReason, so a tick failure says why instead of only that it
+	// happened. It fails the test by adding an error, so it needs no TestFalse beside it.
+	Fixture.ReportTickFailure(*this);
+	return true;
+}
