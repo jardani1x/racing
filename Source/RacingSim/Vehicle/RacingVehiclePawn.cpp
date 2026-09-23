@@ -122,6 +122,17 @@ void ARacingVehiclePawn::BeginPlay()
 	// with p.Vehicle.DisableConstraintSuspension in Config/DefaultEngine.ini: both are the same
 	// missing-skeletal-mesh gap in Chaos Vehicles, seen from different sides.
 	//
+	// KNOWN GAP, code-reviewer RACE-006 repair cycle 2 HIGH-1: this pin does NOT survive a
+	// reset. ExecuteSafeReset calls UChaosVehicleMovementComponent::ResetVehicle(), which
+	// reaches ResetVehicleState() -> OnDestroyPhysicsState() ->
+	// UpdatedComponent->RecreatePhysicsState() (ChaosVehicleMovementComponent.cpp:904, :1922).
+	// That destroys and recreates the chassis particle, and the sleep type goes with it.
+	// BeginPlay is the only place that applies it, so from the first reset onwards the
+	// solver can sleep this car again. WakeChassisForInput covers the driver-facing half of
+	// that -- the car still drives away -- and re-applying the pin after ResetVehicle() is
+	// tracked separately as VEH-011, because it changes physics state on a path the soak
+	// covers and needs its own evidence.
+	//
 	// Every path that fails to reach SetSleepType is REPORTED, not skipped quietly. The
 	// failure this pin prevents is silent by construction: a slept chassis latches its
 	// last physics output, so the telemetry keeps reporting the speed the car had when it
@@ -1328,13 +1339,24 @@ void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInpu
 		return;
 	}
 
-	// The same axes UChaosVehicleMovementComponent::ProcessSleeping treats as "a control
-	// input is pressed" (ChaosVehicleMovementComponent.cpp:1389-1394), minus the roll,
-	// pitch and yaw axes this pawn never writes. Steering is compared against the
-	// tolerance directly rather than against the previous frame's value: Chaos looks at
-	// the DELTA because it runs every frame on a car that may be mid-corner, while this
-	// only ever fires on a car the solver has already parked, where held lock is as much
-	// a request to move as a change of lock is.
+	// Close to, but deliberately NOT identical to, what
+	// UChaosVehicleMovementComponent::ProcessSleeping treats as "a control input is
+	// pressed" (ChaosVehicleMovementComponent.cpp:1389-1394). Three differences, all
+	// intentional:
+	//
+	//   - The roll, pitch and yaw axes are dropped. This pawn never writes them.
+	//   - Steering is compared against the tolerance directly, where Chaos compares the
+	//     DELTA against the previous frame's value. Chaos runs every frame on a car that
+	//     may be mid-corner; this only ever fires on a car the solver has already parked,
+	//     where held lock is as much a request to move as a change of lock is.
+	//   - bHandbrake is ADDED. Chaos has no handbrake term at all.
+	//
+	// Consequence of the last two, worth knowing before trusting the cheap-path argument
+	// below: a car parked with the handbrake held, or with steering held off centre, is
+	// woken again every time the solver parks it, so it oscillates wake-sleep-wake for as
+	// long as the input is held instead of settling. One local car, one wake per park, and
+	// the alternative is a handbraked car that can never be released -- but it is not
+	// free.
 	const bool bDriverAsksForMotion =
 		ChaosInput.Throttle >= ChassisWakeInputTolerance
 		|| ChaosInput.Brake >= ChassisWakeInputTolerance
@@ -1345,8 +1367,9 @@ void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInpu
 		return;
 	}
 
-	// Checked first so the normal case -- a car already awake, which is every frame of a
-	// lap -- costs one query and no write into the physics scene.
+	// Checked only after the input test above, so a coasting car pays no physics query at
+	// all and a car under power pays one query and no write into the physics scene. That
+	// is every frame of a normal lap.
 	if (ChassisCollision->IsAnyRigidBodyAwake())
 	{
 		return;

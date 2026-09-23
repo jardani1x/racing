@@ -89,8 +89,13 @@ decision.
 4. ~~**Local** — `UI-002` UMG widgets bound to `FRacingHudViewModel`.~~ Done locally 2026-09-18 (native C++ tree; no `.uasset`). `RACE-005` race session composition done locally 2026-09-18. Next: `TRACK-003` input assets and lighting (editor/`.uasset` work), which `STREAM-001` browser QA needs to drive the car.
 5. ~~**Cloud** — VEH-006 production finding 2 + CASE 9~~ done locally as `VEH-007`, 2026-09-18.
    Harness `H-*` edits moved to cloud task C1 below.
-6. **Local** — `RACE-006` driver reset through the director, with the VEH-007 reset
-   cooldown and its test. In progress 2026-09-18.
+6. ~~**Local** — `RACE-006` driver reset through the director, with the VEH-007 reset
+   cooldown and its test.~~ Done locally 2026-09-23, merged to local `main`, **not pushed**.
+   It also fixed `VEH-010` (a parked Chaos chassis could never be woken) and opened two
+   local follow-ups: `VEH-011` (re-apply the `NeverSleep` pin after `ResetVehicle()`) and
+   `VEH-012` (drift guard for `ChassisWakeInputTolerance`, plus the storm case above the
+   ceiling duration). Both touch `Source/RacingSim/Vehicle/` and the soak, so both are
+   local, not cloud.
 7. **Cloud, in parallel with 6** — tasks C1–C3 below. None touches `Source/RacingSim/Race/`
    or `Source/RacingSim/Game/`, so none collides with `RACE-006`.
 8. **Local** — verify and merge each `cloud/*` branch; then `TRACK-003` (editor session),
@@ -143,7 +148,8 @@ lint and unit tests can really run in the container, and may be cited as run.
 > tracked folder and document how it builds against the pinned clone. Run npm build, lint
 > and tests and cite their real output. Nothing Unreal-side: no race truth in Streaming.
 
-**C4 — `UI-003` C++ logic** (only after `RACE-006` is on `origin/main`).
+**C4 — `UI-003` C++ logic** (only after `RACE-006` is on `origin/main`; it is on local
+`main` as of 2026-09-23 but **no push has been requested**, so this task is still blocked).
 
 > Work on UI-003 in jardani1x/racing from branch main. Cloud rules in
 > Docs/CloudAndLocalWork.md; commit to branch cloud/ui-003 and push it. Write the UI-003

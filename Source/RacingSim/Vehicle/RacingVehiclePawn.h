@@ -454,7 +454,9 @@ private:
 	 *
 	 * That state is not hypothetical -- ExecuteSafeReset produces it by construction,
 	 * because it zeroes both velocities, so a car reset onto the track and left alone for
-	 * a second can never be driven away again.
+	 * a second can never be driven away again. It is reachable at all only because the
+	 * same call destroys the ESleepType::NeverSleep pin BeginPlay applies: see the KNOWN
+	 * GAP note beside that pin, and VEH-011.
 	 *
 	 * Called once per ApplyInputCommand, after the axes are pushed. Costs one
 	 * IsAnyRigidBodyAwake() per frame and does nothing at all while the car is awake,
@@ -465,8 +467,16 @@ private:
 	/**
 	 * How much of an axis counts as "the driver is asking for motion", matching
 	 * FVehicleDebugParams::ControlInputWakeTolerance's own default
-	 * (ChaosVehicleMovementComponent.h:53) so this pawn wakes on exactly the inputs
-	 * Chaos itself would have woken on.
+	 * (ChaosVehicleMovementComponent.h:53).
+	 *
+	 * This is a COPY of that default, not a read of it. The engine value is cvar-backed
+	 * (p.Vehicle.ControlInputWakeTolerance, registered at
+	 * ChaosVehicleMovementComponent.cpp:77) and Chaos exposes no accessor for it, so an
+	 * ini or a console change moves the engine's threshold and leaves this one behind.
+	 * Nothing detects that drift today; see VEH-012.
+	 *
+	 * The set of inputs compared against it is NOT the same set Chaos uses either --
+	 * WakeChassisForInput documents the three deliberate differences.
 	 */
 	static constexpr float ChassisWakeInputTolerance = 0.02f;
 

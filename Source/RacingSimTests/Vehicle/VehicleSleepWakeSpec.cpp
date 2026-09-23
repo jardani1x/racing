@@ -6,7 +6,7 @@
 #include "Misc/AutomationTest.h"
 
 /**
- * VEH-008: a car the physics solver has parked must still drive away when the driver
+ * VEH-010: a car the physics solver has parked must still drive away when the driver
  * asks it to.
  *
  * Found by RACE-006's end-to-end driver reset test, which could not get the car to move
