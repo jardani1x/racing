@@ -1090,7 +1090,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-006 | Recorded manoeuvre tests and 30-minute soak | test-engineer + implementer | VEH-003..005 | C | **DONE** 2026-09-15 — three repair cycles; all three cycle-3 review halves (production, spec, harness) APPROVED WITH FOLLOW-UPS, no BLOCKER/HIGH open; `test-engineer` PASS on independent reruns: editor build clean, game target build clean (`Scripts/Test/build-game-veh006-close.log`), 9 named manoeuvre/detector tests 9/0/0 (`te-man-veh006-close.log`), Smoke 521+2/0/0 across 523 (`te-smoke-veh006-close.log`), soak 108,000 steps = 1800.0 s simulated `Success` (`te-soak-veh006-close.log`). One acceptance-criterion deviation, recorded in the closure section: the `ProductFilter` collection run is a harness failure on this machine, so discoverability rests on `Automation List`. Follow-ups tracked in the cycle-3 review tables. History: implementation complete 2026-09-03. Editor build clean (`_build_editor_veh006_gate2.log`, WARNING_ERROR_MATCHES=0); 14/14 manoeuvre and failure-detection suites green (`ReportVEH006Gate2`); Smoke unchanged at 520+2/0/0 across 522 (`ReportVEH006Smoke4`); soak 108,000 steps = 1800.0 s simulated in 36.2 s wall clock, 180 inspections, max distance 919.7 cm of 8000.0 cm, resident delta +18.9 MiB against a 64.0 MiB ceiling (`ReportVEH006Soak4`). The Product filter cannot run on this machine and is reported as a harness failure, not a pass; discoverability proved by `Automation List` instead. Fixed along the way: VEH-005 `NotifyTelemetryDiscontinuity` no-op, track spawn ordering, reset clearance derived from the chassis rather than the track, wheel-telemetry latency suppression, and a stale `AddExpectedError` in `ManoeuvreWorldProbe` that depended on the VEH-004 wall-clock bug. Awaiting `code-reviewer` and `test-engineer` gates. **Repair cycle 1 of 3 (2026-09-08).** Both review gates returned CHANGES REQUESTED, and the two reviewers converged independently on the same defect from opposite ends: production found the cause (a slept Chaos chassis latches its last physics output and `EvaluateVehicleFailures` raises nothing for it -- zero velocity, finite, wheels in contact, not airborne), tests found the symptom (no soak assertion was sensitive to a frozen car: `bIsValid` latches true and is never cleared, `IsFinite` passes on a constant, the position bound only fires on being too FAR, and `MaxDistanceCm` was reported but never asserted). Closed this cycle -- production HIGH-1 (`PreDiscontinuityLocationCm` could stay armed for the rest of the session whenever fresh contact never arrived, silently suppressing genuine `InvalidContact` near the reset pose; now bounded by a new `MaxContactSuppressionSeconds = 0.5 s` simulated-time budget, mirrored into `UVehicleFailureThresholdsDataAsset` and pinned by `RacingSim.Vehicle.FailureDetectionSuppressionBound`), production HIGH-2 (the `NeverSleep` pin now reports every path it fails to take, and the soak has a liveness floor), production M-1/M-2/M-3/M-6/M-7 (reset-clearance tune dependency documented and its null-asset path warned once; `Reset()` now clears `bDiscontinuityPending`; SI spring rates recorded as 25.0/28.2 kN/m per corner with `SpringPreload` documented INERT -- `FSimpleSuspensionSim::Simulate` never reads it and the constraint path has it commented out; the null-tune log line corrected to say mechanical simulation stays latched off, so the pawn has no drivetrain at all rather than Chaos defaults), test HIGH-1 (soak now asserts `CaptureIndex` advance and a 50 cm/s cruise floor at each of its 180 inspections, plus a 200 cm minimum total travel), test HIGH-2 (`Drive` returns `TickTestWorld`'s result and the soak counts ticked steps rather than loop iterations), test HIGH-3 (positive coverage of the acceleration branch of the runaway envelope, from both clock directions), test M-3 (the null-track no-op tolerance tightened from 100 cm to `KINDA_SMALL_NUMBER` -- no tick happens -- and the settling bound from 100 cm to a derived 30 cm plus a 5 cm horizontal-drift assertion), test M-5 (`Run-Soak.ps1` now refuses to delete a `-ReportDir` that is neither empty nor an existing report, tees editor stdout to a log so `NO_INDEX_JSON` carries evidence, and folds `PROCESS_EXITCODE` into the exit decision), test M-6 (guarded `Cast<APawn>` in the diagnostic dump). Deferred with reasons rather than fixed: test M-1 (memory-slope assertion over the last third of the soak), test M-2 (first-5-min vs last-5-min drift comparison), production M-4/M-5 and the LOW items. Evidence: `build-veh006-repair1.log` (`Result: Succeeded`, `WARNING_ERROR_MATCHES=0`); Smoke `ReportVEH006Repair1Smoke` `succeeded=521, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0` across 523; manoeuvres `ReportVEH006Repair1Man` 9/9 `Success`. |
 | VEH-007 | Split the contact-suppression evaluation counter (VEH-006 finding 2 / spec `S-M1`) and close VEH-006 production findings 3–8 | vehicle-physics-engineer | VEH-006 | C | **DONE** 2026-09-18 — split the carried ceiling counter from a per-arm floor counter; `CASE 9` pins it (revert proof recorded). `code-reviewer` CHANGES REQUESTED on `3d55a33` (2 MEDIUM rate/residual findings), repair cycle 1, then APPROVED WITH FOLLOW-UPS; four LOW follow-ups fixed. `test-engineer` PASS: both targets clean, Smoke 526/2/0/0, 12/12 named failure-detection and manoeuvre tests. Near-ceiling `S-M1` residual accepted; reset-cooldown requirement routed to `RACE-006`. Criteria under "### VEH-007 — acceptance criteria" |
 | VEH-010 | Wake a parked chassis when the driver asks for motion (Chaos cannot wake a non-skeletal chassis) | vehicle-physics-engineer | — | C | **DONE** 2026-09-23 — found while repairing `RACE-006`, fixed in the same branch because RACE-006's Product tests cannot pass without it. `UChaosVehicleMovementComponent` wakes bodies only through `GetSkeletalMesh()->Bodies`, so a `UBoxComponent` chassis the solver parks stays parked and every wheel force freezes; `ExecuteSafeReset` produces that state by construction. Fixed with `ARacingVehiclePawn::WakeChassisForInput`, pinned by `RacingSim.Vehicle.WakesFromSleepOnThrottle` (Product) with a bypass proof. Criteria and before/after drivetrain evidence under "### VEH-010 — acceptance criteria" |
-| VEH-011 | Re-apply the chassis `NeverSleep` pin after `ResetVehicle()` | vehicle-physics-engineer | VEH-010 | C | OPEN — opened 2026-09-23 by `RACE-006` repair cycle 2 (`code-reviewer` HIGH-1). `ARacingVehiclePawn::BeginPlay` is the only place that applies `Chaos::ESleepType::NeverSleep`, and `ExecuteSafeReset` destroys the chassis particle through `ResetVehicle()` -> `ResetVehicleState()` -> `OnDestroyPhysicsState()` -> `RecreatePhysicsState()`, taking the pin with it. After the first reset the solver can park the car again; `WakeChassisForInput` keeps it drivable but the pin is gone. Needs the pin re-applied (and reported when it cannot be) after every `ResetVehicle()`, plus a test that resets and then asserts the sleep type, and a soak re-run because it changes physics state on the soak's own path. **Note for whoever takes it:** `RacingSim.Vehicle.WakesFromSleepOnThrottle` parks the car precisely because the pin is lost; fixing this invalidates that test's precondition and the test must be rewritten with it |
+| VEH-011 | Re-apply the chassis `NeverSleep` pin after `ResetVehicle()` | vehicle-physics-engineer | VEH-010 | C | IN PROGRESS 2026-09-23 (branch `veh-011-reset-sleep-pin`); criteria under "### VEH-011 — acceptance criteria". Opened 2026-09-23 by `RACE-006` repair cycle 2 (`code-reviewer` HIGH-1). `ARacingVehiclePawn::BeginPlay` is the only place that applies `Chaos::ESleepType::NeverSleep`, and `ExecuteSafeReset` destroys the chassis particle through `ResetVehicle()` -> `ResetVehicleState()` -> `OnDestroyPhysicsState()` -> `RecreatePhysicsState()`, taking the pin with it. After the first reset the solver can park the car again; `WakeChassisForInput` keeps it drivable but the pin is gone. Needs the pin re-applied (and reported when it cannot be) after every `ResetVehicle()`, plus a test that resets and then asserts the sleep type, and a soak re-run because it changes physics state on the soak's own path. **Note for whoever takes it:** `RacingSim.Vehicle.WakesFromSleepOnThrottle` parks the car precisely because the pin is lost; fixing this invalidates that test's precondition and the test must be rewritten with it |
 | VEH-012 | Pin `ChassisWakeInputTolerance` against `p.Vehicle.ControlInputWakeTolerance` drift | vehicle-physics-engineer | VEH-010 | C | OPEN — opened 2026-09-23 by `RACE-006` repair cycle 2 (`code-reviewer` MEDIUM-6). `ARacingVehiclePawn::ChassisWakeInputTolerance = 0.02f` is a hand-copied duplicate of the engine default at `ChaosVehicleMovementComponent.h:53`, which is cvar-backed and can be changed at runtime. Nothing detects drift between the two. Either read the cvar, or add a test that fails when the engine default moves. Also carries `RACE-006` MEDIUM-2: `RacingSim.Vehicle.ResetStormCannotReachCeiling` has no dynamic storm case with a budget above the 4 s ceiling duration, so the cap is only covered by the static formula assertions |
 
 Chaos Vehicles is mandatory (hard constraint #2). No Unity-style WheelCollider
@@ -3273,6 +3273,122 @@ done here: it changes physics state on a path the soak covers and needs its own 
 - Re-applying the `NeverSleep` pin after a reset (`VEH-011`), and a drift guard between
   `ChassisWakeInputTolerance` and the engine cvar it copies (`VEH-012`).
 
+### VEH-011 — acceptance criteria, opened 2026-09-23
+
+Opened by `RACE-006` repair cycle 2 (`code-reviewer` HIGH-1). `ARacingVehiclePawn::BeginPlay`
+is the only place in the project that applies `Chaos::ESleepType::NeverSleep` to the chassis,
+and `ExecuteSafeReset` destroys the particle that carries it: `ResetVehicle()` reaches
+`ResetVehicleState()`, `OnDestroyPhysicsState()` and finally
+`UpdatedComponent->RecreatePhysicsState()` (`ChaosVehicleMovementComponent.cpp:904`, `:1922`).
+From the first driver reset onwards the solver can park this car again, and a parked chassis
+is not merely idle: `FChaosVehicleManagerAsyncCallback::OnPreSimulate_Internal` returns before
+`Simulate()` unless the handle is `EObjectStateType::Dynamic`, so the whole drivetrain stops
+while telemetry keeps reporting the last latched output. `VEH-010`'s `WakeChassisForInput`
+covers the driver-facing half — the car drives away when the driver asks — but between the
+reset and the next input the car is unpinned, and nothing reports it.
+
+**Outcome.** A reset leaves the chassis in the same sleep-pinned state `BeginPlay` left it in,
+and every path that cannot achieve that is reported rather than skipped.
+
+- [x] **The pin is re-applied after `ResetVehicle()`.** `ExecuteSafeReset` re-applies
+  `Chaos::ESleepType::NeverSleep` to the chassis after the movement component's
+  `ResetVehicle()` call, on the handle fetched *after* that call, since the old handle is
+  destroyed by the rebuild.
+- [x] **One helper, two callers.** `BeginPlay` and `ExecuteSafeReset` both apply the pin
+  through a single private helper rather than a copied block, and the helper returns whether
+  the pin was applied.
+- [x] **Every failure path is reported, with its context.** The three ways the helper can fail
+  (no `ChassisCollision`, no `FBodyInstance`, no `FPhysicsActorHandle`) each log a `Warning`
+  that names which call site it came from, so "the pin was never applied" and "the pin was
+  lost at the first reset" are distinguishable in a log. No path returns silently.
+- [x] **Ordering is stated and justified.** The pin is applied after the velocity zeroing that
+  follows `ResetVehicle()` and before `NotifyTelemetryDiscontinuity()`, and a comment says why:
+  the zeroing writes through the same recreated body, and the discontinuity notify is the
+  point after which telemetry is expected to be trustworthy again.
+- [x] **The state is observable.** `ARacingVehiclePawn::IsChassisSleepPinned() const` reports
+  whether the chassis handle currently carries `ESleepType::NeverSleep`
+  (`FRigidBodyHandle_External::SleepType()`, `ParticleHandle.h:3783`), and returns false rather
+  than asserting when any part of the chain is missing.
+- [x] **A test pins the behaviour.** `RacingSim.Vehicle.ResetRestoresSleepPin` (`ProductFilter`,
+  in `VehicleResetUnderLoadSpec.cpp`, reusing that file's `SpawnBuiltTrack`) drives the car,
+  calls `ExecuteSafeReset` through the pawn, then asserts (a) `IsChassisSleepPinned()` is true
+  immediately after the reset, and (b) the chassis is still awake after 600 neutral steps
+  (10 s at 60 Hz), which is more idle time than the solver needs to park an unpinned car.
+- [x] **The test is proved to fail without the fix.** The re-apply call is removed, the test
+  is re-run, and the exact failure message is recorded in this ticket. The tree is restored
+  afterwards and the passing run re-recorded.
+- [x] **`WakesFromSleepOnThrottle` is left valid, deliberately.** That test parks the car by
+  calling `Movement->ResetVehicle()` directly on the movement component, not through
+  `ExecuteSafeReset`, so pinning inside the pawn's reset path does not invalidate its
+  precondition. Both files say so, in both directions, so a later reader does not "fix" one by
+  breaking the other. The test is re-run unchanged and still passes.
+- [x] **The `KNOWN GAP` comment is retired.** The block at `RacingVehiclePawn.cpp:125` is
+  rewritten to say the `ExecuteSafeReset` path is closed and to name what is still open: any
+  future code that calls `ResetVehicle()` outside `ExecuteSafeReset` loses the pin again, and
+  today there is exactly one such caller and it is a test.
+- [x] **Gates.** Editor and game targets build with zero warning/error matches; the soak
+  (`RacingSim.Vehicle.Soak.ThirtyMinuteDrive`, 1800 s simulated) passes, because this changes
+  physics state on a path the soak drives; Smoke is unchanged; and the five `RACE-006` named
+  tests plus the two new/affected sleep tests all pass.
+
+**Deliberately excluded.**
+- Re-asserting the pin every tick, or from a physics callback. It would work, and it would
+  destroy `WakesFromSleepOnThrottle`'s ability to detect an engine sleep-policy change: the
+  car would never park, so the test that proves the wake path would silently stop testing
+  anything. One re-apply on the one path that destroys the pin is the whole fix.
+- Patching or reporting the engine. `VEH-010` already records the two engine facts this rests
+  on; neither is changed here.
+- `VEH-012`'s tolerance drift guard and its missing dynamic-storm case. Separate ticket.
+- Switching the chassis to a skeletal mesh, which would remove the need for both the pin and
+  `WakeChassisForInput`. Content decision, not a physics one.
+
+#### VEH-011 review and repair record
+
+**Implementation evidence, 2026-09-23** (branch `veh-011-reset-sleep-pin`).
+
+Files changed:
+
+| File | Change |
+|---|---|
+| `Source/RacingSim/Vehicle/RacingVehiclePawn.h` | Public `IsChassisSleepPinned() const`; private `ApplyChassisSleepPin(const TCHAR* ContextLabel)` |
+| `Source/RacingSim/Vehicle/RacingVehiclePawn.cpp` | `BeginPlay`'s inline pin block replaced by a helper call; `ApplyChassisSleepPin(TEXT("after a reset"))` added to `ExecuteSafeReset` between the velocity zeroing and `NotifyTelemetryDiscontinuity()`; the `KNOWN GAP` block rewritten; both helpers defined |
+| `Source/RacingSimTests/Vehicle/VehicleResetUnderLoadSpec.cpp` | New `RacingSim.Vehicle.ResetRestoresSleepPin` (`ProductFilter`), reusing that file's `SpawnBuiltTrack` fixture |
+| `Source/RacingSimTests/Vehicle/VehicleSleepWakeSpec.cpp` | Comment recording why `WakesFromSleepOnThrottle` still parks the car through `Movement->ResetVehicle()` and must not be "simplified" to `ExecuteSafeReset` |
+
+Gates run:
+
+| Gate | Command / report | Result |
+|---|---|---|
+| Editor build | `Scripts/Test/build-veh011-e1.log` | `Result: Succeeded`, `WARNING_ERROR_MATCHES=0` |
+| Editor build, after the bypass restore | `Scripts/Test/build-veh011-e2.log` | `Result: Succeeded`, `WARNING_ERROR_MATCHES=0` |
+| Game build | `Scripts/Test/build-veh011-g1.log` | `Result: Succeeded`, `WARNING_ERROR_MATCHES=0` |
+| Sleep/reset named tests | `Saved/Automation/veh011-r1` | `succeeded=3 succeededWithWarnings=0 failed=0 notRun=0` |
+| Sleep/reset named tests, re-run after the bypass restore | `Saved/Automation/veh011-r2` | `succeeded=3 succeededWithWarnings=0 failed=0 notRun=0` |
+| Five `RACE-006` named tests + `ResetRestoresSleepPin` + `Manoeuvre.SafeResetUnderLoad` | `Saved/Automation/veh011-r3` | `succeeded=7 succeededWithWarnings=0 failed=0 notRun=0`, `requiredNamesChecked=7` |
+| Soak | `Saved/Automation/veh011-soak` | `RacingSim.Vehicle.Soak.ThirtyMinuteDrive` `Success`; 108000 steps at 0.016667 s = 1800.0 s simulated in 67.6 s wall clock; 180 inspections; slowest inspected speed 335.1 cm/s against a 50.0 cm/s liveness floor; resident memory 1787.9 -> 1799.1 MiB, delta +11.2 MiB against a 64.0 MiB ceiling |
+| Smoke | `Saved/Automation/veh011-smoke` | `succeeded=528 succeededWithWarnings=2 failed=0 notRun=0` — unchanged from the `RACE-006` baseline; the two warnings are the pre-existing, unrelated `TRACK-001`/`TRACK-002` tests |
+
+**Bypass proof.** `ApplyChassisSleepPin(TEXT("after a reset"))` at `RacingVehiclePawn.cpp:1040`
+was commented out, the editor rebuilt (`Scripts/Test/build-veh011-bypass.log`, `Result:
+Succeeded`, `WARNING_ERROR_MATCHES=0` — the guard is a behavioural one, not a compile-time
+one), and `RacingSim.Vehicle.ResetRestoresSleepPin` re-run into
+`Saved/Automation/veh011-bypass`: `succeeded=0 failed=1 notRun=0`, with all three assertions
+firing:
+
+```
+Error: Expected 'The chassis is still sleep-pinned immediately after ExecuteSafeReset' to be true.
+Error: Expected 'The chassis stayed awake for 600 idle steps after the reset (parked after 53)' to be true.
+Error: Expected 'The chassis is still sleep-pinned after the idle run' to be true.
+```
+
+The "parked after 53" figure is the load-bearing one: without the re-apply the solver parks
+the car 53 idle steps (0.88 s at 60 Hz) after a reset, which is far inside a normal gap
+between driver inputs. The call was then restored (`grep` for the bypass marker returns
+nothing), rebuilt as `build-veh011-e2.log`, and the passing run re-recorded as
+`Saved/Automation/veh011-r2`.
+
+Pending: `code-reviewer`, `test-engineer`.
+
 
 | ID | Title | Owner | Depends on | Gate | Status |
 |---|---|---|---|---|---|
@@ -3283,7 +3399,7 @@ done here: it changes physics state on a path the soak covers and needs its own 
 | RACE-003 | Results, restart, metadata | race-systems-engineer | RACE-002 | B | **DONE** 2026-08-21 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS against `0b861a0`/`914f7c6` (no HIGH/BLOCKER findings); independently verified R2-M1 doesn't re-open H1, all three self-reported defects (double-encoded build ID, submittable clock-faulted result, two gate-bake fixtures that asserted nothing) genuinely fixed, and the delegate-binding design in `URaceResultRecorder` is an accepted, mitigated departure from RACE-001/RACE-002's no-delegates pattern. `test-engineer` independently confirmed both targets build clean (forced real recompilation), Smoke `passedTotal=482, failed=0, notRun=0`, and the three placed-level `ProductFilter` tests (the one gate the review pass left open, since this ticket added a new `Validate()` failure mode) pass 3/0/0 against the real graybox asset. Merged to `main` at `cc80624` (merge of `6968942`). Non-blocking findings (`M1`–`M5`, `L1`–`L9`) tracked forward into `UI-001`/`RACE-004` or folded into existing batch decisions |
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 | RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | **DONE** — closed 2026-09-18. `ARaceDirector` + `Game/` composition root (game mode, player controller, graybox ground); default map and game mode set; session tested in both login orders with a real `ULocalPlayer`. Car not yet drivable (input assets → `TRACK-003`). Opened by UI-002: nothing in the project yet created a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
-| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | **DONE** 2026-09-23 (branch `race-006-driver-reset`, merged to local `main` with `--no-ff`; **not pushed**). All 13 acceptance criteria met; criteria under "### RACE-006 — acceptance criteria", record under "#### RACE-006 review and repair record". `code-reviewer` PASS with conditions on `d2cc157` (ten findings, no High) — repair cycle 1 closed 1–8, accepted 9 and 10, all ten dispositioned in a table. `code-reviewer` PASS with conditions on `b0bbb21` (HIGH-1, MEDIUM-1..7, no BLOCKER) — repair cycle 2 was comments and documentation only: closed MEDIUM-1, 3, 4, 5, 7 and routed HIGH-1 to `VEH-011`, MEDIUM-2 and MEDIUM-6 to `VEH-012`. Repairing it surfaced `VEH-010` (Chaos cannot wake a non-skeletal chassis), fixed in this branch. Four guards proved by bypass. Cycle 1 gates: both targets 0 warnings, Smoke 528/2/0/0, 18 + 12 named Product tests all Success. Cycle 2 gates: `Scripts/Test/build-race006-e12.log` `Result: Succeeded` 0 warnings, `Saved/Automation/race006-r7` 5 succeeded / 0 failed / 0 not run. `test-engineer` PASS, independently re-running the build and the five named tests twice (`Saved/Automation/te2-verify`, `te2-verify-r2`) |
+| RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | **DONE** 2026-09-23 (branch `race-006-driver-reset`, merged to `main` with `--no-ff` at `ddb462c` and pushed to `origin/main` the same day on owner request). All 13 acceptance criteria met; criteria under "### RACE-006 — acceptance criteria", record under "#### RACE-006 review and repair record". `code-reviewer` PASS with conditions on `d2cc157` (ten findings, no High) — repair cycle 1 closed 1–8, accepted 9 and 10, all ten dispositioned in a table. `code-reviewer` PASS with conditions on `b0bbb21` (HIGH-1, MEDIUM-1..7, no BLOCKER) — repair cycle 2 was comments and documentation only: closed MEDIUM-1, 3, 4, 5, 7 and routed HIGH-1 to `VEH-011`, MEDIUM-2 and MEDIUM-6 to `VEH-012`. Repairing it surfaced `VEH-010` (Chaos cannot wake a non-skeletal chassis), fixed in this branch. Four guards proved by bypass. Cycle 1 gates: both targets 0 warnings, Smoke 528/2/0/0, 18 + 12 named Product tests all Success. Cycle 2 gates: `Scripts/Test/build-race006-e12.log` `Result: Succeeded` 0 warnings, `Saved/Automation/race006-r7` 5 succeeded / 0 failed / 0 not run. `test-engineer` PASS, independently re-running the build and the five named tests twice (`Saved/Automation/te2-verify`, `te2-verify-r2`) |
 | TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN — opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated

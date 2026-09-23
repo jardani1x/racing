@@ -122,53 +122,30 @@ void ARacingVehiclePawn::BeginPlay()
 	// with p.Vehicle.DisableConstraintSuspension in Config/DefaultEngine.ini: both are the same
 	// missing-skeletal-mesh gap in Chaos Vehicles, seen from different sides.
 	//
-	// KNOWN GAP, code-reviewer RACE-006 repair cycle 2 HIGH-1: this pin does NOT survive a
-	// reset. ExecuteSafeReset calls UChaosVehicleMovementComponent::ResetVehicle(), which
-	// reaches ResetVehicleState() -> OnDestroyPhysicsState() ->
-	// UpdatedComponent->RecreatePhysicsState() (ChaosVehicleMovementComponent.cpp:904, :1922).
-	// That destroys and recreates the chassis particle, and the sleep type goes with it.
-	// BeginPlay is the only place that applies it, so from the first reset onwards the
-	// solver can sleep this car again. WakeChassisForInput covers the driver-facing half of
-	// that -- the car still drives away -- and re-applying the pin after ResetVehicle() is
-	// tracked separately as VEH-011, because it changes physics state on a path the soak
-	// covers and needs its own evidence.
+	// This pin does NOT survive a reset on its own. ExecuteSafeReset calls
+	// UChaosVehicleMovementComponent::ResetVehicle(), which reaches ResetVehicleState() ->
+	// OnDestroyPhysicsState() -> UpdatedComponent->RecreatePhysicsState()
+	// (ChaosVehicleMovementComponent.cpp:904, :1922). That destroys and recreates the chassis
+	// particle, and the sleep type goes with it. VEH-011 closed that path: ExecuteSafeReset
+	// re-applies the pin through the same helper this call uses, on a handle fetched after
+	// the rebuild, and RacingSim.Vehicle.ResetRestoresSleepPin holds it there.
+	//
+	// STILL OPEN, and the reason the helper exists rather than a one-off call: ANY other
+	// caller of ResetVehicle() loses the pin the same way and nothing re-applies it. Today
+	// there is exactly one such caller and it is a test -- RacingSim.Vehicle.
+	// WakesFromSleepOnThrottle calls Movement->ResetVehicle() directly, deliberately, to
+	// park the car so it can prove WakeChassisForInput drives it away again. That is why
+	// the re-apply lives in ExecuteSafeReset and NOT in a tick or a physics callback: a
+	// blanket re-pin would leave that test unable to park the car at all, and it would stop
+	// detecting an engine sleep-policy change without ever failing. New production code that
+	// calls ResetVehicle() must call ApplyChassisSleepPin after it.
 	//
 	// Every path that fails to reach SetSleepType is REPORTED, not skipped quietly. The
 	// failure this pin prevents is silent by construction: a slept chassis latches its
 	// last physics output, so the telemetry keeps reporting the speed the car had when it
 	// went to sleep and nothing in FVehicleFailureThresholds can raise a flag for it. If
 	// the pin does not get applied, the log line below is the only warning anyone gets.
-	bool bSleepPinApplied = false;
-
-	if (ChassisCollision != nullptr)
-	{
-		if (const FBodyInstance* ChassisBody = ChassisCollision->GetBodyInstance())
-		{
-			if (FPhysicsActorHandle ChassisActor = ChassisBody->GetPhysicsActor())
-			{
-				ChassisActor->GetGameThreadAPI().SetSleepType(Chaos::ESleepType::NeverSleep);
-				bSleepPinApplied = true;
-			}
-			else
-			{
-				UE_LOG(LogRacingVehicle, Warning,
-					TEXT("ARacingVehiclePawn '%s' has a chassis body instance with no physics actor at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
-					*GetNameSafe(this));
-			}
-		}
-		else
-		{
-			UE_LOG(LogRacingVehicle, Warning,
-				TEXT("ARacingVehiclePawn '%s' has a chassis collision component with no body instance at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
-				*GetNameSafe(this));
-		}
-	}
-	else
-	{
-		UE_LOG(LogRacingVehicle, Warning,
-			TEXT("ARacingVehiclePawn '%s' has no ChassisCollision at BeginPlay, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
-			*GetNameSafe(this));
-	}
+	const bool bSleepPinApplied = ApplyChassisSleepPin(TEXT("at BeginPlay"));
 
 	UE_LOG(LogRacingVehicle, Verbose,
 		TEXT("ARacingVehiclePawn '%s' NeverSleep pin applied: %s."),
@@ -1046,6 +1023,22 @@ bool ARacingVehiclePawn::ExecuteSafeReset(
 		ChassisCollision->SetPhysicsAngularVelocityInDegrees(FVector::ZeroVector);
 	}
 
+	// VEH-011: ResetVehicle() above destroyed and recreated the chassis particle, taking
+	// BeginPlay's NeverSleep pin with it, so re-apply it here. Ordering is deliberate:
+	//
+	//   - AFTER the velocity zeroing, because that writes through the same recreated body
+	//     and this call fetches the handle; doing it first would pin a handle the zeroing
+	//     then works around, and would read as if the order did not matter.
+	//   - BEFORE NotifyTelemetryDiscontinuity below, which is the point after which
+	//     telemetry is expected to be trustworthy again. A car that is not pinned yet can
+	//     be parked, and a parked car latches its last output -- exactly the reading the
+	//     discontinuity notify tells the detector to trust.
+	//
+	// A failure here is logged by the helper and does not fail the reset: the car is
+	// already placed, and refusing a completed reset would be worse than a car that can be
+	// parked. WakeChassisForInput still gets it moving when the driver asks.
+	ApplyChassisSleepPin(TEXT("after a reset"));
+
 	// VEH-004's own stated obligation for whatever acts on a reset: without this, the
 	// deliberate reposition above is reported as tunnelling rather than the
 	// discontinuity it actually is.
@@ -1376,4 +1369,61 @@ void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInpu
 	}
 
 	ChassisCollision->WakeAllRigidBodies();
+}
+
+bool ARacingVehiclePawn::ApplyChassisSleepPin(const TCHAR* ContextLabel)
+{
+	// FRigidBodyHandle_External::SetSleepType wakes an already-sleeping particle when it is
+	// handed NeverSleep (ParticleHandle.h:3777-3781), so this is safe to call on a body the
+	// solver has already parked as well as on a fresh one.
+	if (ChassisCollision == nullptr)
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s' has no ChassisCollision %s, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+			*GetNameSafe(this), ContextLabel);
+		return false;
+	}
+
+	const FBodyInstance* ChassisBody = ChassisCollision->GetBodyInstance();
+	if (ChassisBody == nullptr)
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s' has a chassis collision component with no body instance %s, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+			*GetNameSafe(this), ContextLabel);
+		return false;
+	}
+
+	FPhysicsActorHandle ChassisActor = ChassisBody->GetPhysicsActor();
+	if (!ChassisActor)
+	{
+		UE_LOG(LogRacingVehicle, Warning,
+			TEXT("ARacingVehiclePawn '%s' has a chassis body instance with no physics actor %s, so the NeverSleep pin was not applied; the chassis may sleep under steady input and latch its last physics output."),
+			*GetNameSafe(this), ContextLabel);
+		return false;
+	}
+
+	ChassisActor->GetGameThreadAPI().SetSleepType(Chaos::ESleepType::NeverSleep);
+	return true;
+}
+
+bool ARacingVehiclePawn::IsChassisSleepPinned() const
+{
+	if (ChassisCollision == nullptr)
+	{
+		return false;
+	}
+
+	const FBodyInstance* ChassisBody = ChassisCollision->GetBodyInstance();
+	if (ChassisBody == nullptr)
+	{
+		return false;
+	}
+
+	FPhysicsActorHandle ChassisActor = ChassisBody->GetPhysicsActor();
+	if (!ChassisActor)
+	{
+		return false;
+	}
+
+	return ChassisActor->GetGameThreadAPI().SleepType() == Chaos::ESleepType::NeverSleep;
 }
