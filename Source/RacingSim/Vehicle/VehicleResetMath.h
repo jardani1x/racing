@@ -114,12 +114,22 @@ namespace RacingSim::Vehicle
 	 * MaxContactSuppressionSeconds of simulated time has elapsed since the first
 	 * evaluation after the arm. With a steady capture interval I = 1 / rate, the first
 	 * evaluation lands within I of the reset, so expiry is within
-	 * I + max(Floor * I, Budget + I) <= Budget + (Floor + 1) * I of it.
+	 * I + max(Floor * I, Budget + I) <= Budget + (Floor + 1) * I of it. The carried
+	 * ceiling also drops the basis by evaluation Ceiling, within Ceiling * I, so the
+	 * result is the smaller of the two: a budget longer than Ceiling * I is inert
+	 * (VEH-007) and does not inflate the cooldown.
 	 *
-	 * A time bound alone is not exact: an irregular long frame right after a reset
-	 * starts the budget late. The exact invariant -- "never re-arm while armed" -- is
-	 * EvaluateResetGate's SuppressionArmed check; this cooldown is the authored,
-	 * testable floor that keeps a well-behaved reset storm from hitting that gate.
+	 * ASSUMPTION: I is the real spacing between captures, which holds only while the
+	 * frame time is at most 1 / rate. The pawn captures at most once per tick, so
+	 * frames slower than the capture rate (20 fps under a 60 Hz capture) stretch the
+	 * spacing to the frame time and the basis can outlive this bound. A single long
+	 * frame right after a reset does the same by starting the budget late.
+	 *
+	 * So this is ADVISORY, not the guarantee. The invariant -- "never re-arm while
+	 * armed", which keeps a reset storm off the carried ceiling -- is
+	 * EvaluateResetGate's SuppressionArmed check, which holds at any frame time. This
+	 * cooldown is the authored, testable floor that keeps a well-behaved reset storm
+	 * from hitting that gate.
 	 *
 	 * @param MaxContactSuppressionSeconds  FVehicleFailureThresholds' budget, SECONDS.
 	 * @param TelemetrySampleRateHz         the pawn's capture rate, HERTZ. Zero, negative

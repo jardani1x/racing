@@ -607,4 +607,9 @@ namespace RacingSim::Vehicle
 	{
 		return GVehicleFailureMinContactSuppressionEvaluations;
 	}
+
+	int32 GetMaxContactSuppressionEvaluations()
+	{
+		return GVehicleFailureMaxContactSuppressionEvaluations;
+	}
 }

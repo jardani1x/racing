@@ -537,6 +537,39 @@ bool FRaceDirectorCompetitorResetApprovalTest::RunTest(const FString& Parameters
 	TestEqual(TEXT("The competitor's notification resyncs the hint to the tracker's progress"),
 		Director->GetLastCompetitorDistanceCm(), LapTracker->GetProgressDistanceCm());
 
+	// -- No live track ------------------------------------------------------------------
+	// Cleared on the property and restored, rather than destroyed, so the session can
+	// still run to Results below.
+	Director->Track = nullptr;
+	ApprovedDistanceCm = Untouched;
+	TestFalse(TEXT("Refused with no live track"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The no-track refusal says why (reason: %s)"), *Reason), Reason.Contains(TEXT("no live track")));
+	TestEqual(TEXT("The no-track refusal leaves the out-distance untouched"), ApprovedDistanceCm, Untouched);
+	Director->Track = Track;
+
+	// -- No progress sample ---------------------------------------------------------------
+	// A non-finite reset pose drops the tracker's sample but leaves its distance behind;
+	// the director must read the flag, not the stale distance.
+	AddExpectedMessagePlain(
+		TEXT("URaceLapTracker::NotifyVehicleReset was given a non-finite pose"),
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		1);
+	const double NaNCm = std::numeric_limits<double>::quiet_NaN();
+	LapTracker->NotifyVehicleReset(FVector(NaNCm, NaNCm, NaNCm), NaNCm);
+	TestFalse(TEXT("The dropped sample is visible on the tracker"), LapTracker->HasProgressSample());
+	TestTrue(TEXT("The stale distance on its own still reads as valid (why the flag is needed)"),
+		FMath::IsFinite(LapTracker->GetProgressDistanceCm()) && LapTracker->GetProgressDistanceCm() >= 0.0);
+	ApprovedDistanceCm = Untouched;
+	TestFalse(TEXT("Refused with no progress sample"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The no-sample refusal says why (reason: %s)"), *Reason), Reason.Contains(TEXT("no progress sample")));
+	TestEqual(TEXT("The no-sample refusal leaves the out-distance untouched"), ApprovedDistanceCm, Untouched);
+
+	// The next tick re-seeds from the car, and approval returns.
+	Director->Tick(0.016f);
+	TestTrue(TEXT("The next tick re-seeds the tracker"), LapTracker->HasProgressSample());
+	TestTrue(TEXT("Approved again once the tracker has re-seeded"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+
 	// -- Results ----------------------------------------------------------------------
 	DistanceCm = LapTracker->GetProgressDistanceCm();
 	const int32 MaxSteps = DirectorSpecStepsPerLap * (DirectorSpecLapsToFinish + 2);

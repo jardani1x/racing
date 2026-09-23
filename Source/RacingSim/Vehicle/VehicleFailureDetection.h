@@ -561,4 +561,13 @@ namespace RacingSim::Vehicle
 	 * a second copy that could drift.
 	 */
 	RACINGSIM_API int32 GetMinContactSuppressionEvaluations();
+
+	/**
+	 * RACE-006: the carried-evaluation ceiling of contact suppression -- the bound of last
+	 * resort that drops a basis once the carried count reaches it, whatever the time
+	 * budget says. Exposed read-only for the same reason as the floor: a
+	 * MaxContactSuppressionSeconds longer than Ceiling / rate is inert (VEH-007), and the
+	 * reset cooldown must not grow with it.
+	 */
+	RACINGSIM_API int32 GetMaxContactSuppressionEvaluations();
 }

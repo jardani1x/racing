@@ -712,6 +712,10 @@ void ARacingVehiclePawn::UnPossessed()
 	// possession's first sample must not be compared against a snapshot from before it,
 	// or a car that sat unpossessed for a minute reports a time anomaly and a teleport.
 	NotifyTelemetryDiscontinuity();
+
+	// RACE-006: a request belongs to the driver who held reset. Left latched, the next
+	// possessor's controller would service a reset nobody on it asked for.
+	bResetRequestPending = false;
 }
 
 void ARacingVehiclePawn::NotifyTelemetryDiscontinuity()
@@ -1302,6 +1306,8 @@ FVehicleChaosInput ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputComm
 	VehicleMovementComponent->SetChangeUpInput(ChaosInput.bChangeUp);
 	VehicleMovementComponent->SetChangeDownInput(ChaosInput.bChangeDown);
 
+	WakeChassisForInput(ChaosInput);
+
 	// RACE-006: the one-shot reset request is LATCHED here, not acted on. Executing it
 	// needs a Track and a race-progress distance neither this pawn nor VehicleInputComp
 	// owns; RacingSim::Game::ServiceDriverResetRequest consumes the latch, asks the race
@@ -1313,4 +1319,38 @@ FVehicleChaosInput ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputComm
 		bResetRequestPending = true;
 	}
 	return ChaosInput;
+}
+
+void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInput)
+{
+	if (ChassisCollision == nullptr)
+	{
+		return;
+	}
+
+	// The same axes UChaosVehicleMovementComponent::ProcessSleeping treats as "a control
+	// input is pressed" (ChaosVehicleMovementComponent.cpp:1389-1394), minus the roll,
+	// pitch and yaw axes this pawn never writes. Steering is compared against the
+	// tolerance directly rather than against the previous frame's value: Chaos looks at
+	// the DELTA because it runs every frame on a car that may be mid-corner, while this
+	// only ever fires on a car the solver has already parked, where held lock is as much
+	// a request to move as a change of lock is.
+	const bool bDriverAsksForMotion =
+		ChaosInput.Throttle >= ChassisWakeInputTolerance
+		|| ChaosInput.Brake >= ChassisWakeInputTolerance
+		|| FMath::Abs(ChaosInput.Steering) >= ChassisWakeInputTolerance
+		|| ChaosInput.bHandbrake;
+	if (!bDriverAsksForMotion)
+	{
+		return;
+	}
+
+	// Checked first so the normal case -- a car already awake, which is every frame of a
+	// lap -- costs one query and no write into the physics scene.
+	if (ChassisCollision->IsAnyRigidBodyAwake())
+	{
+		return;
+	}
+
+	ChassisCollision->WakeAllRigidBodies();
 }

@@ -77,7 +77,13 @@ double RacingSim::Vehicle::ComputeMinimumResetCooldownSeconds(
 	}
 
 	const double CaptureIntervalSeconds = 1.0 / static_cast<double>(TelemetrySampleRateHz);
-	return BudgetSeconds + static_cast<double>(GetMinContactSuppressionEvaluations() + 1) * CaptureIntervalSeconds;
+	const double BudgetBoundSeconds =
+		BudgetSeconds + static_cast<double>(GetMinContactSuppressionEvaluations() + 1) * CaptureIntervalSeconds;
+	// The ceiling drops the basis by evaluation Ceiling at the latest, whatever the
+	// budget; a budget past that is inert and must not inflate the cooldown.
+	const double CeilingBoundSeconds =
+		static_cast<double>(GetMaxContactSuppressionEvaluations()) * CaptureIntervalSeconds;
+	return FMath::Min(BudgetBoundSeconds, CeilingBoundSeconds);
 }
 
 double RacingSim::Vehicle::ResolveEffectiveResetCooldownSeconds(

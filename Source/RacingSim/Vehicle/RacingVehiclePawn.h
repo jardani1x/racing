@@ -342,6 +342,13 @@ public:
 	 * The vehicle-side reset gate (RacingSim::Vehicle::EvaluateResetGate) applied to
 	 * this pawn's own clock, cooldown and failure-detector state.
 	 *
+	 * KNOWN LIMIT: SuppressionArmed has no time-based escape. The basis expires only
+	 * through evaluations, so a detector that keeps receiving invalid snapshots (which
+	 * skip evaluation) refuses every reset until valid capture resumes. That is
+	 * deliberate: re-arming a basis the detector never evaluated is exactly the storm
+	 * the gate exists to stop, and a car whose telemetry is that broken is a failure
+	 * for the detector to report, not for a reset to paper over.
+	 *
 	 * @param OutReason  empty on acceptance; otherwise one line naming the gate result.
 	 * @return true when a reset may execute now.
 	 */
@@ -430,6 +437,38 @@ private:
 	/** Maps FVehicleInputCommand onto the movement component's SetThrottleInput/SetBrakeInput/SetSteeringInput/SetHandbrakeInput. The one Tick-time consumer of VEH-001's contract. */
 	/** @return the mapped axes actually pushed, so VEH-004's capture records those rather than re-deriving them. */
 	FVehicleChaosInput ApplyInputCommand(const FVehicleInputCommand& Command);
+
+	/**
+	 * Wake the chassis body when the driver is asking for motion and the solver has
+	 * parked it.
+	 *
+	 * Chaos already intends this: UChaosVehicleMovementComponent::ProcessSleeping clears
+	 * the sleep state whenever a control input is pressed. It does so through
+	 * WakeAllEnabledRigidBodies(), which walks GetSkeletalMesh()->Bodies
+	 * (ChaosVehicleMovementComponent.cpp:2058-2073). GetSkeletalMesh() casts
+	 * UpdatedComponent to USkeletalMeshComponent, and this pawn's chassis is a
+	 * UBoxComponent (see ChassisCollision), so BOTH the sleep helper and the wake helper
+	 * are no-ops here. The solver still sleeps the body on its own once the car is
+	 * genuinely at rest, and from that moment full throttle moves nothing: the input
+	 * reaches Chaos, the wheels keep their last forces, and the car is stranded for good.
+	 *
+	 * That state is not hypothetical -- ExecuteSafeReset produces it by construction,
+	 * because it zeroes both velocities, so a car reset onto the track and left alone for
+	 * a second can never be driven away again.
+	 *
+	 * Called once per ApplyInputCommand, after the axes are pushed. Costs one
+	 * IsAnyRigidBodyAwake() per frame and does nothing at all while the car is awake,
+	 * which is every frame of a normal lap.
+	 */
+	void WakeChassisForInput(const FVehicleChaosInput& ChaosInput);
+
+	/**
+	 * How much of an axis counts as "the driver is asking for motion", matching
+	 * FVehicleDebugParams::ControlInputWakeTolerance's own default
+	 * (ChaosVehicleMovementComponent.h:53) so this pawn wakes on exactly the inputs
+	 * Chaos itself would have woken on.
+	 */
+	static constexpr float ChassisWakeInputTolerance = 0.02f;
 
 	/**
 	 * VEH-004: capture one snapshot and evaluate it, if the decimation clock allows.

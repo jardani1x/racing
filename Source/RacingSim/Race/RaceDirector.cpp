@@ -343,10 +343,12 @@ bool ARaceDirector::CanResetCompetitor(const APawn* Pawn, double& OutLastValidPr
 		return false;
 	}
 
+	// The sample flag, not the distance, is what says "no progress": the distance
+	// defaults to 0 and survives a dropped sample, so on its own it reads as valid.
 	const double ProgressCm = LapTracker->GetProgressDistanceCm();
-	if (!FMath::IsFinite(ProgressCm) || ProgressCm < 0.0)
+	if (!LapTracker->HasProgressSample() || !FMath::IsFinite(ProgressCm) || ProgressCm < 0.0)
 	{
-		OutReason = FString::Printf(TEXT("lap tracker has no valid progress (%f cm) to reset back to"), ProgressCm);
+		OutReason = FString::Printf(TEXT("lap tracker has no progress sample (%f cm) to reset back to"), ProgressCm);
 		return false;
 	}
 

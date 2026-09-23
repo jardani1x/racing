@@ -24,7 +24,7 @@
 
 namespace RacingSimResetGateSpecPrivate
 {
-	/** The detector's evaluation ceiling. Pinned by hand for the reason FailureDetectionSuppressionBound gives: it is not visible outside the detector. */
+	/** The detector's evaluation ceiling, pinned by hand; RacingSim.Vehicle.ResetGate checks it against GetMaxContactSuppressionEvaluations(). */
 	constexpr int32 ResetStormCeilingEvaluations = 240;
 
 	/**
@@ -203,8 +203,20 @@ bool FRacingSimVehicleResetGateTest::RunTest(const FString& Parameters)
 		ComputeMinimumResetCooldownSeconds(0.5f, NaNf), 0.5, 1e-6);
 	TestNearlyEqual(TEXT("A non-finite budget reads as 0"),
 		ComputeMinimumResetCooldownSeconds(NaNf, 60.0f), 4.0 / 60.0, 1e-6);
-	TestTrue(TEXT("The minimum strictly exceeds the budget whenever capture is on"),
+	TestTrue(TEXT("At the defaults the minimum strictly exceeds the budget"),
 		ComputeMinimumResetCooldownSeconds(0.5f, 60.0f) > 0.5);
+
+	// -- The ceiling caps it: a budget past Ceiling / rate is inert (VEH-007). --
+	TestEqual(TEXT("The detector's carried ceiling is 240 evaluations"),
+		GetMaxContactSuppressionEvaluations(), 240);
+	TestNearlyEqual(TEXT("A 30 s budget at 60 Hz is capped at 240/60 = 4 s"),
+		ComputeMinimumResetCooldownSeconds(30.0f, 60.0f), 240.0 / 60.0, 1e-6);
+	TestNearlyEqual(TEXT("A 60 s budget at 120 Hz is capped at 240/120 = 2 s"),
+		ComputeMinimumResetCooldownSeconds(60.0f, 120.0f), 240.0 / 120.0, 1e-6);
+	TestNearlyEqual(TEXT("A budget just under the cap is not capped (3.9 s at 60 Hz)"),
+		ComputeMinimumResetCooldownSeconds(3.9f, 60.0f), static_cast<double>(3.9f) + 4.0 / 60.0, 1e-6);
+	TestNearlyEqual(TEXT("A 60 s budget cannot drive the effective cooldown past the cap"),
+		ResolveEffectiveResetCooldownSeconds(1.0f, 60.0f, 60.0f), 240.0 / 60.0, 1e-6);
 
 	// -- ResolveEffectiveResetCooldownSeconds. --
 	const double DefaultMinimum = ComputeMinimumResetCooldownSeconds(0.5f, 60.0f);
@@ -334,6 +346,11 @@ bool FRacingSimVehicleResetStormTest::RunTest(const FString& Parameters)
 
 	auto Steady60 = [](int32, int32) { return 1.0 / 60.0; };
 	auto Steady144 = [](int32, int32) { return 1.0 / 144.0; };
+	// The engine's DeltaSeconds is a float: float(1/120) is a hair LONGER than the double
+	// capture interval, so every frame captures -- a true 120 Hz capture. (Exact 1/144
+	// frames under a 120 Hz capture re-base "next capture" onto a frame that is just
+	// short of it, so they capture every other frame: 72 Hz. Kept as its own case.)
+	auto Steady120 = [](int32, int32) { return static_cast<double>(1.0f / 120.0f); };
 
 	// Hitches placed where they hurt: the first frame after every reset is longer than
 	// the whole suppression budget, and a smaller hitch lands every seventh frame.
@@ -369,7 +386,15 @@ bool FRacingSimVehicleResetStormTest::RunTest(const FString& Parameters)
 	// wait without letting a gate that refuses everything pass.
 	ExpectBounded(TEXT("Full gate, 60 Hz steady"),
 		RunResetStorm(Thresholds, 60.0f, PawnCooldownSeconds, /*bUseArmedGate*/ true, StormSeconds, Steady60), 20);
-	ExpectBounded(TEXT("Full gate, 120 Hz capture on 144 Hz frames"),
+	{
+		const FResetStormResult Result =
+			RunResetStorm(Thresholds, 120.0f, PawnCooldownSeconds, true, StormSeconds, Steady120);
+		ExpectBounded(TEXT("Full gate, 120 Hz steady"), Result, 20);
+		TestTrue(FString::Printf(TEXT("Full gate, 120 Hz steady: really captures at 120 Hz (%d captures in %.0f s)"),
+				Result.Captures, StormSeconds),
+			Result.Captures >= static_cast<int32>(0.99 * 120.0 * StormSeconds));
+	}
+	ExpectBounded(TEXT("Full gate, 120 Hz capture on 144 Hz frames (captures at 72 Hz)"),
 		RunResetStorm(Thresholds, 120.0f, PawnCooldownSeconds, true, StormSeconds, Steady144), 20);
 	ExpectBounded(TEXT("Full gate, 60 Hz with hitches"),
 		RunResetStorm(Thresholds, 60.0f, PawnCooldownSeconds, true, StormSeconds, Hitchy60), 15);
@@ -381,7 +406,15 @@ bool FRacingSimVehicleResetStormTest::RunTest(const FString& Parameters)
 	const double Minimum120 = ComputeMinimumResetCooldownSeconds(Thresholds.MaxContactSuppressionSeconds, 120.0f);
 	ExpectBounded(TEXT("Minimum cooldown only, 60 Hz steady"),
 		RunResetStorm(Thresholds, 60.0f, Minimum60, /*bUseArmedGate*/ false, StormSeconds, Steady60), 40);
-	ExpectBounded(TEXT("Minimum cooldown only, 120 Hz capture on 144 Hz frames"),
+	{
+		const FResetStormResult Result =
+			RunResetStorm(Thresholds, 120.0f, Minimum120, false, StormSeconds, Steady120);
+		ExpectBounded(TEXT("Minimum cooldown only, 120 Hz steady"), Result, 40);
+		TestTrue(FString::Printf(TEXT("Minimum cooldown only, 120 Hz steady: really captures at 120 Hz (%d captures)"),
+				Result.Captures),
+			Result.Captures >= static_cast<int32>(0.99 * 120.0 * StormSeconds));
+	}
+	ExpectBounded(TEXT("Minimum cooldown only, 120 Hz capture on 144 Hz frames (captures at 72 Hz)"),
 		RunResetStorm(Thresholds, 120.0f, Minimum120, false, StormSeconds, Steady144), 40);
 
 	// -- Controls: each shows the test can fail. --
