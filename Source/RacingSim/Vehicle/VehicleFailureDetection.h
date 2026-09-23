@@ -550,4 +550,24 @@ namespace RacingSim::Vehicle
 
 	/** Comma-separated flag names, for a log line or a test message. "None" when Flags == 0. */
 	RACINGSIM_API FString DescribeVehicleFailureFlags(uint8 Flags);
+
+	/**
+	 * RACE-006: the per-arm evaluation floor of contact suppression -- the number of
+	 * evaluations after an arm that must pass before the time budget may expire the
+	 * basis (expiry needs evaluation Floor + 1 at the earliest).
+	 *
+	 * Exposed read-only so the reset cooldown (ComputeMinimumResetCooldownSeconds in
+	 * Vehicle/VehicleResetMath.h) derives from the detector's real constant instead of
+	 * a second copy that could drift.
+	 */
+	RACINGSIM_API int32 GetMinContactSuppressionEvaluations();
+
+	/**
+	 * RACE-006: the carried-evaluation ceiling of contact suppression -- the bound of last
+	 * resort that drops a basis once the carried count reaches it, whatever the time
+	 * budget says. Exposed read-only for the same reason as the floor: a
+	 * MaxContactSuppressionSeconds longer than Ceiling / rate is inert (VEH-007), and the
+	 * reset cooldown must not grow with it.
+	 */
+	RACINGSIM_API int32 GetMaxContactSuppressionEvaluations();
 }

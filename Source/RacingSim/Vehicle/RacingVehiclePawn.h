@@ -125,6 +125,24 @@ public:
 	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle|Telemetry", meta = (ClampMin = "0.0", ClampMax = "1000.0"))
 	float TelemetrySampleRateHz = 60.0f;
 
+	/**
+	 * RACE-006: the shortest gap between two executed driver resets, in this pawn's
+	 * SIMULATED seconds (the same clock the failure detector's
+	 * MaxContactSuppressionSeconds budget is measured on).
+	 *
+	 * Lives on the pawn, not the race ruleset, because the hazard it guards is the
+	 * vehicle's own detector: a reset re-arms contact suppression, and a reset storm
+	 * faster than the basis can expire would carry the evaluation count towards the
+	 * detector's ceiling (VEH-007's routed requirement).
+	 *
+	 * An authored value below RacingSim::Vehicle::ComputeMinimumResetCooldownSeconds at
+	 * the active thresholds and TelemetrySampleRateHz is raised to that minimum and
+	 * warned once; see GetEffectiveResetCooldownSeconds. The 1.0 s default sits above the
+	 * default minimum (0.5 + 4/60 s), and RacingSim.Vehicle.ResetGate pins that.
+	 */
+	UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Vehicle|Reset", meta = (ClampMin = "0.0", ClampMax = "60.0", ForceUnits = "s"))
+	float ResetCooldownSeconds = 1.0f;
+
 	/** True once ChassisAsset has been applied to the movement component and wheel setups. False for a pawn spawned with no chassis (a validation failure, not a crash). */
 	UFUNCTION(BlueprintPure, Category = "Vehicle")
 	bool IsChassisApplied() const
@@ -258,12 +276,12 @@ public:
 	 * forward-declared here and their real headers are included only in this class's
 	 * .cpp, exactly as PublishCarSpecVersionTo confines its Race/ include.
 	 *
-	 * THIS PAWN DOES NOT CALL THIS METHOD ITSELF. Nothing in ApplyInputCommand invokes
-	 * it when Command.bResetRequested is set -- per this ticket's acceptance criteria,
-	 * a race-context owner (a GameMode/RaceDirector, which does not exist as a ticket
-	 * yet) is the intended caller, because only that owner knows the current
-	 * LastValidProgressDistanceCm and which LapTracker/Track are live. Wiring an
-	 * internal call here would mean guessing at both.
+	 * THIS PAWN DOES NOT CALL THIS METHOD ITSELF. ApplyInputCommand only LATCHES
+	 * Command.bResetRequested (see ConsumeResetRequest); RACE-006's
+	 * RacingSim::Game::ServiceDriverResetRequest is the caller, because only the race
+	 * session knows the current LastValidProgressDistanceCm and which LapTracker/Track
+	 * are live. That caller checks CanAcceptResetRequest first; this method does not
+	 * re-check the cooldown, so a test or tool can still place the car directly.
 	 *
 	 * ---------------------------------------------------------------------
 	 * Precondition this method trusts, and does not re-derive
@@ -292,9 +310,64 @@ public:
 	 *                                     mechanism actually runs.
 	 * @param LastValidProgressDistanceCm  the car's own last-valid arc-length progress,
 	 *                                     CENTIMETRES. See the precondition above.
+	 * @return true when the car was actually placed (RACE-006). The documented no-ops
+	 *         (invalid Track, no valid reset sample) return false and change nothing.
+	 *         On success the reset time is stamped for the cooldown and any latched
+	 *         reset request is cleared, so a request queued before this reset cannot
+	 *         fire a second one.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "Vehicle")
-	void ExecuteSafeReset(const ATrackDefinitionActor* Track, URaceLapTracker* LapTracker, double LastValidProgressDistanceCm);
+	bool ExecuteSafeReset(const ATrackDefinitionActor* Track, URaceLapTracker* LapTracker, double LastValidProgressDistanceCm);
+
+	// =======================================================================
+	// RACE-006 -- driver reset request, latched here, serviced by Game/
+	// =======================================================================
+
+	/**
+	 * Returns whether a driver reset request is pending, and clears it.
+	 *
+	 * ApplyInputCommand latches FVehicleInputCommand::bResetRequested (a one-shot the
+	 * input processor raises after the hold time), so a request raised in this pawn's
+	 * Tick survives until the controller services it, whichever of the two ticks first.
+	 */
+	bool ConsumeResetRequest();
+
+	/** True while a latched request waits for ConsumeResetRequest. Does not clear it. */
+	bool HasPendingResetRequest() const
+	{
+		return bResetRequestPending;
+	}
+
+	/**
+	 * The vehicle-side reset gate (RacingSim::Vehicle::EvaluateResetGate) applied to
+	 * this pawn's own clock, cooldown and failure-detector state.
+	 *
+	 * KNOWN LIMIT: SuppressionArmed has no time-based escape. The basis expires only
+	 * through evaluations, so a detector that keeps receiving invalid snapshots (which
+	 * skip evaluation) refuses every reset until valid capture resumes. That is
+	 * deliberate: re-arming a basis the detector never evaluated is exactly the storm
+	 * the gate exists to stop, and a car whose telemetry is that broken is a failure
+	 * for the detector to report, not for a reset to paper over.
+	 *
+	 * @param OutReason  empty on acceptance; otherwise one line naming the gate result.
+	 * @return true when a reset may execute now.
+	 */
+	bool CanAcceptResetRequest(FString& OutReason) const;
+
+	/** ResetCooldownSeconds raised to the minimum the detector needs; see ResolveEffectiveResetCooldownSeconds. */
+	double GetEffectiveResetCooldownSeconds() const;
+
+	/** This pawn's simulated clock, SECONDS. The clock the reset cooldown runs on. */
+	double GetSimulationTimeSeconds() const
+	{
+		return SimulationTimeSeconds;
+	}
+
+	/** True while the failure detector's post-reset contact-suppression basis is armed. */
+	bool IsContactSuppressionArmed() const
+	{
+		return FailureState.bHasPreDiscontinuityLocation;
+	}
 
 protected:
 	virtual void BeginPlay() override;
@@ -366,6 +439,48 @@ private:
 	FVehicleChaosInput ApplyInputCommand(const FVehicleInputCommand& Command);
 
 	/**
+	 * Wake the chassis body when the driver is asking for motion and the solver has
+	 * parked it.
+	 *
+	 * Chaos already intends this: UChaosVehicleMovementComponent::ProcessSleeping clears
+	 * the sleep state whenever a control input is pressed. It does so through
+	 * WakeAllEnabledRigidBodies(), which walks GetSkeletalMesh()->Bodies
+	 * (ChaosVehicleMovementComponent.cpp:2058-2073). GetSkeletalMesh() casts
+	 * UpdatedComponent to USkeletalMeshComponent, and this pawn's chassis is a
+	 * UBoxComponent (see ChassisCollision), so BOTH the sleep helper and the wake helper
+	 * are no-ops here. The solver still sleeps the body on its own once the car is
+	 * genuinely at rest, and from that moment full throttle moves nothing: the input
+	 * reaches Chaos, the wheels keep their last forces, and the car is stranded for good.
+	 *
+	 * That state is not hypothetical -- ExecuteSafeReset produces it by construction,
+	 * because it zeroes both velocities, so a car reset onto the track and left alone for
+	 * a second can never be driven away again. It is reachable at all only because the
+	 * same call destroys the ESleepType::NeverSleep pin BeginPlay applies: see the KNOWN
+	 * GAP note beside that pin, and VEH-011.
+	 *
+	 * Called once per ApplyInputCommand, after the axes are pushed. Costs one
+	 * IsAnyRigidBodyAwake() per frame and does nothing at all while the car is awake,
+	 * which is every frame of a normal lap.
+	 */
+	void WakeChassisForInput(const FVehicleChaosInput& ChaosInput);
+
+	/**
+	 * How much of an axis counts as "the driver is asking for motion", matching
+	 * FVehicleDebugParams::ControlInputWakeTolerance's own default
+	 * (ChaosVehicleMovementComponent.h:53).
+	 *
+	 * This is a COPY of that default, not a read of it. The engine value is cvar-backed
+	 * (p.Vehicle.ControlInputWakeTolerance, registered at
+	 * ChaosVehicleMovementComponent.cpp:77) and Chaos exposes no accessor for it, so an
+	 * ini or a console change moves the engine's threshold and leaves this one behind.
+	 * Nothing detects that drift today; see VEH-012.
+	 *
+	 * The set of inputs compared against it is NOT the same set Chaos uses either --
+	 * WakeChassisForInput documents the three deliberate differences.
+	 */
+	static constexpr float ChassisWakeInputTolerance = 0.02f;
+
+	/**
 	 * VEH-004: capture one snapshot and evaluate it, if the decimation clock allows.
 	 *
 	 * Called at the END of Tick, after ApplyInputCommand, so the recorded ChaosInput is
@@ -425,6 +540,18 @@ private:
 
 	/** SIMULATED SECONDS at which the next capture is due. 0 means "capture on the next Tick". */
 	double NextCaptureTimeSeconds = 0.0;
+
+	/** RACE-006: a driver reset request latched by ApplyInputCommand, cleared by ConsumeResetRequest or a successful reset. */
+	bool bResetRequestPending = false;
+
+	/** RACE-006: false until ExecuteSafeReset first succeeds; the cooldown only applies after one. */
+	bool bHasExecutedReset = false;
+
+	/** RACE-006: SimulationTimeSeconds at the last successful ExecuteSafeReset. */
+	double LastResetSimulationTimeSeconds = 0.0;
+
+	/** RACE-006: whether the below-minimum ResetCooldownSeconds warning has been emitted. mutable for the same reason as the clearance warning flag below. */
+	mutable bool bWarnedResetCooldownBelowMinimum = false;
 
 	/**
 	 * Flags at the last log emission, so a persistent fault logs ONCE and a newly

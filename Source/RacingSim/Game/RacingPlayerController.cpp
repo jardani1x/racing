@@ -6,6 +6,7 @@
 #include "Core/RacingSimSettings.h"
 #include "Core/RacingTelemetry.h"
 #include "Core/RacingTelemetryFunctionLibrary.h"
+#include "Game/RacingDriverReset.h"
 #include "Game/RacingGameMode.h"
 #include "Race/RaceDirector.h"
 #include "UI/RacingHudWidget.h"
@@ -72,6 +73,15 @@ ARaceDirector* ARacingPlayerController::ResolveDirector()
 void ARacingPlayerController::Tick(const float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
+
+	// RACE-006: service a latched driver reset before the HUD reads the frame, so the
+	// HUD shows the post-reset state. NoRequest (the common case) is silent and cheap.
+	if (ARacingVehiclePawn* Vehicle = Cast<ARacingVehiclePawn>(GetPawn()))
+	{
+		FString ResetReason;
+		RacingSim::Game::ServiceDriverResetRequest(ResolveDirector(), Vehicle, ResetReason);
+	}
+
 	UpdateHud();
 }
 

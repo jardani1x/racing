@@ -139,6 +139,31 @@ public:
 	 */
 	bool GatherHudRaceInputs(FRacingHudRaceInputs& OutInputs) const;
 
+	/**
+	 * RACE-006: the race-side half of a driver reset. The vehicle-side half (cooldown,
+	 * detector state) belongs to the pawn; Game/ composes the two, because Race must not
+	 * include Vehicle.
+	 *
+	 * Refuses before setup, for any pawn that is not the followed competitor, outside
+	 * ERaceState::Racing (PreRace, Countdown, Finished and Results), with no live track,
+	 * and while the lap tracker has no progress to reset back to.
+	 *
+	 * @param OutLastValidProgressDistanceCm  on approval, URaceLapTracker::
+	 *        GetProgressDistanceCm() -- the last ACCEPTED sample, so a reset can never
+	 *        start from a distance the tracker has not validated. Untouched on refusal.
+	 * @param OutReason  one line on refusal; empty on approval.
+	 */
+	bool CanResetCompetitor(const APawn* Pawn, double& OutLastValidProgressDistanceCm, FString& OutReason) const;
+
+	/**
+	 * RACE-006: call after the competitor was reset. Resyncs this director's windowed
+	 * centerline search hint to the tracker's post-reset progress, so the next Tick
+	 * searches around the car's new place rather than the one it left.
+	 *
+	 * Ignored for any pawn that is not the competitor, and before setup.
+	 */
+	void NotifyCompetitorReset(const APawn* Pawn);
+
 	/** The window actually used by Tick; ProgressSearchWindowCm capped below a quarter lap. 0 before setup. */
 	double GetEffectiveSearchWindowCm() const { return EffectiveSearchWindowCm; }
 

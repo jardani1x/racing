@@ -413,3 +413,180 @@ bool FRaceDirectorRefusesInvalidConfigurationTest::RunTest(const FString& Parame
 
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FRaceDirectorCompetitorResetApprovalTest,
+	"RacingSim.Race.Director.CompetitorResetApproval",
+	EAutomationTestFlags::EditorContext
+		| EAutomationTestFlags::CommandletContext
+		| EAutomationTestFlags::ProductFilter)
+
+bool FRaceDirectorCompetitorResetApprovalTest::RunTest(const FString& Parameters)
+{
+	using namespace RaceDirectorSpecPrivate;
+
+	// RACE-006: the race-side half of a driver reset. Approval only while Racing and only
+	// for the followed competitor, from the lap tracker's last accepted progress; the
+	// post-reset notification resyncs the director's windowed search hint.
+
+	FTestWorldWrapper WorldWrapper;
+	if (!WorldWrapper.CreateTestWorld(EWorldType::Game) || WorldWrapper.GetTestWorld() == nullptr)
+	{
+		AddError(TEXT("FTestWorldWrapper::CreateTestWorld(EWorldType::Game) failed."));
+		return false;
+	}
+	UWorld* World = WorldWrapper.GetTestWorld();
+
+	ATrackDefinitionActor* Track = SpawnTestTrack(*this, World, TEXT("Track.Test.DirectorResetApproval"));
+	ARaceDirector* Director = SpawnTestDirector(*this, World);
+	if (Track == nullptr || Director == nullptr)
+	{
+		return false;
+	}
+
+	// -- Before setup -------------------------------------------------------------
+	constexpr double Untouched = -12345.0;
+	double ApprovedDistanceCm = Untouched;
+	FString Reason;
+	TestFalse(TEXT("Refused before setup"), Director->CanResetCompetitor(nullptr, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The pre-setup refusal says so (reason: %s)"), *Reason), Reason.Contains(TEXT("not set up")));
+	TestEqual(TEXT("A refusal leaves the out-distance untouched"), ApprovedDistanceCm, Untouched);
+
+	double GridDistanceCm = ATrackDefinitionActor::InvalidDistanceCm;
+	const FTransform GridPose = Track->GetGridSlotPose(0, GridDistanceCm);
+	APawn* Pawn = SpawnStandInPawn(*this, World, GridPose);
+	APawn* Stranger = SpawnStandInPawn(*this, World, GridPose);
+	if (Pawn == nullptr || Stranger == nullptr || !TestTrue(TEXT("Grid slot 0 exists"), GridDistanceCm >= 0.0))
+	{
+		return false;
+	}
+	if (!TestTrue(TEXT("RegisterCompetitor accepts the pawn"), Director->RegisterCompetitor(Pawn, GridDistanceCm, Reason)))
+	{
+		AddInfo(FString::Printf(TEXT("RegisterCompetitor refused: %s"), *Reason));
+		return false;
+	}
+	URaceStateMachine* StateMachine = Director->GetStateMachine();
+	URaceLapTracker* LapTracker = Director->GetLapTracker();
+	if (StateMachine == nullptr || LapTracker == nullptr)
+	{
+		AddError(TEXT("Setup did not create the state machine and lap tracker."));
+		return false;
+	}
+
+	// -- PreRace and Countdown --------------------------------------------------------
+	TestEqual(TEXT("The session waits in PreRace"), StateMachine->GetRaceState(), ERaceState::PreRace);
+	TestFalse(TEXT("Refused in PreRace"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The PreRace refusal names the state (reason: %s)"), *Reason), Reason.Contains(TEXT("PreRace")));
+
+	if (!TestTrue(TEXT("StartSession applies BeginCountdown"), Director->StartSession(Reason)))
+	{
+		AddInfo(FString::Printf(TEXT("StartSession refused: %s"), *Reason));
+		return false;
+	}
+	TestEqual(TEXT("The session is in Countdown"), StateMachine->GetRaceState(), ERaceState::Countdown);
+	TestFalse(TEXT("Refused in Countdown"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The Countdown refusal names the state (reason: %s)"), *Reason), Reason.Contains(TEXT("Countdown")));
+	TestEqual(TEXT("Refusals leave the out-distance untouched"), ApprovedDistanceCm, Untouched);
+
+	// -- Racing ---------------------------------------------------------------------
+	Director->Tick(0.016f);
+	if (!TestEqual(TEXT("A zero-second countdown goes green on the first tick"), StateMachine->GetRaceState(), ERaceState::Racing))
+	{
+		return false;
+	}
+
+	// Drive a stretch so the approved distance is a real, advanced progress rather than the seed.
+	const double LengthCm = Track->GetTrackLengthCm();
+	const double StepCm = LengthCm / static_cast<double>(DirectorSpecStepsPerLap);
+	const FTrackCenterline& Centerline = Track->GetCenterline();
+	double DistanceCm = GridDistanceCm;
+	for (int32 Step = 0; Step < DirectorSpecStepsPerLap / 4; ++Step)
+	{
+		DistanceCm += StepCm;
+		Pawn->SetActorLocation(Centerline.GetLocationAtDistanceCm(FMath::Fmod(DistanceCm, LengthCm)));
+		Director->Tick(0.016f);
+	}
+
+	TestFalse(TEXT("Refused for a pawn that is not the competitor"), Director->CanResetCompetitor(Stranger, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The stranger refusal says why (reason: %s)"), *Reason), Reason.Contains(TEXT("not this session's competitor")));
+	TestFalse(TEXT("Refused for a null pawn"), Director->CanResetCompetitor(nullptr, ApprovedDistanceCm, Reason));
+
+	if (!TestTrue(TEXT("Approved for the competitor while Racing"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason)))
+	{
+		AddInfo(FString::Printf(TEXT("Refused: %s"), *Reason));
+		return false;
+	}
+	TestTrue(TEXT("Approval clears the reason"), Reason.IsEmpty());
+	TestEqual(TEXT("The approved distance is the lap tracker's last accepted progress"),
+		ApprovedDistanceCm, LapTracker->GetProgressDistanceCm());
+	TestTrue(TEXT("The approved distance is a real progress, not the refusal sentinel"), ApprovedDistanceCm >= 0.0);
+
+	// -- NotifyCompetitorReset ----------------------------------------------------------
+	// Reset the tracker 500 cm back, as ExecuteSafeReset would; the director's hint is
+	// still the pre-reset distance until it is told.
+	const double ResetDistanceCm = FMath::Max(0.0, LapTracker->GetProgressDistanceCm() - 500.0);
+	LapTracker->NotifyVehicleReset(Centerline.GetLocationAtDistanceCm(ResetDistanceCm), ResetDistanceCm);
+	const double HintBeforeNotifyCm = Director->GetLastCompetitorDistanceCm();
+	TestFalse(TEXT("Before the notification the director's hint differs from the reset progress"),
+		FMath::IsNearlyEqual(HintBeforeNotifyCm, LapTracker->GetProgressDistanceCm(), 1.0));
+
+	Director->NotifyCompetitorReset(Stranger);
+	TestEqual(TEXT("A stranger's notification is ignored"), Director->GetLastCompetitorDistanceCm(), HintBeforeNotifyCm);
+
+	Director->NotifyCompetitorReset(Pawn);
+	TestEqual(TEXT("The competitor's notification resyncs the hint to the tracker's progress"),
+		Director->GetLastCompetitorDistanceCm(), LapTracker->GetProgressDistanceCm());
+
+	// -- No live track ------------------------------------------------------------------
+	// Cleared on the property and restored, rather than destroyed, so the session can
+	// still run to Results below.
+	Director->Track = nullptr;
+	ApprovedDistanceCm = Untouched;
+	TestFalse(TEXT("Refused with no live track"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The no-track refusal says why (reason: %s)"), *Reason), Reason.Contains(TEXT("no live track")));
+	TestEqual(TEXT("The no-track refusal leaves the out-distance untouched"), ApprovedDistanceCm, Untouched);
+	Director->Track = Track;
+
+	// -- No progress sample ---------------------------------------------------------------
+	// A non-finite reset pose drops the tracker's sample but leaves its distance behind;
+	// the director must read the flag, not the stale distance.
+	AddExpectedMessagePlain(
+		TEXT("URaceLapTracker::NotifyVehicleReset was given a non-finite pose"),
+		ELogVerbosity::Warning,
+		EAutomationExpectedMessageFlags::Contains,
+		1);
+	const double NaNCm = std::numeric_limits<double>::quiet_NaN();
+	LapTracker->NotifyVehicleReset(FVector(NaNCm, NaNCm, NaNCm), NaNCm);
+	TestFalse(TEXT("The dropped sample is visible on the tracker"), LapTracker->HasProgressSample());
+	TestTrue(TEXT("The stale distance on its own still reads as valid (why the flag is needed)"),
+		FMath::IsFinite(LapTracker->GetProgressDistanceCm()) && LapTracker->GetProgressDistanceCm() >= 0.0);
+	ApprovedDistanceCm = Untouched;
+	TestFalse(TEXT("Refused with no progress sample"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The no-sample refusal says why (reason: %s)"), *Reason), Reason.Contains(TEXT("no progress sample")));
+	TestEqual(TEXT("The no-sample refusal leaves the out-distance untouched"), ApprovedDistanceCm, Untouched);
+
+	// The next tick re-seeds from the car, and approval returns.
+	Director->Tick(0.016f);
+	TestTrue(TEXT("The next tick re-seeds the tracker"), LapTracker->HasProgressSample());
+	TestTrue(TEXT("Approved again once the tracker has re-seeded"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+
+	// -- Results ----------------------------------------------------------------------
+	DistanceCm = LapTracker->GetProgressDistanceCm();
+	const int32 MaxSteps = DirectorSpecStepsPerLap * (DirectorSpecLapsToFinish + 2);
+	for (int32 Step = 0; Step < MaxSteps && StateMachine->GetRaceState() != ERaceState::Results; ++Step)
+	{
+		DistanceCm += StepCm;
+		Pawn->SetActorLocation(Centerline.GetLocationAtDistanceCm(FMath::Fmod(DistanceCm, LengthCm)));
+		Director->Tick(0.016f);
+	}
+	if (!TestEqual(TEXT("The session reaches Results within the step cap"), StateMachine->GetRaceState(), ERaceState::Results))
+	{
+		return false;
+	}
+	ApprovedDistanceCm = Untouched;
+	TestFalse(TEXT("Refused in Results"), Director->CanResetCompetitor(Pawn, ApprovedDistanceCm, Reason));
+	TestTrue(FString::Printf(TEXT("The Results refusal names the state (reason: %s)"), *Reason), Reason.Contains(TEXT("Results")));
+	TestEqual(TEXT("The Results refusal leaves the out-distance untouched"), ApprovedDistanceCm, Untouched);
+
+	return true;
+}

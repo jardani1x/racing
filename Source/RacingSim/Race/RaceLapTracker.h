@@ -609,6 +609,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Race|Lap")
 	double GetProgressDistanceCm() const { return PreviousDistanceCm; }
 
+	/**
+	 * RACE-006: whether GetProgressDistanceCm is a real accepted sample. False before the
+	 * first sample and after a non-finite NotifyVehicleReset dropped it, when the
+	 * distance is a default or stale value that must not seed a reset.
+	 */
+	bool HasProgressSample() const { return bHasPreviousSample; }
+
 	/** The snapshot this tracker validates against. Empty until configured. */
 	const FRacingCheckpointGateSet& GetGates() const { return Gates; }
 

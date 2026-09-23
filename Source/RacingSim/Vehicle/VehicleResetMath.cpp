@@ -2,6 +2,8 @@
 
 #include "Vehicle/VehicleResetMath.h"
 
+#include "Vehicle/VehicleFailureDetection.h"
+
 double RacingSim::Vehicle::ResolveGroundCorrectedResetZCm(
 	const double SeedZCm,
 	const double GroundClearanceCm,
@@ -58,4 +60,76 @@ bool RacingSim::Vehicle::IsResetSampleValid(
 	const double InvalidDistanceCm)
 {
 	return SampleIndex != INDEX_NONE && SampleDistanceCm != InvalidDistanceCm;
+}
+
+double RacingSim::Vehicle::ComputeMinimumResetCooldownSeconds(
+	const float MaxContactSuppressionSeconds,
+	const float TelemetrySampleRateHz)
+{
+	const double BudgetSeconds = (FMath::IsFinite(MaxContactSuppressionSeconds) && MaxContactSuppressionSeconds > 0.0f)
+		? static_cast<double>(MaxContactSuppressionSeconds)
+		: 0.0;
+
+	if (!FMath::IsFinite(TelemetrySampleRateHz) || TelemetrySampleRateHz <= 0.0f)
+	{
+		// Capture disabled: the detector never arms, so only the budget is meaningful.
+		return BudgetSeconds;
+	}
+
+	const double CaptureIntervalSeconds = 1.0 / static_cast<double>(TelemetrySampleRateHz);
+	const double BudgetBoundSeconds =
+		BudgetSeconds + static_cast<double>(GetMinContactSuppressionEvaluations() + 1) * CaptureIntervalSeconds;
+	// The ceiling drops the basis by evaluation Ceiling at the latest, whatever the
+	// budget; a budget past that is inert and must not inflate the cooldown.
+	const double CeilingBoundSeconds =
+		static_cast<double>(GetMaxContactSuppressionEvaluations()) * CaptureIntervalSeconds;
+	return FMath::Min(BudgetBoundSeconds, CeilingBoundSeconds);
+}
+
+double RacingSim::Vehicle::ResolveEffectiveResetCooldownSeconds(
+	const float AuthoredCooldownSeconds,
+	const float MaxContactSuppressionSeconds,
+	const float TelemetrySampleRateHz)
+{
+	const double MinimumSeconds = ComputeMinimumResetCooldownSeconds(MaxContactSuppressionSeconds, TelemetrySampleRateHz);
+	if (!FMath::IsFinite(AuthoredCooldownSeconds))
+	{
+		return MinimumSeconds;
+	}
+	return FMath::Max(static_cast<double>(AuthoredCooldownSeconds), MinimumSeconds);
+}
+
+RacingSim::Vehicle::EVehicleResetGateResult RacingSim::Vehicle::EvaluateResetGate(const FVehicleResetGateInput& Input)
+{
+	if (!FMath::IsFinite(Input.SimulationTimeSeconds)
+		|| !FMath::IsFinite(Input.CooldownSeconds)
+		|| (Input.bHasPreviousReset && !FMath::IsFinite(Input.LastResetSimulationTimeSeconds)))
+	{
+		return EVehicleResetGateResult::ClockUnusable;
+	}
+
+	if (Input.bHasPreviousReset
+		&& Input.SimulationTimeSeconds - Input.LastResetSimulationTimeSeconds < Input.CooldownSeconds)
+	{
+		return EVehicleResetGateResult::CoolingDown;
+	}
+
+	if (Input.bCaptureEnabled && Input.bContactSuppressionArmed)
+	{
+		return EVehicleResetGateResult::SuppressionArmed;
+	}
+
+	return EVehicleResetGateResult::Accepted;
+}
+
+const TCHAR* RacingSim::Vehicle::LexResetGateResult(const EVehicleResetGateResult Result)
+{
+	switch (Result)
+	{
+	case EVehicleResetGateResult::Accepted:         return TEXT("Accepted");
+	case EVehicleResetGateResult::CoolingDown:      return TEXT("CoolingDown");
+	case EVehicleResetGateResult::SuppressionArmed: return TEXT("SuppressionArmed");
+	case EVehicleResetGateResult::ClockUnusable:    return TEXT("ClockUnusable");
+	}
+	return TEXT("Unknown");
 }

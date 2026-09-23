@@ -230,6 +230,14 @@ namespace RacingSim::Vehicle
 				// evaluations at the active capture rate cannot reach it (RACE-006
 				// requirement).
 				//
+				// RACE-006 enforces that bound with a CEILING on it:
+				// ComputeMinimumResetCooldownSeconds returns
+				// min(budget + (floor + 1) * interval, ceiling * interval). Past
+				// ceiling * interval the carried count expires on its own whatever the
+				// budget says, so a longer cooldown buys nothing and would only deny the
+				// driver a reset. The bound above is therefore the requirement below that
+				// cap, not above it.
+				//
 				// It is also tested BEFORE the non-finite branch below, which costs that
 				// branch its guarantee on exactly one evaluation. If the clock is non-finite
 				// at the moment the count reaches the ceiling, the basis drops here, and a
@@ -601,5 +609,15 @@ namespace RacingSim::Vehicle
 		}
 
 		return Report;
+	}
+
+	int32 GetMinContactSuppressionEvaluations()
+	{
+		return GVehicleFailureMinContactSuppressionEvaluations;
+	}
+
+	int32 GetMaxContactSuppressionEvaluations()
+	{
+		return GVehicleFailureMaxContactSuppressionEvaluations;
 	}
 }

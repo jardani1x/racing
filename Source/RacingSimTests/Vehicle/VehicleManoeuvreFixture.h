@@ -537,6 +537,20 @@ struct FVehicleManoeuvreFixture
 		return Movement != nullptr ? static_cast<double>(Movement->GetForwardSpeed()) : 0.0;
 	}
 
+	/**
+	 * Is the chassis rigid body awake?
+	 *
+	 * This gates the ENTIRE physics-thread vehicle tick -- see LogDrivetrain for the
+	 * engine line that does it -- so a test that drives a car has to be able to tell a
+	 * parked body from a broken drivetrain. False when the fixture failed to build.
+	 */
+	bool IsChassisAwake() const
+	{
+		const UPrimitiveComponent* UpdatedPrimitive =
+			Movement != nullptr ? Cast<UPrimitiveComponent>(Movement->UpdatedComponent) : nullptr;
+		return UpdatedPrimitive != nullptr && UpdatedPrimitive->RigidBodyIsAwake();
+	}
+
 	/** Chassis world location, centimetres. Zero vector when the fixture failed to build. */
 	FVector GetLocation() const
 	{
