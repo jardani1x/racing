@@ -554,9 +554,16 @@ namespace VehicleResetSleepPinPrivate
 	/**
 	 * Neutral steps after the reset, at StepSeconds. 600 steps is 10 s.
 	 *
-	 * Sized against the measurement in WakesFromSleepOnThrottle, which parks an unpinned
-	 * car well inside its own 600-step budget. If the solver needed longer than this to
-	 * park a resting car, that test would fail first and say so.
+	 * Sized against a MEASUREMENT, not against another test's tolerance. VEH-011's bypass
+	 * proof commented the re-apply out of ExecuteSafeReset and re-ran this test: the solver
+	 * parked the car 53 idle steps (0.88 s at 60 Hz) after the reset. 600 is an ~11x margin
+	 * over that.
+	 *
+	 * Keep the 53 in mind if this is ever retuned. It is the number that makes this test
+	 * mean something: if a future engine change pushed park latency past 600 steps, this
+	 * test would go green while proving nothing, and the way to find out is to re-run the
+	 * bypass, not to compare against WakesFromSleepOnThrottle -- that test's own 600 is a
+	 * maximum it tolerates, not a latency it measured.
 	 */
 	constexpr int32 IdleStepsAfterReset = 600;
 }
@@ -573,6 +580,12 @@ bool FVehicleResetRestoresSleepPinTest::RunTest(const FString& Parameters)
 	using namespace VehicleResetUnderLoadPrivate;
 	using namespace VehicleResetSleepPinPrivate;
 
+	// Telemetry off, unlike SafeResetUnderLoad above. This test asserts a physics-state
+	// property directly through IsChassisSleepPinned and the fixture's own awake check, and
+	// the VEH-004 detector has nothing to add to either. Consequence worth stating: the 10 s
+	// post-reset idle window below is NOT watched by the detector, so this test would not
+	// notice a discontinuity raised during it. SafeResetUnderLoad is the test that covers
+	// the detector's view of a reset, and it enables telemetry precisely for that.
 	FVehicleManoeuvreFixture Fixture;
 	if (!Fixture.Setup(*this, /*bEnableTelemetry*/ false))
 	{
@@ -594,7 +607,13 @@ bool FVehicleResetRestoresSleepPinTest::RunTest(const FString& Parameters)
 	}
 
 	// Drive first, so the reset is the one the product performs: a moving car, placed.
-	Fixture.Drive(FVehicleManoeuvreFixture::ThrottleSample(1.0, 0.0), LoadSteps, StepSeconds);
+	// Bail on a tick failure rather than resetting a world that has stopped stepping: every
+	// assertion below would fail as a consequence and none of them would name the cause.
+	if (!Fixture.Drive(FVehicleManoeuvreFixture::ThrottleSample(1.0, 0.0), LoadSteps, StepSeconds))
+	{
+		Fixture.ReportTickFailure(*this);
+		return false;
+	}
 
 	if (!TestTrue(TEXT("ExecuteSafeReset placed the car"),
 			Pawn->ExecuteSafeReset(Track, /*LapTracker*/ nullptr, RequestedProgressCm)))
@@ -614,6 +633,7 @@ bool FVehicleResetRestoresSleepPinTest::RunTest(const FString& Parameters)
 	{
 		if (!Fixture.Drive(FVehicleInputRawSample(), 1, StepSeconds))
 		{
+			Fixture.ReportTickFailure(*this);
 			return false;
 		}
 		++IdleSteps;
@@ -627,6 +647,9 @@ bool FVehicleResetRestoresSleepPinTest::RunTest(const FString& Parameters)
 	}
 
 	TestTrue(TEXT("The chassis is still sleep-pinned after the idle run"), Pawn->IsChassisSleepPinned());
-	TestFalse(TEXT("Every Drive step ticked"), Fixture.HasTickFailure());
+	// ReportTickFailure, not a bare TestFalse: it forwards the world wrapper's own engine-side
+	// message plus TickFailureReason, so a tick failure says why instead of only that it
+	// happened. It fails the test by adding an error, so it needs no TestFalse beside it.
+	Fixture.ReportTickFailure(*this);
 	return true;
 }

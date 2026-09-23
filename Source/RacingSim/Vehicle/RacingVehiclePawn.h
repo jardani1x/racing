@@ -325,7 +325,9 @@ public:
 	 * The pin is what keeps the solver from parking this car; a parked chassis stops the
 	 * entire physics-thread vehicle tick and latches its last telemetry, so "pinned" is a
 	 * state worth being able to assert rather than infer from behaviour. Reads the handle's
-	 * own sleep type (FRigidBodyHandle_External::SleepType, ParticleHandle.h:3783).
+	 * own sleep type: FRigidBodyHandle_External (SingleParticlePhysicsProxy.h:1167) inherits
+	 * SleepType() at SingleParticlePhysicsProxy.h:1098, which reads
+	 * TPBDRigidParticle::SleepType at ParticleHandle.h:3783.
 	 *
 	 * Returns false, rather than asserting, when any link in the chain is missing: no
 	 * chassis component, no body instance, or no physics actor. "Not pinned" and "cannot
@@ -467,11 +469,18 @@ private:
 	 * genuinely at rest, and from that moment full throttle moves nothing: the input
 	 * reaches Chaos, the wheels keep their last forces, and the car is stranded for good.
 	 *
-	 * That state is not hypothetical -- ExecuteSafeReset produces it by construction,
-	 * because it zeroes both velocities, so a car reset onto the track and left alone for
-	 * a second can never be driven away again. It is reachable at all only because the
-	 * same call destroys the ESleepType::NeverSleep pin BeginPlay applies: see the KNOWN
-	 * GAP note beside that pin, and VEH-011.
+	 * That state was not hypothetical: before VEH-011, ExecuteSafeReset produced it by
+	 * construction, because ResetVehicle() destroyed the ESleepType::NeverSleep pin
+	 * BeginPlay applies and the call then zeroes both velocities, so a car reset onto the
+	 * track and left alone for about a second could not be driven away again. VEH-011
+	 * closed that path: ExecuteSafeReset now re-applies the pin (see ApplyChassisSleepPin,
+	 * and the standing rule in the pin comment in BeginPlay).
+	 *
+	 * This function is still load-bearing, for two cases the pin does not cover. A body
+	 * that has ALREADY parked -- because it was reset by something other than
+	 * ExecuteSafeReset, or because a future RecreatePhysicsState() call site dropped the
+	 * pin -- is woken here on the next input. And if ApplyChassisSleepPin ever fails (it
+	 * logs, it does not abort), this is the only remaining way the car moves again.
 	 *
 	 * Called once per ApplyInputCommand, after the axes are pushed. Costs one
 	 * IsAnyRigidBodyAwake() per frame and does nothing at all while the car is awake,
