@@ -417,6 +417,155 @@ bool FRacingSimVehicleResetStormTest::RunTest(const FString& Parameters)
 	ExpectBounded(TEXT("Minimum cooldown only, 120 Hz capture on 144 Hz frames (captures at 72 Hz)"),
 		RunResetStorm(Thresholds, 120.0f, Minimum120, false, StormSeconds, Steady144), 40);
 
+	// -- The CEILING branch of ComputeMinimumResetCooldownSeconds, driven for real. --
+	// VEH-012 / MEDIUM-2: the minimum cooldown is
+	// FMath::Min(BudgetSeconds + (Floor + 1) * CaptureInterval, MaxEvaluations * CaptureInterval).
+	// At the shipped MaxContactSuppressionSeconds (0.5 s) the budget bound always wins, so
+	// every case above -- and every case this suite had before VEH-012 -- exercises only
+	// that branch. The cap was covered by RacingSim.Vehicle.ResetGate's static formula
+	// assertions and by nothing that actually ran the detector.
+	//
+	// These cases raise the budget past the ceiling duration so the cap binds, then storm
+	// at the capped cooldown. Note what is being claimed, because it is NOT the claim the
+	// cases above make. With a budget longer than the ceiling duration the ceiling is what
+	// ends each suppression window -- 240 evaluations arrive at 4 s, the budget would not
+	// expire until 8 s -- so reaching the ceiling is the DESIGNED behaviour here and
+	// ExpectBounded's "never reaches the ceiling" assertion does not apply. That is
+	// exactly the cap's premise: waiting the full budget before allowing the next reset
+	// would lock the driver out for twice as long as the suppression it is waiting on.
+	// What must still hold is the property the cooldown exists for: no reset lands on a
+	// basis that is still armed.
+	{
+		// The pawn's shipped thresholds with one field moved. Everything else -- the
+		// floor, the ceiling, the contact rules -- stays at its shipped value.
+		FVehicleFailureThresholds CappedThresholds;
+		CappedThresholds.MaxContactSuppressionSeconds = 8.0f;
+
+		const double CeilingSeconds60 = static_cast<double>(GetMaxContactSuppressionEvaluations()) / 60.0;
+		const double CeilingSeconds120 = static_cast<double>(GetMaxContactSuppressionEvaluations()) / 120.0;
+		const double Capped60 = ComputeMinimumResetCooldownSeconds(CappedThresholds.MaxContactSuppressionSeconds, 60.0f);
+		const double Capped120 = ComputeMinimumResetCooldownSeconds(CappedThresholds.MaxContactSuppressionSeconds, 120.0f);
+
+		AddInfo(FString::Printf(TEXT("Capped cooldown: budget=%.3f s, 60 Hz -> %.6f s (ceiling %.6f s), 120 Hz -> %.6f s (ceiling %.6f s)"),
+			CappedThresholds.MaxContactSuppressionSeconds, Capped60, CeilingSeconds60, Capped120, CeilingSeconds120));
+
+		// Assert the cap really is the binding term before storming, so a later change
+		// that makes the budget bound win again fails HERE with a readable message rather
+		// than quietly turning the cases below back into duplicates of the ones above.
+		TestNearlyEqual(TEXT("Capped, 60 Hz: the minimum cooldown is the ceiling duration, not the budget bound"),
+			Capped60, CeilingSeconds60, 1.0e-9);
+		TestTrue(TEXT("Capped, 60 Hz: the cap really binds (cooldown is shorter than the suppression budget)"),
+			Capped60 < static_cast<double>(CappedThresholds.MaxContactSuppressionSeconds));
+		TestNearlyEqual(TEXT("Capped, 120 Hz: the minimum cooldown is the ceiling duration, not the budget bound"),
+			Capped120, CeilingSeconds120, 1.0e-9);
+		TestTrue(TEXT("Capped, 120 Hz: the cap really binds (cooldown is shorter than the suppression budget)"),
+			Capped120 < static_cast<double>(CappedThresholds.MaxContactSuppressionSeconds));
+
+		// Longer than the 30 s storms above: at an 8 s budget the armed gate spaces resets
+		// by the ceiling duration, so 30 s would yield a handful of resets and the "the
+		// gate is not simply refusing everything" check would have nothing to stand on.
+		constexpr double CappedStormSeconds = 240.0;
+
+		auto ExpectCappedBounded = [this](const TCHAR* Label, const FResetStormResult& Result, const int32 MinResets)
+		{
+			AddInfo(FString::Printf(TEXT("%s: resets=%d captures=%d maxCarried=%d whileArmed=%d ceilingReached=%d"),
+				Label, Result.Resets, Result.Captures, Result.MaxCarriedEvaluations, Result.ResetsWhileArmed,
+				Result.bCeilingReached ? 1 : 0));
+			TestTrue(FString::Printf(TEXT("%s: the driver got at least %d resets (the gate is not simply refusing everything)"), Label, MinResets),
+				Result.Resets >= MinResets);
+			// The cap's whole justification: with this budget the ceiling, not the budget,
+			// is what ends suppression, so waiting out the budget would be waiting for
+			// nothing.
+			TestTrue(FString::Printf(TEXT("%s: the ceiling is what ends suppression at this budget (that is why the cap exists)"), Label),
+				Result.bCeilingReached);
+			TestEqual(FString::Printf(TEXT("%s: the carried count never passes the %d-evaluation ceiling"), Label, ResetStormCeilingEvaluations),
+				Result.MaxCarriedEvaluations, ResetStormCeilingEvaluations);
+			// The property the cooldown exists for, and the one the cap could have broken:
+			// a cooldown shortened to the ceiling duration is still long enough that the
+			// previous basis has been retired before the next reset is allowed.
+			//
+			// READ THE CALLER before reading this as evidence. With bUseArmedGate = true
+			// the harness gate itself refuses every request while the basis is armed
+			// (VehicleResetMath.cpp:117), so Accepted IMPLIES the basis was retired and
+			// this count is structurally zero -- it restates the gate, it does not test
+			// the cap. It is load-bearing only in the ungated calls below, which let the
+			// cooldown alone do the spacing. In the armed calls the real evidence is the
+			// MinResets floor: the driver still gets resets at the capped cooldown.
+			TestEqual(FString::Printf(TEXT("%s: the capped cooldown still leaves no reset landing on an armed basis"), Label),
+				Result.ResetsWhileArmed, 0);
+			TestFalse(FString::Printf(TEXT("%s: no evaluation raises InvalidContact"), Label),
+				Result.bRaisedInvalidContact);
+			TestFalse(FString::Printf(TEXT("%s: no evaluation raises any failure"), Label),
+				Result.bRaisedAnyFailure);
+		};
+
+		ExpectCappedBounded(TEXT("Capped cooldown, 60 Hz steady"),
+			RunResetStorm(CappedThresholds, 60.0f, Capped60, /*bUseArmedGate*/ true, CappedStormSeconds, Steady60), 10);
+		{
+			const FResetStormResult Result =
+				RunResetStorm(CappedThresholds, 120.0f, Capped120, true, CappedStormSeconds, Steady120);
+			ExpectCappedBounded(TEXT("Capped cooldown, 120 Hz steady"), Result, 10);
+			TestTrue(FString::Printf(TEXT("Capped cooldown, 120 Hz steady: really captures at 120 Hz (%d captures in %.0f s)"),
+					Result.Captures, CappedStormSeconds),
+				Result.Captures >= static_cast<int32>(0.99 * 120.0 * CappedStormSeconds));
+		}
+		// The hitch case matters most here: the first frame after every reset is 0.6 s,
+		// far longer than a capture interval but far SHORTER than the 8 s budget, so on
+		// the budget alone the basis would still be armed at every reset attempt. What
+		// retires it is the armed gate, NOT the capped cooldown -- see the ungated hitch
+		// control below, which measures the cooldown standing alone and finds it short.
+		ExpectCappedBounded(TEXT("Capped cooldown, 60 Hz with hitches"),
+			RunResetStorm(CappedThresholds, 60.0f, Capped60, true, CappedStormSeconds, Hitchy60), 8);
+
+		// -- The capped cooldown ALONE, no armed gate. --
+		// The cases above run with the armed gate, which refuses a request outright while
+		// the basis is armed; that makes their whileArmed count a restatement of the gate
+		// rather than a measurement of the cooldown. These drop the gate, so the capped
+		// cooldown is the ONLY thing spacing the resets and whileArmed == 0 becomes a
+		// statement about the cap. This is the ceiling-branch analogue of the "time
+		// cooldown ALONE at exactly the minimum" block above, and the control further
+		// down -- one capture interval shorter, same ungated setup -- shows the assertion
+		// can fail.
+		ExpectCappedBounded(TEXT("Capped cooldown only, 60 Hz steady"),
+			RunResetStorm(CappedThresholds, 60.0f, Capped60, /*bUseArmedGate*/ false, CappedStormSeconds, Steady60), 40);
+		ExpectCappedBounded(TEXT("Capped cooldown only, 120 Hz steady"),
+			RunResetStorm(CappedThresholds, 120.0f, Capped120, /*bUseArmedGate*/ false, CappedStormSeconds, Steady120), 80);
+
+		// Control, and a limit of the cap worth having on record: ungated and hitchy, the
+		// capped cooldown is NOT sufficient. The ceiling bound is a COUNT converted to a
+		// duration at the nominal capture rate -- 240 evaluations read as 4.0 s at 60 Hz
+		// -- and a hitch breaks that conversion, because a 0.6 s frame spends 0.6 s of the
+		// cooldown while delivering one evaluation instead of thirty-six. Wall time runs
+		// out before the evaluation count does, so the basis is still armed when the
+		// cooldown expires and every reset lands on it.
+		//
+		// This is the same property the budget branch already records at the end of this
+		// test, and the same conclusion: the cooldown is a rate limit, and the armed check
+		// is what makes the ordering safe. The two cannot be collapsed into one.
+		{
+			const FResetStormResult Result = RunResetStorm(
+				CappedThresholds, 60.0f, Capped60, /*bUseArmedGate*/ false, CappedStormSeconds, Hitchy60);
+			AddInfo(FString::Printf(TEXT("Control, capped cooldown ungated with hitches: resets=%d maxCarried=%d whileArmed=%d"),
+				Result.Resets, Result.MaxCarriedEvaluations, Result.ResetsWhileArmed));
+			TestTrue(TEXT("Control: under hitches the capped cooldown alone re-arms armed bases (the armed check is not redundant)"),
+				Result.ResetsWhileArmed > 0);
+		}
+
+		// Control: one capture interval shorter than the cap. The ceiling bound carries no
+		// slack term -- the budget bound adds (Floor + 1) capture intervals, the ceiling
+		// bound adds none -- so the capped value is expected to sit on the boundary. If a
+		// shorter cooldown does NOT re-arm an armed basis, the cap has slack this test is
+		// not measuring and the assertions above are weaker than they read.
+		{
+			const FResetStormResult Result = RunResetStorm(
+				CappedThresholds, 60.0f, Capped60 - (1.0 / 60.0), /*bUseArmedGate*/ false, CappedStormSeconds, Steady60);
+			AddInfo(FString::Printf(TEXT("Control, one capture under the cap, ungated: resets=%d maxCarried=%d whileArmed=%d"),
+				Result.Resets, Result.MaxCarriedEvaluations, Result.ResetsWhileArmed));
+			TestTrue(TEXT("Control: a cooldown one capture shorter than the cap, without the armed check, re-arms armed bases"),
+				Result.ResetsWhileArmed > 0);
+		}
+	}
+
 	// -- Controls: each shows the test can fail. --
 	{
 		// A cooldown shorter than the budget with no armed check: every reset lands on a

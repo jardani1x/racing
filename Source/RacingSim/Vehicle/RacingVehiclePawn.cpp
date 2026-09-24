@@ -12,6 +12,7 @@
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/SpringArmComponent.h"
+#include "HAL/IConsoleManager.h"
 #include "PhysicsProxy/SingleParticlePhysicsProxy.h"
 // VEH-004/VEH-005: the project's Vehicle/ -> Race/ dependencies, confined to this .cpp.
 // The direction is justified in ARacingVehiclePawn::PublishCarSpecVersionTo's header
@@ -1355,6 +1356,61 @@ FVehicleChaosInput ARacingVehiclePawn::ApplyInputCommand(const FVehicleInputComm
 	return ChaosInput;
 }
 
+float ARacingVehiclePawn::GetChassisWakeInputTolerance()
+{
+	// Resolved once per process. FindConsoleVariable is a hashed-name lookup into the
+	// console registry and this runs from WakeChassisForInput on every tick, so the
+	// lookup must not be on that path. The POINTER is what is cached; the float behind it
+	// still changes when an ini or a console command changes it, which is the whole point
+	// of reading the variable instead of copying its default.
+	//
+	// A function-local static, not a member, so the value is reachable with no actor and
+	// no BeginPlay -- RacingSim.Vehicle.ChassisWakeToleranceTracksEngineCvar runs at the
+	// Smoke gate with no world.
+	//
+	// The one-time warning lives in the initialiser, so a missing variable is reported
+	// exactly once rather than every frame. A missing variable means the ChaosVehicles
+	// module changed shape under us; that must not be silent, but it must also not
+	// produce sixty log lines a second.
+	// The pointer is cached for the life of the process, which is correct for a shipping
+	// run and has one editor-only caveat: a Live Coding reload of ChaosVehicles
+	// re-registers the variable, and this static keeps pointing at the old object. It is
+	// not dangling -- UnregisterConsoleObject keeps the object alive and flags it
+	// ECVF_Unregistered when bKeepState is set (ConsoleManager.cpp:2619-2622) -- but it
+	// is stale, so reads after such a reload return the pre-reload value until the editor
+	// is restarted. Not worth a per-call FindConsoleVariable on a value that is read from
+	// Tick.
+	static IConsoleVariable* const ToleranceCVar = []() -> IConsoleVariable*
+	{
+		IConsoleVariable* const Found =
+			IConsoleManager::Get().FindConsoleVariable(ChassisWakeInputToleranceCVarName);
+		if (Found == nullptr)
+		{
+			UE_LOG(LogRacingVehicle, Warning,
+				TEXT("ARacingVehiclePawn: console variable '%s' not found; the chassis wake threshold falls back to the compiled %f. ")
+				TEXT("The ChaosVehicles module no longer registers it, so the engine's own threshold is now unknown to this pawn."),
+				ChassisWakeInputToleranceCVarName,
+				ChassisWakeInputToleranceFallback);
+		}
+		return Found;
+	}();
+
+	if (ToleranceCVar != nullptr)
+	{
+		const float Value = ToleranceCVar->GetFloat();
+		// A zero or negative threshold would make EVERY frame read as "the driver is
+		// asking for motion", which defeats the sleep policy rather than tuning it, so it
+		// is refused here rather than obeyed. Non-finite is refused for the same reason:
+		// every comparison against NaN is false, so the car could never be woken at all.
+		if (FMath::IsFinite(Value) && Value > 0.0f)
+		{
+			return Value;
+		}
+	}
+
+	return ChassisWakeInputToleranceFallback;
+}
+
 void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInput)
 {
 	if (ChassisCollision == nullptr)
@@ -1362,10 +1418,12 @@ void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInpu
 		return;
 	}
 
-	// Close to, but deliberately NOT identical to, what
-	// UChaosVehicleMovementComponent::ProcessSleeping treats as "a control input is
-	// pressed" (ChaosVehicleMovementComponent.cpp:1389-1394). Three differences, all
-	// intentional:
+	// The THRESHOLD is the engine's own, read from p.Vehicle.ControlInputWakeTolerance
+	// (VEH-012; see GetChassisWakeInputTolerance). The PREDICATE is deliberately NOT the
+	// one UChaosVehicleMovementComponent::ProcessSleeping applies to it
+	// (ChaosVehicleMovementComponent.cpp:1387-1400 -- the controller test and both of
+	// its branches). Sharing the number does not make sharing the comparison correct --
+	// four differences, all intentional:
 	//
 	//   - The roll, pitch and yaw axes are dropped. This pawn never writes them.
 	//   - Steering is compared against the tolerance directly, where Chaos compares the
@@ -1373,6 +1431,13 @@ void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInpu
 	//     may be mid-corner; this only ever fires on a car the solver has already parked,
 	//     where held lock is as much a request to move as a change of lock is.
 	//   - bHandbrake is ADDED. Chaos has no handbrake term at all.
+	//   - There is no locally-controlled branch. Chaos picks between the raw ControlInputs
+	//     and ReplicatedState depending on IsLocalController() (:1387-1388), because on a
+	//     server or a simulated proxy the raw inputs are empty. This runs from
+	//     ApplyInputCommand on the command this pawn just built for its own driver, so
+	//     the raw path is the only one that exists here. If this pawn is ever driven as a
+	//     replicated proxy, this predicate has nothing to read and this bullet becomes a
+	//     defect rather than a simplification.
 	//
 	// Consequence of the last two, worth knowing before trusting the cheap-path argument
 	// below: a car parked with the handbrake held, or with steering held off centre, is
@@ -1380,10 +1445,14 @@ void ARacingVehiclePawn::WakeChassisForInput(const FVehicleChaosInput& ChaosInpu
 	// long as the input is held instead of settling. One local car, one wake per park, and
 	// the alternative is a handbraked car that can never be released -- but it is not
 	// free.
+	// VEH-012: read once into a local, not three times. GetChassisWakeInputTolerance() is
+	// cheap but it is not free, and three reads of a value that can be changed from the
+	// console between them would let one frame compare its axes against two thresholds.
+	const float WakeTolerance = GetChassisWakeInputTolerance();
 	const bool bDriverAsksForMotion =
-		ChaosInput.Throttle >= ChassisWakeInputTolerance
-		|| ChaosInput.Brake >= ChassisWakeInputTolerance
-		|| FMath::Abs(ChaosInput.Steering) >= ChassisWakeInputTolerance
+		ChaosInput.Throttle >= WakeTolerance
+		|| ChaosInput.Brake >= WakeTolerance
+		|| FMath::Abs(ChaosInput.Steering) >= WakeTolerance
 		|| ChaosInput.bHandbrake;
 	if (!bDriverAsksForMotion)
 	{

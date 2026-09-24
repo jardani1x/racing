@@ -1091,7 +1091,7 @@ acceptance criteria — do not rediscover these from scratch:
 | VEH-007 | Split the contact-suppression evaluation counter (VEH-006 finding 2 / spec `S-M1`) and close VEH-006 production findings 3–8 | vehicle-physics-engineer | VEH-006 | C | **DONE** 2026-09-18 — split the carried ceiling counter from a per-arm floor counter; `CASE 9` pins it (revert proof recorded). `code-reviewer` CHANGES REQUESTED on `3d55a33` (2 MEDIUM rate/residual findings), repair cycle 1, then APPROVED WITH FOLLOW-UPS; four LOW follow-ups fixed. `test-engineer` PASS: both targets clean, Smoke 526/2/0/0, 12/12 named failure-detection and manoeuvre tests. Near-ceiling `S-M1` residual accepted; reset-cooldown requirement routed to `RACE-006`. Criteria under "### VEH-007 — acceptance criteria" |
 | VEH-010 | Wake a parked chassis when the driver asks for motion (Chaos cannot wake a non-skeletal chassis) | vehicle-physics-engineer | — | C | **DONE** 2026-09-23 — found while repairing `RACE-006`, fixed in the same branch because RACE-006's Product tests cannot pass without it. `UChaosVehicleMovementComponent` wakes bodies only through `GetSkeletalMesh()->Bodies`, so a `UBoxComponent` chassis the solver parks stays parked and every wheel force freezes; `ExecuteSafeReset` produces that state by construction. Fixed with `ARacingVehiclePawn::WakeChassisForInput`, pinned by `RacingSim.Vehicle.WakesFromSleepOnThrottle` (Product) with a bypass proof. Criteria and before/after drivetrain evidence under "### VEH-010 — acceptance criteria" |
 | VEH-011 | Re-apply the chassis `NeverSleep` pin after `ResetVehicle()` | vehicle-physics-engineer | VEH-010 | C | **DONE** 2026-09-24 — opened 2026-09-23 by `RACE-006` repair cycle 2 (`code-reviewer` HIGH-1). `ARacingVehiclePawn::BeginPlay` was the only place applying `Chaos::ESleepType::NeverSleep`, and `ExecuteSafeReset` destroys the chassis particle through `ResetVehicle()` -> `ResetVehicleState()` -> `OnDestroyPhysicsState()` -> `UpdatedComponent->RecreatePhysicsState()`, taking the pin with it, so the solver could park the car again after the first driver reset. Fixed by extracting `ApplyChassisSleepPin(const TCHAR*)` and calling it from both `BeginPlay` and `ExecuteSafeReset`, immediately after `ResetVehicle()` inside the same guarded block; it logs and continues rather than aborting the reset when the handle is unavailable, and `IsChassisSleepPinned()` exposes the live Chaos sleep type to tests. Pinned by `RacingSim.Vehicle.ResetRestoresSleepPin` (Product) with a bypass proof (`Saved/Automation/veh011-bypass`, all three assertions firing, the middle one carrying the measured `(parked after 53)`). The `VEH-010` note that this would invalidate `RacingSim.Vehicle.WakesFromSleepOnThrottle` did not come due: that test parks the car by calling `ResetVehicle()` directly on the movement component, bypassing `ExecuteSafeReset`, so a pawn-path-only re-apply leaves its precondition intact — and keeping it that way (no tick or physics-callback re-assert) is recorded as a deliberate exclusion. `code-reviewer` PASS WITH CONDITIONS on `55679c1` (no BLOCKER/HIGH; eleven findings and seven conditions, all comment/documentation only, including two factually wrong ordering claims and a misattributed engine citation); repair cycle 1 (`61c5e77`) closed every one and moved the call. `test-engineer` PASS: both targets `Result: Succeeded` with `WARNING_ERROR_MATCHES=0`, seven named tests 7/0/0 twice over (`te-veh011-r1`, `te-veh011-r2`), Smoke 528+2/0/0 unchanged from the `RACE-006` baseline (`te-veh011-smoke`); soak re-run 108000 steps / 1800.0 s simulated `Success` with a -122.2 MiB memory delta against a 64.0 MiB ceiling (`veh011-soak2`). Merged to `main` with `--no-ff`. Criteria, gate tables and the two analysed `veh011-r4` run anomalies under "### VEH-011 — acceptance criteria" |
-| VEH-012 | Pin `ChassisWakeInputTolerance` against `p.Vehicle.ControlInputWakeTolerance` drift | vehicle-physics-engineer | VEH-010 | C | OPEN — opened 2026-09-23 by `RACE-006` repair cycle 2 (`code-reviewer` MEDIUM-6). `ARacingVehiclePawn::ChassisWakeInputTolerance = 0.02f` is a hand-copied duplicate of the engine default at `ChaosVehicleMovementComponent.h:53`, which is cvar-backed and can be changed at runtime. Nothing detects drift between the two. Either read the cvar, or add a test that fails when the engine default moves. Also carries `RACE-006` MEDIUM-2: `RacingSim.Vehicle.ResetStormCannotReachCeiling` has no dynamic storm case with a budget above the 4 s ceiling duration, so the cap is only covered by the static formula assertions |
+| VEH-012 | Pin `ChassisWakeInputTolerance` against `p.Vehicle.ControlInputWakeTolerance` drift | vehicle-physics-engineer | VEH-010 | C | **DONE** 2026-09-24 (branch `veh-012-wake-tolerance-drift`, merged to `main` with `--no-ff`; **not pushed** — origin still at the 2026-09-23 push). Opened 2026-09-23 by `RACE-006` repair cycle 2, carrying two findings. MEDIUM-6: `ARacingVehiclePawn::ChassisWakeInputTolerance = 0.02f` was a hand-copied duplicate of `FVehicleDebugParams::ControlInputWakeTolerance` (`ChaosVehicleMovementComponent.h:53`), cvar-backed and changeable at runtime, with nothing detecting drift. MEDIUM-2: `RacingSim.Vehicle.ResetStormCannotReachCeiling` had no dynamic storm case with a budget above the ceiling duration, so the cap inside `ComputeMinimumResetCooldownSeconds` was covered only by static formula assertions. Both halves implemented, not either/or. MEDIUM-6 closed by `GetChassisWakeInputTolerance()` reading the cvar through a cached `IConsoleVariable*` with a positive-and-finite fallback, plus `RacingSim.Vehicle.ChassisWakeToleranceTracksEngineCvar`, which fails if the engine default moves away from 0.02 and which drives the pawn through hostile values to prove it really follows the variable. MEDIUM-2 closed by ungated capped-cooldown storm cases that raise the suppression budget past the ceiling duration so the cap binds, proved by bypass (`Saved/Automation/veh012-bypass2`: shortening the ceiling bound by one evaluation fails the two new ungated cases while the three armed cases stay green — which is itself the finding that the armed variants were vacuous). `code-reviewer` PASS WITH CONDITIONS on the first pass (HIGH-1 vacuous armed assertion, three MEDIUM, five LOW, no BLOCKER); repair cycle 1 closed all six conditions and the run of the new test found one more defect of its own — the hitchy ungated case, written asserting `whileArmed == 0`, measured 30, so the cap really is insufficient under hitches and the case was demoted to a control. `code-reviewer` PASS with no conditions on the second pass, after verifying `FConsoleVariableExtendedData<T>::Unset` against engine source and reconstructing the build ordering from mtimes; its three LOW findings were all documentation, including one correcting a wrong claim of mine about log encoding. `test-engineer` PASS on its own re-runs: both targets `Result: Succeeded` with `WARNING_ERROR_MATCHES=0`, five named tests 5/0/0 twice, Smoke 529+2/0/0 across 531 twice, soak 108000 steps / 1800.0 s simulated `Success`. Criteria, both bypasses, the build-log encoding note and both review passes under "### VEH-012 — acceptance criteria" |
 
 Chaos Vehicles is mandatory (hard constraint #2). No Unity-style WheelCollider
 architecture. Tunables live in typed DataAssets, never as magic numbers in `Tick`.
@@ -3516,6 +3516,403 @@ against mocks or recorded values.
 Nothing it ran contradicted this ticket. Both gates are green: `code-reviewer` PASS WITH
 CONDITIONS with every condition closed in repair cycle 1, and `test-engineer` PASS. One repair
 cycle used of the three allowed.
+
+### VEH-012 — acceptance criteria, opened 2026-09-24
+
+Scope: the two findings `RACE-006` repair cycle 2 routed here. Owner
+`vehicle-physics-engineer`. Gate C. Depends on VEH-010 (merged). Branch
+`veh-012-wake-tolerance-drift`.
+
+**MEDIUM-6 — the duplicated wake threshold.** `ARacingVehiclePawn` compared driver
+axes against its own `static constexpr float ChassisWakeInputTolerance = 0.02f`, with a comment
+saying it matched `FVehicleDebugParams::ControlInputWakeTolerance`
+(`ChaosVehicleMovementComponent.h:53`). The comment was true when written and nothing would have
+said so if it stopped being true.
+
+**MEDIUM-2 — the untested cap.** `ComputeMinimumResetCooldownSeconds` returns
+`FMath::Min(BudgetBound, CeilingBound)`. At the shipped
+`FVehicleFailureThresholds::MaxContactSuppressionSeconds` (0.5 s) the budget bound always wins, so
+every storm case in `RacingSim.Vehicle.ResetStormCannotReachCeiling` exercised one branch of that
+`Min` and the other was covered only by `RacingSim.Vehicle.ResetGate`'s static formula assertions.
+
+**A linkage finding that changed the shape of the fix.** The ticket offered "either read the cvar
+or add a test that fails when the engine default moves". Reading the struct directly is not
+available: `GVehicleDebugParams` is defined at `ChaosVehicleMovementComponent.cpp:58` with **no
+`CHAOSVEHICLES_API`**, and every `extern` for it lives in that module's own Private sources
+(`ChaosVehicleManager.cpp:24`, `ChaosVehicleManagerAsyncCallback.cpp:10`). RacingSim cannot link
+it. The console registry is the only supported reader, which is why the accessor below goes
+through `IConsoleManager`.
+
+**Both halves are implemented, not either.** Reading the cvar alone would follow a future Epic
+default change silently, into a build where the new value may be wrong for this pawn's wider
+predicate. A drift test alone would leave the pawn ignoring live ini and console changes. Each
+covers the other's blind spot, so both are in scope.
+
+- [x] **The threshold is read, not copied.** `ARacingVehiclePawn::GetChassisWakeInputTolerance()`
+  resolves `p.Vehicle.ControlInputWakeTolerance` through
+  `IConsoleManager::Get().FindConsoleVariable` and returns its live value. The
+  `IConsoleVariable*` is cached in a function-local static, not the float: one hashed-name lookup
+  per process, because `WakeChassisForInput` runs every tick and CLAUDE.md bans per-frame lookup
+  work, while the value behind the pointer still follows every change.
+- [x] **Static, so the guards need no world.** The accessor is a static member and the constants
+  `ChassisWakeInputToleranceFallback` and `ChassisWakeInputToleranceCVarName` are public, so
+  `RacingSim.Vehicle.ChassisWakeToleranceTracksEngineCvar` runs at the Smoke gate with no actor,
+  no `UWorld` and no `BeginPlay`.
+- [x] **Hostile values are refused, not forwarded.** A non-finite value, zero or a negative value
+  falls back to `ChassisWakeInputToleranceFallback`. At zero or below every axis compares `>=` the
+  threshold, so every frame would read as "the driver is asking for motion" and the sleep policy
+  would be defeated rather than tuned; against `NaN` every comparison is false, so the car could
+  never be woken at all. A missing console variable warns exactly once — the warning sits
+  in the static initialiser, not on the tick path.
+- [x] **Read once per frame.** `WakeChassisForInput` reads the accessor into one local and compares
+  all three axes against it, so a console change landing mid-predicate cannot make one frame
+  compare its axes against two different thresholds.
+- [x] **Drift is detected.** `RacingSim.Vehicle.ChassisWakeToleranceTracksEngineCvar`
+  (`Source/RacingSimTests/Vehicle/VehicleWakeToleranceSpec.cpp`) asserts the variable is
+  registered, then compares `ChassisWakeInputToleranceFallback` against the variable's
+  `GetDefaultValue()` — the value it was **constructed** with, not `GetFloat()` — so a
+  local ini or console override on the running machine can neither hide drift nor invent it.
+  Measured: `p.Vehicle.ControlInputWakeTolerance default='0.020000' (0.020000); pawn
+  fallback=0.020000`.
+- [x] **The pawn really follows the variable.** The same suite sets the variable to `0.25`, asserts
+  the accessor returns `0.25`, then sets it to `0.0125` and asserts it follows again — a second
+  change, so nothing can pass by caching the float once. It then sets `0.0` and `-1.0` and asserts
+  the fallback is used. The variable is restored on every exit path through `ON_SCOPE_EXIT`:
+  `Unset(ECVF_SetByConsole)` drops this test's own entries so no priority residue outlives the
+  test, and the value is re-`Set` only when the post-`Unset` value differs from the value read
+  on entry — that is, only when the entry value was itself console-set and so genuinely belongs
+  at that priority. Restoring by `Set` alone, as the first draft did, would have left the
+  variable pinned at the maximum priority for the rest of the process (`code-reviewer`
+  MEDIUM-2).
+- [x] **The cap is driven, not just asserted.** `RacingSim.Vehicle.ResetStormCannotReachCeiling`
+  gains a capped-cooldown block: `FVehicleFailureThresholds` with
+  `MaxContactSuppressionSeconds = 8.0f`, storming 240 s at 60 Hz steady, 120 Hz steady and 60 Hz
+  with hitches. Each case first asserts the cap is the binding term (the returned cooldown equals
+  the ceiling duration and is **shorter** than the budget), so a later change that lets the budget
+  bound win again fails there with a readable message instead of silently turning the new cases
+  back into duplicates of the old ones.
+- [x] **The capped cases assert the right property.** With a budget longer than the ceiling
+  duration the ceiling is what ends each suppression window — 240 evaluations arrive at 4 s, the
+  budget would not expire until 8 s — so reaching the ceiling is the **designed** behaviour here
+  and the older `ExpectBounded` "never reaches the ceiling" assertion does not apply. That is
+  precisely the cap's premise: waiting out the full budget would lock the driver out for twice as
+  long as the suppression it is waiting on. The capped cases assert instead that the carried count
+  never *passes* the ceiling, that the ceiling **is** reached, and that the driver still gets
+  resets at the capped cooldown. Measured, 240 s each: 60 Hz `resets=60 maxCarried=240
+  whileArmed=0`; 120 Hz `resets=120 maxCarried=240 whileArmed=0`; hitchy 60 Hz `resets=33
+  maxCarried=240 whileArmed=0`.
+
+  Those three run **with** the armed gate, so their `whileArmed=0` is not evidence about the cap.
+  The harness gate refuses a request outright while the basis is armed (`VehicleResetMath.cpp:117`),
+  so `Accepted` implies the basis was already retired and the counter at
+  `VehicleResetGateSpec.cpp:156` is structurally `+= 0`: the assertion restates the gate and cannot
+  fail. The first draft of this ticket described it as evidence that the basis had been retired.
+  `code-reviewer` caught that (HIGH-1) and the claim is withdrawn. In the armed cases the real
+  evidence is the `MinResets` floor — at the capped cooldown the driver still gets 60, 120 and
+  33 resets across 240 s instead of being locked out. The cycle-1 bypass below confirms the vacuity
+  directly: under a deliberately short cap the armed cases stayed **green** while the ungated ones
+  failed.
+- [x] **The cap is measured standing alone, with the armed gate off.** Repair cycle 1 adds the
+  ceiling-branch analogue of the pre-existing "the time cooldown ALONE at exactly the minimum"
+  block (`VehicleResetGateSpec.cpp:402-418`): the same capped storms with `bUseArmedGate = false`,
+  so the capped cooldown is the only thing spacing the resets and `whileArmed == 0` becomes a
+  statement about the cap. Measured: `Capped cooldown only, 60 Hz steady: resets=60 captures=14400
+  maxCarried=240 whileArmed=0`; `Capped cooldown only, 120 Hz steady: resets=120 captures=28800
+  maxCarried=240 whileArmed=0`.
+- [x] **A real limit of the cap is on record, because measuring it found one.** The same ungated
+  run under hitches does **not** hold: `Control, capped cooldown ungated with hitches: resets=60
+  maxCarried=240 whileArmed=30`. The ceiling bound is an evaluation **count** converted to a
+  duration at the nominal capture rate — 240 evaluations read as 4.0 s at 60 Hz — and a hitch
+  breaks that conversion: a 0.6 s frame spends 0.6 s of the cooldown while delivering one
+  evaluation instead of thirty-six, so wall time runs out before the evaluation count does and the
+  basis is still armed when the cooldown expires. This is the same property the suite already
+  records for the budget branch ("under hitches the time cooldown alone re-arms armed bases") and
+  the same conclusion: the cooldown is a rate limit, the armed check is what makes the ordering
+  safe, and the two cannot be collapsed into one. It is recorded as a control asserting
+  `whileArmed > 0` rather than hidden. It also falsified a comment written in cycle 0, which
+  credited the ceiling with retiring the basis under hitches; that comment is corrected.
+- [x] **The cap sits on the boundary, and that is measured.** The ceiling bound carries no slack
+  term where the budget bound adds `(Floor + 1)` capture intervals, so the capped value should be
+  exactly sufficient and not a comfortable margin. A control at one capture interval **under** the
+  cap, ungated, gives `whileArmed=15` against the capped run's `0`. That is now recorded rather
+  than assumed.
+
+**Deliberately excluded.**
+
+- Removing the pawn's threshold and calling Chaos's own predicate. The threshold is shared now;
+  the predicate deliberately is not. `WakeChassisForInput` drops the roll, pitch and yaw axes this
+  pawn never writes, compares steering absolutely rather than as a delta, and adds handbrake.
+  Sharing the number does not make sharing the comparison correct, and the comment above the
+  predicate now says so explicitly.
+- A mirrored RacingSim cvar. A second name for the same number is the duplication this ticket
+  removes, wearing a different hat.
+- `SetOnChangedCallback`. The accessor reads the live value on demand, so there is nothing to
+  invalidate, and a callback would add an ordering hazard for no gain.
+- Raising the shipped `MaxContactSuppressionSeconds`. The 8.0 s budget exists only inside the new
+  test cases, on a local `FVehicleFailureThresholds`. Production thresholds are unchanged.
+- Touching `ResetStormCeilingEvaluations`, the detector, or `ComputeMinimumResetCooldownSeconds`
+  itself. MEDIUM-2 is a coverage gap; no production behaviour changes for it. Repair cycle 1
+  measured one real limit of the formula — the ceiling bound does not survive hitches, above —
+  and it stays unchanged for the same reason: the armed gate covers it in production, and changing
+  the cooldown is a separate ticket.
+- Scoping the wake-tolerance test's console writes. `ChassisWakeToleranceTracksEngineCvar` mutates
+  a **global** engine variable, and two of its writes are hostile: `0.0`, then `-1.0`, either of
+  which would make every frame read as driver input if anything observed the variable while they
+  were set. It runs under the Smoke filter alongside 530 other tests. The window is a few
+  microseconds inside one synchronous test body with no world and no ticking pawn, and repair
+  cycle 1 tightened the guard: `Unset(ECVF_SetByConsole)` first, so no maximum-priority residue is
+  left to silently refuse later writes at `Code`, `Commandline`, `DeviceProfile`, `Scalability` or
+  `SystemSettingsIni`, then a re-`Set` only when the fallback value differs from what was there on
+  entry. A test-local override would remove the window entirely, but ChaosVehicles offers no such
+  mechanism: `GVehicleDebugParams` has no `CHAOSVEHICLES_API` and the console registry is the only
+  supported reader. Recorded as a known risk rather than papered over.
+- Re-pinning the wake threshold from tick or a physics callback. Unchanged from VEH-011's
+  exclusion list and for the same reason.
+
+**Bypass proof** (`Scripts/Test/build-veh012-bypass.log`, `Saved/Automation/veh012-bypass`). Both
+guards were proved in one bypass build, and they fail in different suites so neither can mask the
+other. `ChassisWakeInputToleranceFallback` was moved to `0.03f` and the `FMath::Min` against
+`CeilingBoundSeconds` was replaced by a bare `return BudgetBoundSeconds;`. Build `Result:
+Succeeded`, zero warning/error lines; automation `succeeded=0 failed=2`:
+
+- `ChassisWakeToleranceTracksEngineCvar`: *"Expected 'ChassisWakeInputToleranceFallback still
+  equals the engine's own default for p.Vehicle.ControlInputWakeTolerance' to be 0.030000, but it
+  was 0.020000 and outside tolerance 0.000001."*
+- `ResetStormCannotReachCeiling`: *"Expected 'Capped, 60 Hz: the minimum cooldown is the ceiling
+  duration, not the budget bound' to be 4.000000, but it was 8.066667"*, the matching 120 Hz
+  failure at `2.000000` against `8.033333`, and the boundary control *"Expected 'Control: a
+  cooldown one capture shorter than the cap, without the armed check, re-arms armed bases' to be
+  true."*
+
+Both files were restored from copies taken before the bypass and the restore was verified by
+`git diff` (`VehicleResetMath.cpp` back to no diff) and by grepping for the `BYPASS` markers (none
+left). The editor was rebuilt afterwards (`build-veh012-e3.log`) so no measurement below was taken
+against bypassed binaries.
+
+**Second bypass, repair cycle 1** (`Scripts/Test/build-veh012-bypass2.log`,
+`Saved/Automation/veh012-bypass2`), proving the new ungated assertions can fail. The ceiling bound
+in `ComputeMinimumResetCooldownSeconds` was shortened by one evaluation
+(`GetMaxContactSuppressionEvaluations()` became `GetMaxContactSuppressionEvaluations() - 1`), which
+moves the capped cooldown from 4.000000 s to 3.983333 s at 60 Hz. Build `Result: Succeeded`;
+automation `succeeded=0 failed=1` with four errors:
+
+- *"Expected 'Capped cooldown only, 60 Hz steady: the capped cooldown still leaves no reset landing
+  on an armed basis' to be 0, but it was 15."*
+- *"Expected 'Capped cooldown only, 120 Hz steady: the capped cooldown still leaves no reset
+  landing on an armed basis' to be 0, but it was 60."*
+- the two cap-binds preconditions, *"to be 4.000000, but it was 3.983333"* and *"to be 2.000000,
+  but it was 1.991667"*.
+
+What did **not** fail is the point. The three armed capped cases — whose assertion text is
+identical apart from the label — stayed green against the same broken cap. That is HIGH-1
+demonstrated rather than argued, and it is why the ungated cases had to exist. The bypass was
+reversed by the inverse edit, `git status --porcelain` on the file returned empty, and the editor
+was rebuilt (`build-veh012-revert2.log`) before the measurements below.
+
+**How the build rows are read.** Every build row below means: the log contains the line
+`Result: Succeeded`, and it contains zero lines matching `warning` or `error` as whole words,
+case-insensitively. `BUILD_EXITCODE=0` and `WARNING_ERROR_MATCHES=0` are the harness's own
+console output, computed by `Build-Target.ps1` after it reads the log back; they are not lines
+in the file. The cycle-0 rows cited them as if they were, which `code-reviewer` flagged
+(LOW-5), and the rows are corrected above.
+
+**The logs are not all in the same encoding, and the correction above was itself corrected.**
+The cycle-1 logs are UTF-16LE; the cycle-0 logs (`build-veh012-e3`, `-g1`, `-bypass`) are UTF-8
+with a BOM. Checked by BOM across `Scripts/Test/`: 122 UTF-8-with-BOM, 18 UTF-16LE, the switch
+falling at `build-veh012-r1.log`. `Build-Target.ps1:29-30` pipes UBT through
+`Tee-Object -FilePath`, and Windows PowerShell 5.1's `Tee-Object` writes UTF-16LE by default
+(confirmed directly: `'x' | Tee-Object -FilePath t.log` produced a `FF FE` BOM), so UTF-16LE is
+what the script natively produces and the older UTF-8 logs came from a path that re-encoded
+them. The practical consequence: a byte-oriented `grep` silently returns zero matches on a
+cycle-1 log, so these logs are read decoded. This ticket first recorded that as the reason
+`code-reviewer`'s LOW-5 grep found nothing — wrong, and the reviewer corrected it on re-review:
+the logs it grepped were the cycle-0 UTF-8 ones, which decode fine, so its zero was a true
+negative. The conclusion is unchanged (the tokens are genuinely absent, `Result: Succeeded` is
+genuinely present); the stated reason was wrong and is now stated correctly.
+
+| Gate | Command / report | Result |
+|---|---|---|
+| Editor build (cycle 1) | `Scripts/Test/build-veh012-revert2.log` | `Result: Succeeded`, zero warning/error lines |
+| Game build (cycle 1) | `Scripts/Test/build-veh012-r2-game.log` | `Result: Succeeded`, zero warning/error lines |
+| Five named tests (cycle 1) | `Saved/Automation/veh012-r6` | `succeeded=5 succeededWithWarnings=0 failed=0 notRun=0`, `totalDuration=0.524`, `GATE_PASSED requiredNamesChecked=5` |
+| Smoke (cycle 1) | `Saved/Automation/veh012-smoke2` | `succeeded=529 succeededWithWarnings=2 failed=0 notRun=0`, `GATE_PASSED passedTotal=531` |
+| Soak (cycle 1) | `Saved/Automation/veh012-soak2` | `succeeded=1 failed=0 notRun=0`, 108000 steps / 1800.0 s simulated in 56.2 s wall clock, furthest 919.7 cm of 8000.0 cm, slowest inspected speed 335.1 cm/s against a 50.0 cm/s floor, memory 937.9 — 353.5 MiB (delta -584.4 MiB against a 64.0 MiB ceiling) |
+
+Cycle-0 gates, kept for comparison:
+
+| Gate | Command / report | Result |
+|---|---|---|
+| Editor build | `Scripts/Test/build-veh012-e3.log` | `Result: Succeeded`, zero warning/error lines |
+| Game build | `Scripts/Test/build-veh012-g1.log` | `Result: Succeeded`, zero warning/error lines |
+| Five named tests | `Saved/Automation/veh012-r3` | `succeeded=5 succeededWithWarnings=0 failed=0 notRun=0`, `totalDuration=0.644`, `GATE_PASSED requiredNamesChecked=5` |
+| Smoke | `Saved/Automation/veh012-smoke` | `succeeded=529 succeededWithWarnings=2 failed=0 notRun=0`, `GATE_PASSED passedTotal=531` |
+| Soak | `Saved/Automation/veh012-soak` | `succeeded=1 failed=0 notRun=0`, 108000 steps / 1800.0 s simulated in 64.2 s wall clock, memory 1575.0 — 1259.2 MiB (delta -315.8 MiB against a 64.0 MiB ceiling) |
+
+The Smoke count is the `RACE-006`/`VEH-011` baseline of `528 + 2` plus exactly one test: the new
+`ChassisWakeToleranceTracksEngineCvar`. The two warning-carrying suites are unchanged
+(`RacingSim.Race.TrackFailedBakeIsNotRetried`, `RacingSim.Race.TrackValidation`, both `Success`).
+The soak was re-run rather than audited because this ticket touches the reset path; it reported a
+furthest distance of 919.7 cm against an 8000.0 cm allowance and a slowest inspected speed of
+335.1 cm/s against a 50.0 cm/s floor.
+
+The five named tests are `ChassisWakeToleranceTracksEngineCvar`, `ResetStormCannotReachCeiling`,
+`ResetGate`, `WakesFromSleepOnThrottle` and `ResetRestoresSleepPin` — the last two because they
+are the existing coverage of the wake threshold and the reset sleep pin, and a change to how the
+threshold is obtained could have broken either.
+
+**One correction made during implementation, recorded because it changed the test.** The capped
+cases were first written reusing `ExpectBounded`, which asserts the carried count never reaches
+the ceiling. They failed on the first run, in all three cases, with `maxCarried=240`. That was the
+test being wrong, not the code: at an 8 s budget the ceiling is *supposed* to end suppression. The
+assertions were rewritten to the properties that actually hold, and the reasoning is now in the
+comment above the block so the next reader does not repeat the mistake.
+
+#### VEH-012 review and repair record
+
+**`code-reviewer`, pass 1** — **PASS WITH CONDITIONS**, no BLOCKER. It verified every engine
+citation independently against UE 5.8.1 (`ENGINE_PATCH_VERSION 1`) and found them correct,
+re-derived the arithmetic (`Capped60 = min(8 + 4/60, 240/60) = 4.0`, `Capped120 = 2.0`), confirmed
+every artifact number in the gate table against the reports, confirmed the retired private
+`ChassisWakeInputTolerance` has no surviving references, and confirmed production thresholds are
+untouched. Six conditions, all closed in repair cycle 1:
+
+1. **HIGH-1, the armed-gate assertion is vacuous.** Confirmed by reading the source rather than
+   taken on trust: with `bUseArmedGate = true`, `GateInput.bContactSuppressionArmed` is
+   `State.bHasPreDiscontinuityLocation` (`VehicleResetGateSpec.cpp:151`), `EvaluateResetGate`
+   returns `SuppressionArmed` whenever capture is enabled and the basis is armed
+   (`VehicleResetMath.cpp:117`), so `Accepted` implies `!bHasPreDiscontinuityLocation` and the
+   counter at `:156` is `+= 0` unconditionally. Closed by adding the ungated capped cases, by
+   withdrawing the claim from this ticket's text, and by the cycle-1 bypass, which showed the
+   armed cases staying green against a broken cap.
+2. **HIGH-1, bypass.** Closed: `build-veh012-bypass2.log` / `veh012-bypass2`, above.
+3. **MEDIUM-1, the new spec file was untracked.** `VehicleWakeToleranceSpec.cpp` was `??` in
+   `git status` and would have shipped absent. Closed: staged by explicit path, confirmed `A ` in
+   `git status --porcelain Source/`.
+4. **MEDIUM-2, the console restore left priority residue.** `Set` at `ECVF_SetByConsole` restores
+   the value but not the variable: `ECVF_SetByConsole` is the maximum priority
+   (`IConsoleManager.h:187`), so later writes at lower priorities would be refused in silence for
+   the rest of the process. The engine's own `TGuardConsoleVariable` (`IConsoleManager.h:1442`) has
+   the same gap. Closed with `Unset(ECVF_SetByConsole)` first and a conditional re-`Set` that fires
+   only when the fallback value differs from the entry value — which is exactly the case where
+   the entry value was itself console-set and so genuinely belongs at that priority.
+5. **MEDIUM-3, the global mutation was not recorded.** Closed: it is now an explicit risk entry
+   under "Deliberately excluded", naming the hostile values and the window.
+6. **LOW-5, the build rows cited tokens absent from the logs.** Half right, and the correction is
+   recorded because the difference matters: the logs are **UTF-16LE**, so the reviewer's grep
+   returning zero was an encoding artifact and `Result: Succeeded` is in fact present. Read
+   decoded, all four cycle-1 logs contain it and contain zero warning/error lines.
+   `BUILD_EXITCODE=0` and `WARNING_ERROR_MATCHES=0` genuinely are not in the files — they are
+   `Build-Target.ps1` console output. The rows now say which is which.
+
+The four non-blocking LOWs were taken as comment edits in the same cycle: the cached
+`IConsoleVariable*` goes stale (not dangling) across a Live Coding reload, since
+`UnregisterConsoleObject` flags `ECVF_Unregistered` rather than deleting when `bKeepState` is set
+(LOW-1); a refused hostile `Set` is silent, so each hostile write is now confirmed on the variable
+before the accessor is asked (LOW-2); the divergence list from `ProcessSleeping` was short by one
+and its citation covered only the locally-controlled branch, now four differences and
+`ChaosVehicleMovementComponent.cpp:1387-1400` (LOW-3, verified by reading the engine source); and
+the `GetDefaultValue()` immunity argument's unstated premise — that nothing writes
+`GVehicleDebugParams.ControlInputWakeTolerance` through the struct — is now stated (LOW-4).
+
+**One finding of repair cycle 1, made by the new test on its first run.** The ungated hitchy case
+was written asserting `whileArmed == 0` like its steady siblings. It failed, `whileArmed=30`. The
+cap really is insufficient under hitches, for the reason recorded in the criteria above, and the
+suite already says the same of the budget branch. The case was demoted to a control asserting
+`whileArmed > 0`, and a cycle-0 comment that credited the ceiling with retiring the basis under
+hitches was corrected. No production change: the armed gate covers it.
+
+**`code-reviewer`, pass 2 (re-review of repair cycle 1)** — **PASS**, no conditions. It
+re-verified each of the six conditions against source and artifacts rather than against my
+summary: it re-read `ConsoleManager.cpp` and confirmed the `Unset` that actually runs for our
+variable is `FConsoleVariableExtendedData<T>::Unset` (`:1191-1240`), which drops the history entry
+and, when that priority was the winning one, recomputes the value and lowers the `ECVF_SetByMask`
+flag — so the residue is genuinely removed, not just the value (it also noted the no-op `Unset`
+at `:1526` belongs to `FDelegatedConsoleVariable` and does not apply). It confirmed the
+conditional re-`Set` never fires in the normal case, because with no prior history the remaining
+winner is `SetByConstructor` = 0.02 = the entry value.
+
+It also checked something I had not: the **ordering** of every build and measurement, reconstructed
+from file mtimes and each log's own action list. Pawn 10:20, wake spec 10:21, `r1` build 10:23
+(compiles both specs), gate spec 10:26, `r2` build 10:26 (recompiles it and relinks
+`RacingSimTests`), `bypass2` build 10:29 (touches `RacingSim` only, so the 10:26 test DLL is
+intact), `bypass2` run 10:30, `revert2` build 10:31, then `r6` 10:32, `smoke2` 10:35, `soak2`
+10:37. No source file is newer than the last build that compiled it, and every green measurement
+post-dates the revert.
+
+Three LOW findings, all `Docs/Tickets.md` text, all fixed in this commit:
+
+- **LOW-A** — my LOW-5 correction was itself wrong about the reason. Only the cycle-1 logs are
+  UTF-16LE; the cycle-0 logs the reviewer actually grepped are UTF-8 with a BOM and decode fine, so
+  its zero was a true negative rather than an encoding artifact. Fixed, with the encoding split
+  measured and its cause identified — see "The logs are not all in the same encoding" above.
+- **LOW-B** — the "pawn really follows the variable" criterion still described the cycle-0
+  `Set`-only restore, contradicting the corrected description two sections below. Rewritten to the
+  `Unset`-then-conditional-`Set` behaviour that shipped.
+- **LOW-C** — the cycle-0 bypass paragraph still cited `WARNING_ERROR_MATCHES=0` as if it were a
+  log line, the exact defect LOW-5 raised. Now "zero warning/error lines", like the rows.
+
+The reviewer stated its own limits, which are recorded rather than paraphrased away: it ran no
+builds and no automation, so every pass/fail statement of its is a reading of the supplied
+artifacts; it did not audit all 531 Smoke entries beyond their states and the presence of the new
+test; it did not read `veh012-soak2`'s stdout log, only the `1/0/0` roll-up; and it could not
+confirm from outside that the bypass edit was the only edit made to `VehicleResetMath.cpp` between
+10:26 and 10:31 — only that the file is unmodified against `HEAD` now and that the ordering is
+consistent.
+
+**`test-engineer`** — **PASS**, on re-runs it made itself from the working tree rather than on
+my numbers. It checked the host was clear of Unreal processes before starting, and it checked by
+mtime that the binaries it measured actually reflect the current source — `RacingVehiclePawn.cpp`
+10:20:35 against `UnrealEditor-RacingSim.dll` 10:31:32 and `RacingSim.exe` 10:34:13 — so its
+"Target is up to date" builds are legitimate incremental results and not stale no-ops. That is the
+check `VEH-005` MEDIUM-D was raised for.
+
+| Gate | Its artifact | Its result |
+|---|---|---|
+| Editor build | `Scripts/Test/build-veh012-te-editor.log` | `BUILD_EXITCODE=0`, `Result: Succeeded`, `WARNING_ERROR_MATCHES=0`; log decoded from UTF-16LE in Python, zero warning/error matches |
+| Game build | `Scripts/Test/build-veh012-te-game.log` | same |
+| Five named tests, run 1 | `Saved/Automation/veh012-te-named1` | `succeeded=5 failed=0 notRun=0`, `totalDuration=0.731`, `GATE_PASSED requiredNamesChecked=5` |
+| Five named tests, run 2 | `Saved/Automation/veh012-te-named2` | identical `5/0/0` |
+| Smoke, run 1 | `Saved/Automation/veh012-te-smoke1` | `succeeded=529 succeededWithWarnings=2 failed=0 notRun=0`, `passedTotal=531` |
+| Smoke, run 2 | `Saved/Automation/veh012-te-smoke2` | identical |
+| Soak | `Saved/Automation/veh012-te-soak1` | `1/0/0`; 108000 steps at 0.016667 s = 1800.0 s simulated in 60.6 s wall |
+
+Both the named tests and Smoke were run **twice**, specifically to probe for flakiness, and were
+byte-identical both times. That matters more than usual here, because this ticket's new spec
+mutates a global console variable and briefly parks hostile values (`0.0`, `-1.0`) on it: an
+order-dependent Smoke would have shown as a difference between the two runs. It did not.
+
+It verified rather than repeated the two claims most easily taken on trust. The Smoke warning
+attribution was re-derived by parsing `index.json` for `warnings > 0` per test: exactly
+`RacingSim.Race.TrackFailedBakeIsNotRetried` (1) and `RacingSim.Race.TrackValidation` (2), both
+`Success`. And `ChassisWakeToleranceTracksEngineCvar` was confirmed to appear in the Smoke
+enumeration — discovered by the filter, not merely callable by name, which is the failure mode
+`VEH-006`'s `Product` deviation left open. It also read the `Info` rows out of the named-test
+report and confirmed the numbers quoted in this ticket are the measured ones, including
+`whileArmed=30` and `whileArmed=15` for the two controls.
+
+**One difference from my run, and it is the expected one.** Its soak reported memory
+909.5 — 277.8 MiB where mine reported 937.9 — 353.5 MiB, and 60.6 s wall where mine reported
+56.2 s. Absolute resident memory and wall clock are host-state dependent. The simulation-dependent
+figures are identical to the digit — furthest distance 919.7 cm of 8000.0 cm, slowest inspected
+speed 335.1 cm/s against the 50.0 cm/s floor — which is what a deterministic soak should produce
+across hosts and runs, and is itself a small piece of evidence that the reset path is
+frame-rate-independent.
+
+It audited the bypass artifacts rather than reproducing them, and said so unprompted: a read-only
+agent cannot re-introduce a source edit. It confirmed both bypass builds `Result: Succeeded`, that
+both automation reports show `succeeded=0`, that the error text in `index.json` matches this
+ticket's quotes verbatim, that `VehicleResetMath.cpp` has no diff against `main`, and that no
+`BYPASS` marker remains anywhere under `Source/`.
+
+It also walked the acceptance criteria against the source and confirmed each checkbox: the
+cvar-backed accessor with a cached `IConsoleVariable*`, the positive-and-finite fallback guard, the
+single read per frame in `WakeChassisForInput`, the drift test reading `GetDefaultValue()` rather
+than `GetFloat()`, and the new ceiling-branch storm cases.
+
+**Not covered by this pass**, in its own words: it did not run `-Filter Product` (harness failure
+on this host, not a test failure), and it did not audit all 531 Smoke entries beyond their state
+and warning fields.
+
 
 
 | ID | Title | Owner | Depends on | Gate | Status |
