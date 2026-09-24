@@ -3925,7 +3925,7 @@ and warning fields.
 | RACE-004 | Shortcut/reverse/double-trigger/reset automation matrix | test-engineer + implementer | RACE-003 | B | **DONE** 2026-08-24 — `code-reviewer` returned APPROVED WITH FOLLOW-UPS (no BLOCKER/HIGH; 4 MEDIUM coverage gaps — `TimingUnavailable` fault axis, unannounced-teleport reset path, restart-without-explicit-`ResetForNewSession()` cell, and disproportionate section size — plus 5 LOW doc nits, none blocking). Independently confirmed the double-trigger net-advance fix is correct and the `AddExpectedMessage(Occurrences=-1)` idiom is genuinely safe (traced into engine source). `test-engineer` independently confirmed both targets build clean and Smoke `succeeded=486, succeededWithWarnings=2 (pre-existing, unrelated), failed=0, notRun=0`, all six new `RacingSim.Race.FaultMatrix*` tests `Success`. Coverage-only ticket, no production code changed. Merged to `main` at merge of `16904af`. MEDIUM-1/2/4 (three additive test gaps) routed forward to the next ticket touching `RaceLapTracker.cpp` |
 | RACE-005 | Race session composition: game mode, race director, pawn spawn, HUD wiring on the graybox map | race-systems-engineer | UI-002 | B | **DONE** — closed 2026-09-18. `ARaceDirector` + `Game/` composition root (game mode, player controller, graybox ground); default map and game mode set; session tested in both login orders with a real `ULocalPlayer`. Car not yet drivable (input assets → `TRACK-003`). Opened by UI-002: nothing in the project yet created a `URaceStateMachine`/`URaceLapTracker`/`URaceResultRecorder` for a level, spawns the car, or ticks the gather → build → apply HUD chain; `GameDefaultMap` is still the engine `OpenWorld` template. Needed before `STREAM-001` has anything to stream. Also inherits UI-001 `N2` (refuse `CanStartSession` when a held track is invalid), which was forwarded to the already-closed `RACE-004`. Inherits UI-002 `M2` residuals: add the first test that creates `URacingHudWidget` with a real player context and proves bindings are set in `OnInitialized`; a Blueprint subclass with an empty tree still builds the default after `OnInitialized` |
 | RACE-006 | Wire driver reset request to `ExecuteSafeReset` through the race director | race-systems-engineer | RACE-005, VEH-007 | B | **DONE** 2026-09-23 (branch `race-006-driver-reset`, merged to `main` with `--no-ff` at `ddb462c` and pushed to `origin/main` the same day on owner request). All 13 acceptance criteria met; criteria under "### RACE-006 — acceptance criteria", record under "#### RACE-006 review and repair record". `code-reviewer` PASS with conditions on `d2cc157` (ten findings, no High) — repair cycle 1 closed 1–8, accepted 9 and 10, all ten dispositioned in a table. `code-reviewer` PASS with conditions on `b0bbb21` (HIGH-1, MEDIUM-1..7, no BLOCKER) — repair cycle 2 was comments and documentation only: closed MEDIUM-1, 3, 4, 5, 7 and routed HIGH-1 to `VEH-011`, MEDIUM-2 and MEDIUM-6 to `VEH-012`. Repairing it surfaced `VEH-010` (Chaos cannot wake a non-skeletal chassis), fixed in this branch. Four guards proved by bypass. Cycle 1 gates: both targets 0 warnings, Smoke 528/2/0/0, 18 + 12 named Product tests all Success. Cycle 2 gates: `Scripts/Test/build-race006-e12.log` `Result: Succeeded` 0 warnings, `Saved/Automation/race006-r7` 5 succeeded / 0 failed / 0 not run. `test-engineer` PASS, independently re-running the build and the five named tests twice (`Saved/Automation/te2-verify`, `te2-verify-r2`) |
-| TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN — opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
+| TRACK-003 | Graybox playable content: lighting preset, visible road surface, Enhanced Input actions/mapping context and `UVehicleInputConfigDataAsset` | rendering-tech-artist + vehicle-physics-engineer | RACE-005 | B, D | OPEN, **acceptance criteria written 2026-09-24, implementation blocked**. Criteria are below; no implementation has been attempted and none is authorised by them. Blocked because every deliverable is a `.uasset`/`.umap`: Unreal MCP fails to connect (`ECONNREFUSED`) and no editor session holds explicit asset ownership. Opened 2026-09-18 by RACE-005. RACE-005 composes the session in code; the map still has no lights and the pawn has no input assets, so the car cannot be driven. All three are `.uasset` work needing Unreal MCP or an editor session with explicit asset ownership. Also verify the engine cube used by `ARacingGrayboxGround` is cooked |
 
 Gate B is unusually explicit and these tickets inherit it verbatim: 100 automated
 valid laps count exactly once; 100 skipped/out-of-order/reverse/double-cross
@@ -5876,6 +5876,170 @@ routed here. Read before writing `UI-001`'s acceptance criteria.
 | M2 (RACE-003 pass 1) | `FRacingRaceResult`'s entire read surface (`GetValidity`, `HasValidLap`, `IsSubmittable`, `MakeSubmissionQueryString`, `ToString`) is plain C++ on a `USTRUCT(BlueprintType)` — none of it is reachable from Blueprint or UMG, the same class of gap as CORE-002's `M-3` and TRACK-001's `L3` (above) | One `BlueprintPure` function library closes all three — CORE-002's telemetry frame, TRACK-001's centerline query surface, and RACE-003's frozen result. Keep it beside `Race/`, not `UI/` |
 | M3 (RACE-003 pass 1) | `FRacingLapTiming::AreSectorsConsistent()`'s default parameter (`ExpectedSectorCount = INDEX_NONE`) reads `true` unqualified for a lap that withheld splits on an N-sector track — the fix for RACE-002's `L2` (a legally sectorless track) weakened the answer for the reachable case (splits dropped mid-session) by leaving the default permissive | Pass `ExpectedSectorCount` explicitly at every HUD/results call site that has the track's real sector count in scope; do not rely on the permissive default |
 | L7 (RACE-003 pass 1) | `ComputeContentHash()` (`TrackDefinitionActor`) still hashes a failed bake, so `GetContentVersion().IsPopulated()` reads `true` for a track that cannot actually be raced. Closed at the submission boundary (`Validate()`/`IsSubmittable()` both correctly refuse it), but the `IsPopulated()` claim itself is unchanged and could mislead a consumer other than submission — telemetry stamping being the obvious one | Do not treat `IsPopulated()` as "safe to race" anywhere in the HUD/telemetry path; use `Validate()`/the cached validity result for that question. Shared obligation with `RACE-004` |
+
+### TRACK-003 — acceptance criteria, opened 2026-09-24
+
+Scope: make the graybox map playable. Owners `rendering-tech-artist` (lighting, road
+surface, cook verification) and `vehicle-physics-engineer` (Enhanced Input assets and the
+`UVehicleInputConfigDataAsset`). Gates B and D. Depends on RACE-005 (closed 2026-09-18).
+
+**This ticket is criteria only. No implementation is attempted or authorised by it yet.**
+Every deliverable is a `.uasset` or a `.umap`, CLAUDE.md forbids concurrent edits and text
+merges of Unreal binary assets, and the two ways to produce them are both unavailable right
+now: Unreal MCP fails to connect (`ECONNREFUSED`), and no editor session holds explicit
+asset ownership. The criteria are written now so the work is defined before a session opens,
+not discovered inside one. **Implementation is blocked; see "Blocked on" below.**
+
+**Why the car cannot be driven today.** RACE-005 composed the session entirely in C++ and
+closed with the car undrivable on purpose. The gap is content, in three independent pieces:
+
+1. `ARacingVehiclePawn::InputConfigAsset` (`RacingVehiclePawn.h:83`) is null. With no
+   `UVehicleInputConfigDataAsset` the `UVehicleInputComponent` logs
+   *"has no UVehicleInputConfigDataAsset; the vehicle will not respond to input"*
+   (`VehicleInputComponent.cpp:38`) and binds nothing. Every C++ path behind it — the
+   processor, the profiles, the rate limiter, the reset hold — is built and tested; the data
+   it reads does not exist.
+2. `Content/Tracks/Prototype/Maps/L_Meridian_Graybox.umap` has no lights, so a packaged run
+   renders dark. It is the only map in `Content/` and it is both `GameDefaultMap` and
+   `EditorStartupMap` (`Config/DefaultEngine.ini:8-9`).
+3. `ARacingGrayboxGround` draws the drivable surface with `/Engine/BasicShapes/Cube.Cube`,
+   loaded by `ConstructorHelpers::FObjectFinder` at CDO construction
+   (`RacingGrayboxGround.cpp:37`). RACE-005 recorded that its cook inclusion is unverified
+   until packaging, and a cook that drops it leaves the slab invisible in a packaged build
+   while the collision box still blocks — the worst failure shape, because the car drives on
+   something the driver cannot see.
+
+#### Acceptance criteria
+
+**A. Lighting preset**
+
+- [ ] `L_Meridian_Graybox` carries one fixed dry daylight preset, per CLAUDE.md ("Start with
+      one fixed dry lighting preset. Dynamic weather and time of day are later milestones").
+      A directional light, a sky light and a sky atmosphere or equivalent, each with
+      explicitly recorded intensity and colour temperature — no auto-exposure guesswork
+      standing in for a chosen exposure.
+- [ ] The preset's parameters are recorded in this ticket as numbers, so a later visual
+      regression can say which value moved.
+- [ ] Exposure is pinned (fixed EV, or an explicitly bounded auto-exposure range), so two
+      captures of the same frame are comparable.
+- [ ] A packaged run of the default map renders a lit scene. Evidence is a screenshot from a
+      packaged build, not from the editor viewport.
+- [ ] Lumen, Virtual Shadow Maps and TSR are used only within a measured budget, per
+      CLAUDE.md. If any is enabled here, a before/after GPU cost on the reference worker is
+      recorded. If the reference worker and locked benchmark scene do not exist yet, this
+      criterion is met by recording that fact and the preset's cost on the host actually
+      used, named.
+
+**B. Visible road surface**
+
+- [ ] The drivable surface is visually distinguishable from the surrounding ground: the
+      driver can see where the track is without the HUD.
+- [ ] Materials are original and unbranded, per CLAUDE.md. No texture, normal map or
+      material graph traced, scraped or derived from Gran Turismo, Forza, a manufacturer
+      configurator, a commercial game, or the supplied reference screenshots.
+- [ ] Every external asset imported for this criterion has a `Docs/13-AssetLicenseLedger.md`
+      entry **before** import, not after.
+- [ ] The surface change does not move the collision surface. `ARacingGrayboxGround`'s
+      `CollisionBox` is the physical ground and `VisualMesh` carries
+      `ECollisionEnabled::NoCollision` (`RacingGrayboxGround.cpp:33`); a visual change that
+      silently becomes a collider is a regression. Proved by an automation check that the
+      ground's `GetTopZCm()` is unchanged and that the visual component still reports no
+      collision.
+
+**C. Enhanced Input actions and mapping context**
+
+- [ ] A `UInputAction` exists for every slot `GetRequiredActions` demands. Under an automatic
+      transmission that is `Throttle`, `Brake`, `Steer`, `Handbrake`, `Clutch` and `Reset`;
+      `ShiftUp` and `ShiftDown` are required only under a manual transmission
+      (`VehicleInputTypes.h:64-93`, `VehicleInputConfig.h:281`). Which set applies follows
+      from the asset's own transmission setting, and this ticket records which was chosen.
+- [ ] Each action's value type matches its documented contract: `Throttle`, `Brake`,
+      `Handbrake` and `Clutch` analog `[0,1]`; `Steer` analog `[-1,1]`, positive right;
+      `ShiftUp`/`ShiftDown` digital edge-triggered; `Reset` digital and **held**, never
+      edge-triggered — a single mis-keyed press must not be able to set
+      `ERacingRunValidity::InvalidVehicleReset` on a clean lap.
+- [ ] A `UInputMappingContext` exists for each `ERacingInputDeviceType` the slice ships. At
+      minimum keyboard; gamepad if a pad is in scope, and the ticket says which.
+- [ ] The mapping context is reachable through
+      `UVehicleInputConfigDataAsset::MappingContexts` for that device
+      (`VehicleInputConfig.h:361`), so `UVehicleInputComponent` resolves it rather than
+      logging *"No UInputMappingContext configured for device ...; no controls are bound"*
+      (`VehicleInputComponent.cpp:90`).
+
+**D. `UVehicleInputConfigDataAsset`**
+
+- [ ] A concrete `UVehicleInputConfigDataAsset` instance exists and is assigned to
+      `ARacingVehiclePawn::InputConfigAsset`.
+- [ ] `ActionBindings` maps every required `EVehicleInputAction` to its `UInputAction`
+      (`VehicleInputConfig.h:371`). A missing entry is a hard failure by design — the asset
+      refuses to invent a substitute (`VehicleInputConfig.h:275-281`).
+- [ ] `Profiles` carries a real entry for each shipped `ERacingInputDeviceType`
+      (`VehicleInputConfig.h:375`), with keyboard rate-limited and gamepad rates at 0
+      (instant), per the struct's own documented contract: a keyboard key is a step function,
+      and an unlimited key snaps the car to full lock in one frame.
+- [ ] The asset passes its own validation with **zero corrections applied**. Populating it
+      and letting `FVehicleInputProfile::Validate` clamp the numbers back into range is not a
+      pass; the authored values must already be legal.
+- [ ] `RacingSim.Vehicle.InputConfigRanges` and `RacingSim.Vehicle.InputConfig` still pass
+      unchanged. They assert against hand-written known-bad values, so a newly shipped asset
+      must not require loosening them.
+- [ ] An automation test loads the **shipped** asset by path and asserts it is complete — not
+      a synthetic asset built inside the test. The existing suites cover the C++ contract;
+      nothing currently fails if the shipped content is missing or half-filled, which is how
+      this gap survived RACE-005.
+- [ ] End to end: a test — or a recorded manual pass with evidence, if no automated input
+      injection path exists — shows a held `Reset` for `ResetHoldSeconds` reaching
+      `ExecuteSafeReset` through the RACE-006 path, and a throttle input moving the car.
+      RACE-005 recorded "input assets that let a person hold the reset key" as exactly this
+      ticket's dependency.
+
+**E. Engine cube cook verification**
+
+- [ ] A packaged build is produced and the cooked output is inspected for
+      `/Engine/BasicShapes/Cube` — or whatever mesh criterion B leaves in `VisualMesh`.
+      Inspection means reading the cook log or the cooked asset registry, not assuming.
+- [ ] If it is not cooked, the fix is recorded and applied: either add `/Engine/BasicShapes`
+      to `DirectoriesToAlwaysCook`, or replace the engine mesh with a project-owned mesh
+      under `Content/`. The second is preferred if criterion B replaces the visual anyway,
+      because it removes the dependency rather than pinning it.
+- [ ] A packaged run shows the slab rendered. A cooked-but-invisible surface and a
+      not-cooked surface look identical in a log; only the packaged frame separates them.
+- [ ] The `ConstructorHelpers::FObjectFinder` path is confirmed either to still succeed in
+      the packaged build, or to log rather than crash on failure
+      (`RacingGrayboxGround.cpp:37-41` already guards with `CubeFinder.Succeeded()`).
+
+#### Deliberately excluded
+
+- Dynamic weather and time of day. CLAUDE.md puts them after the fixed dry preset.
+- Nanite on the graybox geometry. CLAUDE.md forbids enabling it blindly, and a scaled engine
+  cube is not a case where it has been measured to help.
+- PCG, World Partition and HLOD for this map. The graybox is one slab and one centreline.
+- Force feedback, wheel and pedal hardware profiles. `ERacingInputDeviceType` can carry them
+  later; the vertical slice does not need them.
+- Rebindable controls and an options screen. That is a UI ticket.
+- Manual-transmission shift keys, unless the chosen transmission mode makes them required by
+  `GetRequiredActions`.
+- Final art for the circuit. This ticket makes the graybox legible and drivable, not
+  finished.
+- Browser-side input over Pixel Streaming. `STREAM-001`.
+
+#### Blocked on
+
+Implementation cannot start until one of these is true:
+
+1. Unreal MCP connects. It currently fails with `ECONNREFUSED` and is the owner's to fix.
+   CLAUDE.md's constraint still applies when it does: editor automation only, loopback,
+   serialized calls, never exposed publicly, excluded from shipping builds.
+2. An editor session is opened with **explicit asset ownership** recorded, because CLAUDE.md
+   forbids concurrent `.uasset`/`.umap` edits and forbids text-merging them. One owner at a
+   time, named before the session opens.
+
+The host is memory-starved and permits one build or editor at a time, so this work cannot be
+interleaved with a build gate on another ticket.
+
+#### TRACK-003 review and repair record
+
+Not started. Criteria only.
 
 ---
 
