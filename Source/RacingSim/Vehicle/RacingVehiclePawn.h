@@ -336,6 +336,58 @@ public:
 	 */
 	bool IsChassisSleepPinned() const;
 
+	/**
+	 * VEH-012: the last-resort value for GetChassisWakeInputTolerance(), used only when
+	 * the engine's console variable cannot be found at all.
+	 *
+	 * It is a copy of FVehicleDebugParams::ControlInputWakeTolerance's compiled default
+	 * (ChaosVehicleMovementComponent.h:53). A copy of a default in another module drifts
+	 * silently when that module is upgraded, so this one is pinned:
+	 * RacingSim.Vehicle.ChassisWakeToleranceTracksEngineCvar fails if the engine default
+	 * ever moves away from it.
+	 *
+	 * The set of inputs compared against the threshold is NOT the same set Chaos uses --
+	 * WakeChassisForInput documents the three deliberate differences. VEH-012 shares the
+	 * threshold, not the predicate.
+	 */
+	static constexpr float ChassisWakeInputToleranceFallback = 0.02f;
+
+	/**
+	 * The engine console variable that owns the threshold, registered at
+	 * ChaosVehicleMovementComponent.cpp:77 over
+	 * FVehicleDebugParams::ControlInputWakeTolerance.
+	 *
+	 * Named here rather than inline so the test that pins the default and the code that
+	 * reads it cannot disagree about which variable is meant.
+	 */
+	static constexpr const TCHAR* ChassisWakeInputToleranceCVarName = TEXT("p.Vehicle.ControlInputWakeTolerance");
+
+	/**
+	 * VEH-012: how much of an axis counts as "the driver is asking for motion", read from
+	 * the engine rather than copied from it.
+	 *
+	 * Why not read FVehicleDebugParams directly: GVehicleDebugParams is a plain global
+	 * defined at ChaosVehicleMovementComponent.cpp:58 with no CHAOSVEHICLES_API on it, and
+	 * every extern for it sits in that module's own Private sources
+	 * (ChaosVehicleManager.cpp:24, ChaosVehicleManagerAsyncCallback.cpp:10). It is not
+	 * exported, so this module cannot name it. The console registry is the only supported
+	 * reader, and it is also the one that sees ini files and runtime console commands.
+	 *
+	 * Static, and the console lookup is a function-local static, so:
+	 *   - the name lookup happens once per process rather than once per frame, which
+	 *     matters because WakeChassisForInput runs every tick (CLAUDE.md forbids per-frame
+	 *     hashed-name work);
+	 *   - the returned value still tracks live changes, because the cached thing is the
+	 *     IConsoleVariable pointer, not the float behind it;
+	 *   - a test can call this with no actor, no world and no BeginPlay.
+	 *
+	 * Falls back to ChassisWakeInputToleranceFallback when the variable is missing, or
+	 * when its value is non-finite or not positive -- a zero or negative threshold would
+	 * make every frame "the driver is asking for motion" and defeat the sleep policy
+	 * entirely.
+	 */
+	static float GetChassisWakeInputTolerance();
+
 	// =======================================================================
 	// RACE-006 -- driver reset request, latched here, serviced by Game/
 	// =======================================================================
@@ -510,22 +562,6 @@ private:
 	 * @return true when the pin was applied.
 	 */
 	bool ApplyChassisSleepPin(const TCHAR* ContextLabel);
-
-	/**
-	 * How much of an axis counts as "the driver is asking for motion", matching
-	 * FVehicleDebugParams::ControlInputWakeTolerance's own default
-	 * (ChaosVehicleMovementComponent.h:53).
-	 *
-	 * This is a COPY of that default, not a read of it. The engine value is cvar-backed
-	 * (p.Vehicle.ControlInputWakeTolerance, registered at
-	 * ChaosVehicleMovementComponent.cpp:77) and Chaos exposes no accessor for it, so an
-	 * ini or a console change moves the engine's threshold and leaves this one behind.
-	 * Nothing detects that drift today; see VEH-012.
-	 *
-	 * The set of inputs compared against it is NOT the same set Chaos uses either --
-	 * WakeChassisForInput documents the three deliberate differences.
-	 */
-	static constexpr float ChassisWakeInputTolerance = 0.02f;
 
 	/**
 	 * VEH-004: capture one snapshot and evaluate it, if the decimation clock allows.
